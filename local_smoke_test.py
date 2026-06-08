@@ -5,6 +5,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -192,7 +193,7 @@ def _run_query_and_report_check(*, config_path: Path) -> dict[str, Any]:
     service = QueryService(
         config_manager=manager,
         repository=repository,
-        run_lock=__import__("threading").Lock(),
+        run_lock=threading.Lock(),
         get_config=lambda: config,
         refresh_config=lambda: None,
         automation_factory=lambda app_config, credentials: FakeAutomation(app_config, credentials),

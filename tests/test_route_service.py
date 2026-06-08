@@ -7,6 +7,12 @@ from config_manager import ConfigManager
 from route_service import RouteService
 
 
+FUTURE_DATE = "2099-01-01"
+FUTURE_DATE_2 = "2099-01-02"
+FUTURE_DATE_5 = "2099-01-05"
+FUTURE_RETURN = "2099-01-12"
+
+
 def write_config(path: Path) -> None:
     path.write_text(
         json.dumps(
@@ -68,7 +74,7 @@ class RouteServiceTests(unittest.TestCase):
                 {
                     "origin": " sha ",
                     "destination": "pek",
-                    "departure_date": "2026-06-01",
+                    "departure_date": FUTURE_DATE,
                     "cabin": "Business",
                     "passengers": 2,
                     "providers": ["ctrip"],
@@ -94,10 +100,10 @@ class RouteServiceTests(unittest.TestCase):
                 {
                     "origin": "SHA",
                     "destination": "PEK",
-                    "departure_date": "2026-06-01",
+                    "departure_date": FUTURE_DATE,
                     "providers": ["ctrip"],
                     "auto_query_enabled": True,
-                    "auto_query_next_run_at": "2026-06-01T00:00:00Z",
+                    "auto_query_next_run_at": "2099-01-01T00:00:00Z",
                 }
             )["route"]
 
@@ -118,7 +124,7 @@ class RouteServiceTests(unittest.TestCase):
                     {
                         "origin": "SHA",
                         "destination": "SHA",
-                        "departure_date": "2026-06-01",
+                        "departure_date": FUTURE_DATE,
                         "providers": ["ctrip"],
                     }
                 )
@@ -142,7 +148,7 @@ class RouteServiceTests(unittest.TestCase):
                     {
                         "origin": "SHA",
                         "destination": "PEK",
-                        "departure_date": "2026-06-01",
+                        "departure_date": FUTURE_DATE,
                         "providers": ["priceline"],
                     }
                 )
@@ -166,7 +172,7 @@ class RouteServiceTests(unittest.TestCase):
                     {
                         "origin": "SHA",
                         "destination": "PEK",
-                        "departure_date": "2026-06-01",
+                        "departure_date": FUTURE_DATE,
                         "providers": ["airchina"],
                     }
                 )
@@ -181,7 +187,7 @@ class RouteServiceTests(unittest.TestCase):
                 {
                     "origin": "SHA",
                     "destination": "PEK",
-                    "departure_date": "2026-06-01",
+                    "departure_date": FUTURE_DATE,
                     "transfer_policy": "direct_only",
                     "providers": ["ctrip"],
                 }
@@ -199,7 +205,7 @@ class RouteServiceTests(unittest.TestCase):
                 {
                     "origin": "SHA",
                     "destination": "PEK",
-                    "departure_date": "2026-06-01",
+                    "departure_date": FUTURE_DATE,
                     "transfer_policy": "direct",
                     "providers": ["ctrip"],
                 }
@@ -220,8 +226,8 @@ class RouteServiceTests(unittest.TestCase):
                         "cabin": "economy",
                         "providers": ["ctrip"],
                         "segments": [
-                            {"origin": "SHA", "destination": "PEK", "departure_date": "2026-06-02"},
-                            {"origin": "PEK", "destination": "SIN", "departure_date": "2026-06-01"},
+                            {"origin": "SHA", "destination": "PEK", "departure_date": FUTURE_DATE_2},
+                            {"origin": "PEK", "destination": "SIN", "departure_date": FUTURE_DATE},
                         ],
                     }
                 )
@@ -238,8 +244,8 @@ class RouteServiceTests(unittest.TestCase):
                     "route_type": "one_way",
                     "origin_options": ["SEL", "CJU"],
                     "destination_options": ["PAR", "BCN"],
-                    "departure_date": "2026-06-01",
-                    "return_date": "2026-06-12",
+                    "departure_date": FUTURE_DATE,
+                    "return_date": FUTURE_RETURN,
                     "providers": ["ctrip"],
                     "group_label": "Korea Europe return",
                 }
@@ -266,12 +272,12 @@ class RouteServiceTests(unittest.TestCase):
                         {
                             "origin_options": ["SEL", "PUS"],
                             "destination_options": ["BJS"],
-                            "departure_date": "2026-06-01",
+                            "departure_date": FUTURE_DATE,
                         },
                         {
                             "origin_options": ["BJS"],
                             "destination_options": ["ATH", "MIL"],
-                            "departure_date": "2026-06-05",
+                            "departure_date": FUTURE_DATE_5,
                         },
                     ],
                     "providers": ["ctrip"],
@@ -301,8 +307,8 @@ class RouteServiceTests(unittest.TestCase):
                     "route_batch": True,
                     "route_type": "multi_city",
                     "segments": [
-                        {"origin_options": ["SEL", "PUS"], "destination_options": ["BJS"], "departure_date": "2026-06-01"},
-                        {"origin_options": ["BJS"], "destination_options": ["ATH", "MIL"], "departure_date": "2026-06-05"},
+                        {"origin_options": ["SEL", "PUS"], "destination_options": ["BJS"], "departure_date": FUTURE_DATE},
+                        {"origin_options": ["BJS"], "destination_options": ["ATH", "MIL"], "departure_date": FUTURE_DATE_5},
                     ],
                     "providers": ["ctrip"],
                     "group_label": "Korea Beijing Europe",
@@ -314,8 +320,8 @@ class RouteServiceTests(unittest.TestCase):
                     "route_batch": True,
                     "route_type": "multi_city",
                     "segments": [
-                        {"origin_options": ["CJU"], "destination_options": ["BJS"], "departure_date": "2026-06-01"},
-                        {"origin_options": ["BJS"], "destination_options": ["PAR"], "departure_date": "2026-06-05"},
+                        {"origin_options": ["CJU"], "destination_options": ["BJS"], "departure_date": FUTURE_DATE},
+                        {"origin_options": ["BJS"], "destination_options": ["PAR"], "departure_date": FUTURE_DATE_5},
                     ],
                     "providers": ["ctrip"],
                     "group_label": "Updated group",
@@ -340,7 +346,7 @@ class RouteServiceTests(unittest.TestCase):
                     "route_type": "one_way",
                     "origin_options": ["BJS"],
                     "destination_options": ["SHA"],
-                    "departure_date": "2026-06-01",
+                    "departure_date": FUTURE_DATE,
                     "providers": ["ctrip"],
                     "group_label": "Single option group",
                 }
@@ -364,7 +370,7 @@ class RouteServiceTests(unittest.TestCase):
                     "route_type": "one_way",
                     "origin_options": ["SEL", "CJU"],
                     "destination_options": ["PAR", "BCN"],
-                    "departure_date": "2026-06-01",
+                    "departure_date": FUTURE_DATE,
                     "providers": ["ctrip"],
                     "group_label": "Korea Europe",
                 }

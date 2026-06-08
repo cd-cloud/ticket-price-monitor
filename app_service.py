@@ -1,14 +1,13 @@
+from __future__ import annotations
+
 import asyncio
 import logging
-import shutil
-import subprocess
 import threading
-from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
-from config_manager import ConfigManager
 from browser_profile_service import BrowserProfileService
+from config_manager import ConfigManager
 from dashboard_builder import build_dashboard_payload
 from data_storage import PriceRepository
 from legacy_run_service import LegacyRunService
@@ -18,14 +17,7 @@ from route_service import RouteService
 from run_summary import RunSummaryStore
 from scheduling.auto_worker import AutoQueryWorker
 from scheduler import TaskScheduler
-from tail_discovery import (
-    AIRLINE_TAIL_DEFAULTS,
-    ALL_DOMESTIC_TAIL_CODES,
-    DEFAULT_TAIL_TEST_CODES,
-    TAIL_DESTINATIONS,
-)
-from tail_discovery_service import TailDiscoveryService
-from tail_jobs import TailDiscoveryJobManager
+from tail_discovery_manager import TailDiscoveryManager
 
 
 def configure_logging(log_file: Path) -> None:
@@ -75,8 +67,6 @@ class FlightPriceApplication:
             refresh_config=self.refresh_config,
             summary_store=self.run_summary,
         )
-        self.tail_queue_file = self.config.runtime_dir / "tail_discovery_queue.json"
-        self.tail_job_manager = TailDiscoveryJobManager(self.run_tail_discovery_blocking, self.repository)
         self.auto_query_worker = AutoQueryWorker(
             self,
             interval_hours=self.AUTO_QUERY_INTERVAL_HOURS,
@@ -89,12 +79,24 @@ class FlightPriceApplication:
             rebalance_auto_query=self.auto_query_worker.rebalance,
             auto_query_interval_hours=self.AUTO_QUERY_INTERVAL_HOURS,
         )
+        self.tail_discovery_manager = TailDiscoveryManager(
+            config=self.config,
+            config_manager=self.config_manager,
+            repository=self.repository,
+            run_lock=self._run_lock,
+            safe_batch_size=self.TAIL_DISCOVERY_SAFE_BATCH_SIZE,
+            on_finished=self._mark_run_summary_finished,
+        )
 
     def refresh_config(self) -> None:
         self.config = self.config_manager.load()
         self.report_service.refresh_config(self.config)
         self.browser_profile_service.refresh_config(self.config)
+        self.tail_discovery_manager.refresh_config(self.config)
         self.legacy_run_service.refresh_config(self.config)
+
+    def _mark_run_summary_finished(self, saved: int, errors: list[str]) -> None:
+        self.run_summary.finished(saved=saved, errors=errors)
 
     def save_credentials(self, provider: str, username: str, password: str) -> None:
         path = self.config_manager.save_credentials(provider, username, password)
@@ -206,153 +208,63 @@ class FlightPriceApplication:
     async def run_tail_discovery(
         self,
         payload: dict[str, Any],
-        progress_callback: Callable[[dict[str, Any]], None] | None = None,
-        cancel_checker: Callable[[], bool] | None = None,
-        verification_continue_checker: Callable[[], bool] | None = None,
+        progress_callback=None,
+        cancel_checker=None,
+        verification_continue_checker=None,
     ) -> dict[str, Any]:
         self.refresh_config()
-        service = TailDiscoveryService(
-            config=self.config,
-            config_manager=self.config_manager,
-            repository=self.repository,
-            run_lock=self._run_lock,
-            queue_file=self.tail_queue_file,
-            safe_batch_size=self.TAIL_DISCOVERY_SAFE_BATCH_SIZE,
-        )
-        summary = await service.run(
+        return await self.tail_discovery_manager.run_tail_discovery(
             payload,
             progress_callback=progress_callback,
             cancel_checker=cancel_checker,
             verification_continue_checker=verification_continue_checker,
         )
-        if not summary.get("running"):
-            self.run_summary.finished(saved=summary.get("saved", 0), errors=summary["errors"])
-        return summary
 
     def run_tail_discovery_blocking(
         self,
         payload: dict[str, Any],
-        progress_callback: Callable[[dict[str, Any]], None] | None = None,
-        cancel_checker: Callable[[], bool] | None = None,
-        verification_continue_checker: Callable[[], bool] | None = None,
+        progress_callback=None,
+        cancel_checker=None,
+        verification_continue_checker=None,
     ) -> dict[str, Any]:
-        return asyncio.run(
-            self.run_tail_discovery(
-                payload,
-                progress_callback=progress_callback,
-                cancel_checker=cancel_checker,
-                verification_continue_checker=verification_continue_checker,
-            )
+        self.refresh_config()
+        return self.tail_discovery_manager.run_tail_discovery_blocking(
+            payload,
+            progress_callback=progress_callback,
+            cancel_checker=cancel_checker,
+            verification_continue_checker=verification_continue_checker,
         )
 
     def submit_tail_discovery(self, payload: dict[str, Any]) -> dict[str, Any]:
-        return self.tail_job_manager.submit(payload)
+        self.refresh_config()
+        return self.tail_discovery_manager.submit_tail_discovery(payload)
 
     def tail_discovery_job(self, job_id: str) -> dict[str, Any]:
-        return self.tail_job_manager.get(job_id)
+        return self.tail_discovery_manager.tail_discovery_job(job_id)
 
     def cancel_tail_discovery_job(self, job_id: str) -> dict[str, Any]:
-        return self.tail_job_manager.cancel(job_id)
+        return self.tail_discovery_manager.cancel_tail_discovery_job(job_id)
 
     def continue_tail_discovery_job(self, job_id: str) -> dict[str, Any]:
-        return self.tail_job_manager.continue_after_verification(job_id)
+        return self.tail_discovery_manager.continue_tail_discovery_job(job_id)
 
     def retry_failed_tail_discovery_job(self, job_id: str) -> dict[str, Any]:
-        job = self.tail_job_manager.get(job_id)
-        payload = dict(job.get("payload") or {})
-        progress = job.get("progress") or {}
-        result = job.get("result") or {}
-        report = result.get("report") or progress
-        failed_codes = [
-            str(code).upper()
-            for code in report.get("failed_codes", [])
-            if str(code).strip()
-        ]
-        if not failed_codes:
-            failed_codes = [
-                str(item.get("destination") or "").upper()
-                for item in report.get("attempts", [])
-                if item.get("status") == "failed" and item.get("destination")
-            ]
-        failed_codes = list(dict.fromkeys([code for code in failed_codes if code]))
-        if not failed_codes:
-            raise ValueError("No failed destinations found for this job.")
-        payload["candidates"] = failed_codes
-        payload["retry_of"] = job_id
-        return self.tail_job_manager.submit(payload)
+        return self.tail_discovery_manager.retry_failed_tail_discovery_job(job_id)
 
     def latest_tail_discovery_job(self) -> dict[str, Any] | None:
-        return self.tail_job_manager.latest()
+        return self.tail_discovery_manager.latest_tail_discovery_job()
 
     def tail_discovery_jobs(self, limit: int = 20) -> list[dict[str, Any]]:
-        return self.tail_job_manager.list_recent(limit=limit)
+        return self.tail_discovery_manager.tail_discovery_jobs(limit=limit)
 
     def tail_discovery_attempts(self, job_id: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
-        return self.repository.fetch_tail_discovery_attempts(job_id=job_id, limit=limit)
+        return self.tail_discovery_manager.tail_discovery_attempts(job_id=job_id, limit=limit)
 
     def tail_discovery_candidates(self) -> dict[str, Any]:
-        return {
-            "default_codes": list(DEFAULT_TAIL_TEST_CODES),
-            "default_profiles": {
-                "DEFAULT": list(DEFAULT_TAIL_TEST_CODES),
-                "ALL_DOMESTIC": list(ALL_DOMESTIC_TAIL_CODES),
-                **{key: list(value) for key, value in AIRLINE_TAIL_DEFAULTS.items()},
-            },
-            "safe_batch_size": self.TAIL_DISCOVERY_SAFE_BATCH_SIZE,
-            "candidates": [item.to_dict() for item in TAIL_DESTINATIONS],
-        }
+        return self.tail_discovery_manager.tail_discovery_candidates()
 
     def tail_discovery_results(self, limit: int = 100) -> list[dict[str, Any]]:
-        from providers import ctrip_tail_parser
-
-        results = self.repository.fetch_tail_discovery_results(limit=limit)
-        for item in results:
-            raw_payload = item.get("raw_payload") if isinstance(item.get("raw_payload"), dict) else {}
-            if raw_payload:
-                item["detail_source"] = raw_payload.get("detail_source") or item.get("detail_source")
-                item["detail_quality"] = raw_payload.get("detail_quality") or item.get("detail_quality")
-                item["review_url"] = raw_payload.get("search_url") or raw_payload.get("url")
-                item["date_evidence"] = raw_payload.get("date_evidence") or {}
-                item["validation"] = raw_payload.get("validation") or {}
-            details = item.get("flight_details")
-            if (
-                isinstance(details, list)
-                and details
-                and self._tail_details_need_rebuild(details)
-            ):
-                source_text = next(
-                    (
-                        str(detail.get("row_text") or detail.get("summary_text") or "")
-                        for detail in details
-                        if isinstance(detail, dict) and (detail.get("row_text") or detail.get("summary_text"))
-                    ),
-                    "",
-                )
-                item["flight_details"] = ctrip_tail_parser.build_tail_details_from_text_block(
-                    source_text,
-                    origin=str(item.get("origin") or ""),
-                    transfer=str(item.get("transfer") or ""),
-                    destination=str(item.get("destination") or ""),
-                    departure_date=str(item.get("departure_date") or ""),
-                    cabin=str(item.get("cabin") or "economy_plus"),
-                )
-            item.pop("raw_payload", None)
-        return results
-
-    @staticmethod
-    def _tail_details_need_rebuild(details: list[Any]) -> bool:
-        if len(details) == 1 and isinstance(details[0], dict) and details[0].get("row_text"):
-            return True
-        for detail in details:
-            if not isinstance(detail, dict):
-                continue
-            airport_text = " ".join(
-                str(detail.get(key) or "")
-                for key in ["departure_airport", "arrival_airport"]
-            )
-            if any(token in airport_text for token in ["¥", "起", "订票", "中转组合购买须知"]):
-                return True
-        return False
+        return self.tail_discovery_manager.tail_discovery_results(limit=limit)
 
     def run_once_via_cli(self, provider_filter: str | None = None) -> dict[str, Any]:
         return self.legacy_run_service.run_once_via_cli(provider_filter=provider_filter)
@@ -419,219 +331,31 @@ class FlightPriceApplication:
 
     def browser_session_hints(self) -> list[dict[str, Any]]:
         return self.browser_profile_service.browser_session_hints()
-        if self.config.browser_backend != "chrome":
-            return []
-        from browser_session_manager import BrowserSessionManager
-
-        manager = BrowserSessionManager(self.config)
-        hints: list[dict[str, Any]] = []
-        for provider in self.config.providers.values():
-            if not provider.enabled:
-                continue
-            health = manager.chrome_profile_health(provider, "chrome")
-            if health.get("ok"):
-                continue
-            hints.append(
-                {
-                    "provider": provider.name,
-                    "backend": "chrome",
-                    "profile_path": health.get("profile_path"),
-                    "reason": health.get("reason"),
-                    "needs_login": True,
-                    "message": f"{provider.name} 的 Chrome 登录档案异常，已切换 recovery profile；下次查询可能需要重新登录。",
-                }
-            )
-        return hints
 
     def browser_session_diagnostics(self) -> dict[str, Any]:
         return self.browser_profile_service.browser_session_diagnostics()
-        from browser_session_manager import BrowserSessionManager
-
-        manager = BrowserSessionManager(self.config)
-        providers: list[dict[str, Any]] = []
-        for provider in self.config.providers.values():
-            if not provider.enabled:
-                continue
-            backend_order = manager.backend_names_for_provider(provider)
-            health = (
-                manager.chrome_profile_health(provider, "chrome")
-                if "chrome" in backend_order
-                else None
-            )
-            providers.append(
-                {
-                    "provider": provider.name,
-                    "backend_order": backend_order,
-                    "primary_backend": backend_order[0] if backend_order else None,
-                    "chrome_profile": health,
-                    "needs_login": bool(health and not health.get("ok")),
-                }
-            )
-        return {
-            "default_backend": self.config.browser_backend,
-            "fallbacks": list(self.config.browser_backend_fallbacks),
-            "providers": providers,
-            "hints": self.browser_session_hints(),
-        }
 
     def browser_profiles(self) -> dict[str, Any]:
         return self.browser_profile_service.browser_profiles()
-        from browser_session_manager import BrowserSessionManager
-
-        manager = BrowserSessionManager(self.config)
-        providers: list[dict[str, Any]] = []
-        attempts = self.repository.fetch_tail_discovery_attempts(limit=500)
-        snapshots = self.repository.fetch_snapshots()
-        for provider in self.config.providers.values():
-            if not provider.enabled:
-                continue
-            backend_order = manager.backend_names_for_provider(provider)
-            chrome_enabled = "chrome" in backend_order
-            health = manager.chrome_profile_health(provider, "chrome") if chrome_enabled else None
-            providers.append(
-                {
-                    "provider": provider.name,
-                    "backend_order": backend_order,
-                    "chrome_enabled": chrome_enabled,
-                    "storage_state_file": str(provider.storage_state_file),
-                    "storage_state_exists": provider.storage_state_file.exists(),
-                    "chrome_profile": health,
-                    "activity": self._profile_activity(provider.name, attempts, snapshots),
-                }
-            )
-        return {
-            "default_backend": self.config.browser_backend,
-            "fallbacks": list(self.config.browser_backend_fallbacks),
-            "providers": providers,
-        }
 
     def open_browser_profile(self, provider_name: str, *, profile: str | None = None) -> dict[str, Any]:
         return self.browser_profile_service.open_browser_profile(provider_name, profile=profile)
-        from backends.chrome import _find_system_chrome
-        from browser_session_manager import BrowserSessionManager
-
-        provider = self.config.providers.get(provider_name)
-        if not provider or not provider.enabled:
-            raise KeyError(provider_name)
-        manager = BrowserSessionManager(self.config)
-        profile_name = self._resolve_profile_name(manager, provider, profile)
-        profile_path = manager.persistent_profile_path_for_backend(provider, "chrome", profile_name)
-        profile_path.mkdir(parents=True, exist_ok=True)
-        chrome_path = _find_system_chrome()
-        if not chrome_path:
-            raise RuntimeError("System Chrome not found.")
-        subprocess.Popen(
-            [
-                chrome_path,
-                f"--user-data-dir={profile_path}",
-                "--no-first-run",
-                "--new-window",
-                provider.login_url or "https://flights.ctrip.com",
-            ],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        opened_at = self._now_iso()
-        if profile_name.endswith("-recovery"):
-            manager.set_chrome_profile_preference(provider.name, forced_profile="recovery", last_manual_opened_at=opened_at)
-        else:
-            manager.set_chrome_profile_preference(provider.name, forced_profile=None, last_manual_opened_at=opened_at)
-        return {"opened": True, "provider": provider.name, "profile_name": profile_name, "profile_path": str(profile_path)}
 
     def switch_browser_profile(self, provider_name: str, *, profile: str) -> dict[str, Any]:
         return self.browser_profile_service.switch_browser_profile(provider_name, profile=profile)
-        from browser_session_manager import BrowserSessionManager
-
-        provider = self.config.providers.get(provider_name)
-        if not provider or not provider.enabled:
-            raise KeyError(provider_name)
-        manager = BrowserSessionManager(self.config)
-        normalized = str(profile or "").strip().lower()
-        if normalized not in {"primary", "recovery"}:
-            raise ValueError("profile must be primary or recovery")
-        manager.set_chrome_profile_preference(
-            provider.name,
-            forced_profile="recovery" if normalized == "recovery" else None,
-        )
-        return self.browser_profiles()
 
     def reset_recovery_profile(self, provider_name: str) -> dict[str, Any]:
         return self.browser_profile_service.reset_recovery_profile(provider_name)
-        from browser_session_manager import BrowserSessionManager, CHROME_PROFILE_RECOVERY_SUFFIXES
 
-        provider = self.config.providers.get(provider_name)
-        if not provider or not provider.enabled:
-            raise KeyError(provider_name)
-        manager = BrowserSessionManager(self.config)
-        base_name = manager.profile_name_for_backend(provider, "chrome")
-        removed: list[str] = []
-        for suffix in CHROME_PROFILE_RECOVERY_SUFFIXES:
-            path = manager.persistent_profile_path_for_backend(provider, "chrome", f"{base_name}-{suffix}")
-            if path.exists():
-                shutil.rmtree(path)
-                removed.append(str(path))
-        manager.set_chrome_profile_preference(provider.name, forced_profile=None)
-        return {"removed": removed, "profiles": self.browser_profiles()}
-
-    def clean_browser_profile(self, provider_name: str, *, profile: str | None = None, switch_to_recovery: bool = False) -> dict[str, Any]:
+    def clean_browser_profile(
+        self,
+        provider_name: str,
+        *,
+        profile: str | None = None,
+        switch_to_recovery: bool = False,
+    ) -> dict[str, Any]:
         return self.browser_profile_service.clean_browser_profile(
             provider_name,
             profile=profile,
             switch_to_recovery=switch_to_recovery,
         )
-        from browser_session_manager import BrowserSessionManager
-
-        provider = self.config.providers.get(provider_name)
-        if not provider or not provider.enabled:
-            raise KeyError(provider_name)
-        manager = BrowserSessionManager(self.config)
-        profile_name = self._resolve_profile_name(manager, provider, profile or "selected")
-        result = manager.clean_chrome_profile_site_data(
-            provider,
-            "chrome",
-            profile_name=profile_name,
-            switch_to_recovery=switch_to_recovery,
-        )
-        return {**result, "profiles": self.browser_profiles()}
-
-    def _resolve_profile_name(self, manager: Any, provider: Any, profile: str | None) -> str:
-        base_name = manager.profile_name_for_backend(provider, "chrome")
-        normalized = str(profile or "selected").strip().lower()
-        if normalized == "primary":
-            return base_name
-        if normalized == "recovery":
-            return f"{base_name}-recovery"
-        return manager.selected_chrome_profile_name(provider, "chrome")
-
-    def _profile_activity(
-        self,
-        provider_name: str,
-        attempts: list[dict[str, Any]],
-        snapshots: list[dict[str, Any]],
-    ) -> dict[str, Any]:
-        provider_attempts = [item for item in attempts if item.get("provider") == provider_name]
-        provider_snapshots = [item for item in snapshots if item.get("provider") == provider_name]
-        latest_success = next((item for item in provider_attempts if item.get("status") == "matched"), None)
-        latest_verification = next(
-            (
-                item
-                for item in provider_attempts
-                if "verification" in str(item.get("phase") or item.get("error") or "").lower()
-                or item.get("status") == "needs_verification"
-            ),
-            None,
-        )
-        latest_failure = next((item for item in provider_attempts if item.get("status") == "failed"), None)
-        latest_snapshot = provider_snapshots[-1] if provider_snapshots else None
-        return {
-            "last_success_at": (latest_success or latest_snapshot or {}).get("observed_at"),
-            "last_verification_at": (latest_verification or {}).get("observed_at"),
-            "last_failure_at": (latest_failure or {}).get("observed_at"),
-            "last_failure_reason": (latest_failure or {}).get("error"),
-            "recent_attempts": len(provider_attempts),
-            "recent_failures": sum(1 for item in provider_attempts if item.get("status") == "failed"),
-        }
-
-    @staticmethod
-    def _now_iso() -> str:
-        return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")

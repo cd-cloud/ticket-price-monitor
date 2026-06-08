@@ -49,8 +49,8 @@ class CtripItineraryTests(unittest.TestCase):
             ],
         )
         details = [
-            {"segment_index": 1, "origin": "BJS", "destination": "CTU"},
-            {"segment_index": 2, "origin": "CTU", "destination": "SIN"},
+            {"segment_index": 1, "origin": "BJS", "destination": "CTU", "departure_date": "2026-06-01"},
+            {"segment_index": 2, "origin": "CTU", "destination": "SIN", "departure_date": "2026-06-02"},
         ]
 
         self.assertTrue(ctrip_itinerary.multi_city_details_are_direct(details, route))
