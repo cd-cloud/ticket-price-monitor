@@ -1,0 +1,384 @@
+{
+  "storage": {
+    "runtime_dir": "./runtime",
+    "output_dir": "./output",
+    "database_path": "./runtime/flight_prices.db",
+    "encrypted_credentials_path": "./runtime/credentials.enc.json",
+    "salt_file": "./runtime/master.salt",
+    "log_file": "./runtime/flight_tracker.log"
+  },
+  "defaults": {
+    "headless": false,
+    "automation_backend": "playwright",
+    "browser_backend": "chrome",
+    "browser_backend_fallbacks": [
+      "playwright"
+    ],
+    "browser_channel": null,
+    "locale": "zh-CN",
+    "currency": "CNY",
+    "min_delay_seconds": 3.0,
+    "max_delay_seconds": 7.0
+  },
+  "scheduler": {
+    "timezone": "Asia/Shanghai",
+    "interval_minutes": 360
+  },
+  "providers": {
+    "ctrip": {
+      "enabled": true,
+      "login_url": "https://passport.ctrip.com/user/login",
+      "search_url_template": "https://flights.ctrip.com/booking/{origin}-{destination}-day-1.html?ddate={departure_date}",
+      "storage_state_file": "./runtime/ctrip_state.json",
+      "timeout_ms": 45000,
+      "locale": "zh-CN",
+      "timezone": "Asia/Shanghai",
+      "min_delay_seconds": 4.0,
+      "max_delay_seconds": 8.0,
+      "selectors": {
+        "username": [
+          "input[placeholder*='手机号']",
+          "input[placeholder*='账号']",
+          "input[type='text']"
+        ],
+        "password": [
+          "input[placeholder*='密码']",
+          "input[type='password']"
+        ],
+        "submit": [
+          "button:has-text('登录')",
+          "input[type='submit']"
+        ],
+        "logged_in": [
+          "text=我的订单",
+          "text=退出登录",
+          "text=我的携程"
+        ],
+        "lowest_price": [
+          ".box-row .box-operate [class*='price']",
+          ".box-row [class*='price-detail']",
+          ".box-row span.price",
+          "[class*='price']"
+        ]
+      },
+      "extra_headers": {
+        "Accept-Language": "zh-CN,zh;q=0.9"
+      }
+    },
+    "priceline": {
+      "enabled": false,
+      "login_url": "https://www.priceline.com/",
+      "search_url_template": "https://www.priceline.com/flights/?from={origin}&to={destination}&depart={departure_date}&adults={passengers}&cabin={cabin}",
+      "storage_state_file": "./runtime/priceline_state.json",
+      "timeout_ms": 60000,
+      "locale": "en-US",
+      "timezone": "Asia/Shanghai",
+      "min_delay_seconds": 5.0,
+      "max_delay_seconds": 10.0,
+      "selectors": {
+        "origin": [
+          "input[name='flights.0.startLocation']",
+          "input[placeholder*='Departing from']",
+          "input[placeholder*='From']",
+          "input[placeholder*='Leaving']",
+          "input[aria-label*='From']",
+          "input[aria-label*='Leaving']"
+        ],
+        "destination": [
+          "input[name='flights.0.endLocation']",
+          "input[placeholder*='Going to']",
+          "input[placeholder*='To']",
+          "input[placeholder*='Going']",
+          "input[aria-label*='To']",
+          "input[aria-label*='Going']"
+        ],
+        "lowest_price": [
+          "[data-testid*='price']",
+          "[class*='price']",
+          "text=/\\$\\s*\\d+/"
+        ]
+      },
+      "extra_headers": {
+        "Accept-Language": "en-US,en;q=0.9"
+      }
+    },
+    "feizhu": {
+      "enabled": false,
+      "login_url": "https://login.taobao.com/",
+      "search_url_template": "https://sjipiao.fliggy.com/",
+      "storage_state_file": "./runtime/feizhu_state.json",
+      "timeout_ms": 60000,
+      "locale": "zh-CN",
+      "timezone": "Asia/Shanghai",
+      "min_delay_seconds": 5.0,
+      "max_delay_seconds": 10.0,
+      "selectors": {
+        "origin": [
+          "input[placeholder*='出发']",
+          "input[aria-label*='出发']"
+        ],
+        "destination": [
+          "input[placeholder*='到达']",
+          "input[placeholder*='目的']",
+          "input[aria-label*='到达']"
+        ],
+        "lowest_price": [
+          "[class*='price']",
+          "[class*='Price']",
+          "text=/[￥¥]\\s*\\d+/"
+        ]
+      },
+      "extra_headers": {
+        "Accept-Language": "zh-CN,zh;q=0.9"
+      }
+    },
+    "airchina": {
+      "enabled": false,
+      "login_url": "https://www.airchina.com.cn/cn/login/",
+      "search_url_template": "https://et.airchina.com.cn/InternetBooking/AirLowFareSearchExternal.do?tripType=OW&outboundOption.originLocationCode={origin}&outboundOption.destinationLocationCode={destination}&outboundOption.departureDay={departure_date}&guestTypes%5B0%5D.type=ADT&guestTypes%5B0%5D.amount={passengers}",
+      "storage_state_file": "./runtime/airchina_state.json",
+      "timeout_ms": 45000,
+      "locale": "zh-CN",
+      "timezone": "Asia/Shanghai",
+      "min_delay_seconds": 4.0,
+      "max_delay_seconds": 8.0,
+      "selectors": {
+        "username": [
+          "input[placeholder*='卡号']",
+          "input[placeholder*='手机号']",
+          "input[placeholder*='用户名']",
+          "input[type='text']"
+        ],
+        "password": [
+          "input[placeholder*='密码']",
+          "input[type='password']"
+        ],
+        "submit": [
+          "button:has-text('登录')",
+          "a:has-text('登录')",
+          "input[type='submit']"
+        ],
+        "logged_in": [
+          "text=我的账户",
+          "text=我的订单",
+          "text=退出"
+        ],
+        "lowest_price": [
+          "[class*='price']",
+          "[class*='fare']",
+          "text=/￥\\s*\\d+/"
+        ]
+      },
+      "extra_headers": {
+        "Accept-Language": "zh-CN,zh;q=0.9"
+      }
+    }
+  },
+  "routes": [
+    {
+      "origin": "SHA",
+      "destination": "PEK",
+      "departure_date": "2026-05-20",
+      "return_date": null,
+      "route_type": "one_way",
+      "cabin": "economy",
+      "transfer_policy": "any",
+      "passengers": 1,
+      "providers": [
+        "ctrip"
+      ],
+      "preferred_airlines": null,
+      "segments": null,
+      "auto_query_enabled": false,
+      "auto_query_interval_hours": 12,
+      "auto_query_next_run_at": null,
+      "group_id": null,
+      "group_label": null
+    },
+    {
+      "origin": "PEK",
+      "destination": "SIN",
+      "departure_date": "2026-05-01",
+      "return_date": "2026-05-03",
+      "route_type": "multi_city",
+      "cabin": "economy",
+      "transfer_policy": "any",
+      "passengers": 1,
+      "providers": [
+        "ctrip"
+      ],
+      "preferred_airlines": [
+        "CA"
+      ],
+      "segments": [
+        {
+          "origin": "PEK",
+          "destination": "CTU",
+          "departure_date": "2026-05-01"
+        },
+        {
+          "origin": "CTU",
+          "destination": "SIN",
+          "departure_date": "2026-05-03"
+        }
+      ],
+      "auto_query_enabled": false,
+      "auto_query_interval_hours": 12,
+      "auto_query_next_run_at": null,
+      "group_id": null,
+      "group_label": null
+    },
+    {
+      "origin": "BJS",
+      "destination": "PVG",
+      "departure_date": "2026-05-31",
+      "return_date": null,
+      "route_type": "one_way",
+      "cabin": "economy_plus",
+      "transfer_policy": "any",
+      "passengers": 1,
+      "providers": [
+        "feizhu"
+      ],
+      "preferred_airlines": null,
+      "segments": null,
+      "auto_query_enabled": false,
+      "auto_query_interval_hours": 12,
+      "auto_query_next_run_at": null,
+      "group_id": null,
+      "group_label": null
+    },
+    {
+      "origin": "PUS",
+      "destination": "BCN",
+      "departure_date": "2026-11-14",
+      "return_date": "2026-11-20",
+      "route_type": "one_way",
+      "cabin": "economy_plus",
+      "transfer_policy": "any",
+      "passengers": 1,
+      "providers": [
+        "ctrip"
+      ],
+      "preferred_airlines": [
+        "CA"
+      ],
+      "segments": null,
+      "auto_query_enabled": false,
+      "auto_query_interval_hours": 12,
+      "auto_query_next_run_at": null,
+      "group_id": "rg_ba6b14fcb0c2",
+      "group_label": "韩国往返欧洲"
+    },
+    {
+      "origin": "PUS",
+      "destination": "MIL",
+      "departure_date": "2026-11-14",
+      "return_date": "2026-11-20",
+      "route_type": "one_way",
+      "cabin": "economy_plus",
+      "transfer_policy": "any",
+      "passengers": 1,
+      "providers": [
+        "ctrip"
+      ],
+      "preferred_airlines": [
+        "CA"
+      ],
+      "segments": null,
+      "auto_query_enabled": false,
+      "auto_query_interval_hours": 12,
+      "auto_query_next_run_at": null,
+      "group_id": "rg_ba6b14fcb0c2",
+      "group_label": "韩国往返欧洲"
+    },
+    {
+      "origin": "PUS",
+      "destination": "ATH",
+      "departure_date": "2026-11-14",
+      "return_date": "2026-11-20",
+      "route_type": "one_way",
+      "cabin": "economy_plus",
+      "transfer_policy": "any",
+      "passengers": 1,
+      "providers": [
+        "ctrip"
+      ],
+      "preferred_airlines": [
+        "CA"
+      ],
+      "segments": null,
+      "auto_query_enabled": false,
+      "auto_query_interval_hours": 12,
+      "auto_query_next_run_at": null,
+      "group_id": "rg_ba6b14fcb0c2",
+      "group_label": "韩国往返欧洲"
+    },
+    {
+      "origin": "SEL",
+      "destination": "BCN",
+      "departure_date": "2026-11-14",
+      "return_date": "2026-11-20",
+      "route_type": "one_way",
+      "cabin": "economy_plus",
+      "transfer_policy": "any",
+      "passengers": 1,
+      "providers": [
+        "ctrip"
+      ],
+      "preferred_airlines": [
+        "CA"
+      ],
+      "segments": null,
+      "auto_query_enabled": false,
+      "auto_query_interval_hours": 12,
+      "auto_query_next_run_at": null,
+      "group_id": "rg_ba6b14fcb0c2",
+      "group_label": "韩国往返欧洲"
+    },
+    {
+      "origin": "SEL",
+      "destination": "MIL",
+      "departure_date": "2026-11-14",
+      "return_date": "2026-11-20",
+      "route_type": "one_way",
+      "cabin": "economy_plus",
+      "transfer_policy": "any",
+      "passengers": 1,
+      "providers": [
+        "ctrip"
+      ],
+      "preferred_airlines": [
+        "CA"
+      ],
+      "segments": null,
+      "auto_query_enabled": false,
+      "auto_query_interval_hours": 12,
+      "auto_query_next_run_at": null,
+      "group_id": "rg_ba6b14fcb0c2",
+      "group_label": "韩国往返欧洲"
+    },
+    {
+      "origin": "SEL",
+      "destination": "ATH",
+      "departure_date": "2026-11-14",
+      "return_date": "2026-11-20",
+      "route_type": "one_way",
+      "cabin": "economy_plus",
+      "transfer_policy": "any",
+      "passengers": 1,
+      "providers": [
+        "ctrip"
+      ],
+      "preferred_airlines": [
+        "CA"
+      ],
+      "segments": null,
+      "auto_query_enabled": false,
+      "auto_query_interval_hours": 12,
+      "auto_query_next_run_at": null,
+      "group_id": "rg_ba6b14fcb0c2",
+      "group_label": "韩国往返欧洲"
+    }
+  ]
+}

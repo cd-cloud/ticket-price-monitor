@@ -1,0 +1,7 @@
+# Optional browser-use backend. Install with Python 3.12+:
+# py -3.12 -m pip install -r requirements.txt -r requirements-browser-use.txt
+browser-use==0.12.6
+
+# Optional parsing/diagnostic fallbacks. The app still runs without these.
+trafilatura==2.0.0
+pydantic-ai==0.0.12

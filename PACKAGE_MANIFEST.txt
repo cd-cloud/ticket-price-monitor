@@ -1,0 +1,9 @@
+﻿Flight Price Tracker clean package
+Created: 2026-05-13T14:12:46
+Source: C:\Users\x1462\Documents\Playground\travel-price-watch\scripts\flight_price_tracker
+Excluded from release packages: .env, config.json, runtime/, output/, caches, pyc/pyo files
+Local setup: run `python main.py init-config` after unpacking to create config.json.
+Validation before package:
+- py -3.12 -m unittest discover tests: OK, 31 tests
+- py -3.12 -m compileall .: OK
+- py -3.12 -m pip check: OK

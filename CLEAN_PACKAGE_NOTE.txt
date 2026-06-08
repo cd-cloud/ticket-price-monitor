@@ -1,0 +1,4 @@
+﻿Packaged at: 2026-05-15 10:55:43
+Source: E:\playground\travel-price-monitor\flight_price_tracker_clean_20260513
+Excluded: config.json, runtime, output, browseruse, __pycache__, .pytest_cache, logs, databases, traces, diagnostics, screenshots
+After unpacking, run `python main.py init-config` to create a local config.json.

@@ -1,0 +1,12 @@
+.env
+.env.*
+!.env.example
+config.json
+runtime/
+output/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/

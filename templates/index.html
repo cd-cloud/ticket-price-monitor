@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Flight Price Tracker</title>
+    <link rel="stylesheet" href="/static/app.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <section class="hero">
+        <div>
+          <p class="eyebrow">Local Dashboard</p>
+          <h1>航班价格监控</h1>
+          <p class="subcopy">在本地浏览器里管理航线、筛选任务、查看最新查询结果，并手动或自动触发查询。</p>
+        </div>
+        <div class="actions">
+          <button id="runAllBtn" class="primary">立即查询全部</button>
+          <button id="reportBtn" class="secondary">刷新报告</button>
+          <a class="secondary linkish" href="{{ csv_url }}">下载 CSV</a>
+        </div>
+      </section>
+
+      <section class="grid route-grid">
+        <div class="panel">
+          <div class="panel-head">
+            <h2>查询航线</h2>
+            <button id="resetRouteBtn" class="ghost">清空表单</button>
+          </div>
+          <form id="routeForm" class="route-form" novalidate>
+            <input type="hidden" id="previousRouteKey" />
+            <input type="hidden" id="previousGroupId" />
+
+            <label>
+              行程类型
+              <select id="routeTypeSelect" name="route_type">
+                <option value="one_way">单程/往返</option>
+                <option value="multi_city">多程</option>
+              </select>
+            </label>
+
+            <label data-single-route-field data-base-location-field>
+              出发地
+              <input id="originInput" name="origin" data-airport-input placeholder="如 北京 / PEK" autocomplete="off" required />
+            </label>
+
+            <label data-single-route-field data-base-location-field>
+              目的地
+              <input id="destinationInput" name="destination" data-airport-input placeholder="如 上海 / SHA / SIN" autocomplete="off" required />
+            </label>
+
+            <label data-single-route-field>
+              出发日期
+              <input id="departureDateInput" name="departure_date" type="date" required />
+            </label>
+
+            <label data-single-route-field>
+              返回日期
+              <input id="returnDateInput" name="return_date" type="date" />
+            </label>
+
+            <fieldset class="span-2 route-group-fieldset">
+              <legend>多城市组合</legend>
+              <label class="inline-toggle">
+                <input id="routeGroupEnabled" type="checkbox" />
+                <span>把多个出发地/目的地展开成一组查询</span>
+              </label>
+              <div id="routeGroupPanel" class="route-group-panel" hidden>
+                <label>
+                  组名
+                  <input id="routeGroupLabelInput" placeholder="如 韩国往返欧洲 / 北京去欧洲多城市" />
+                </label>
+                <label data-single-route-field>
+                  多个出发地
+                  <input id="originOptionsInput" placeholder="SEL/PUS/CJU 或 首尔、釜山、济州" />
+                </label>
+                <label data-single-route-field>
+                  多个目的地
+                  <input id="destinationOptionsInput" placeholder="PAR,BCN 或 巴黎、巴塞罗那" />
+                </label>
+                <label>
+                  展开方式
+                  <select id="expansionModeSelect">
+                    <option value="cartesian">全部组合</option>
+                    <option value="paired">按顺序配对</option>
+                  </select>
+                </label>
+                <div id="routeExpansionPreview" class="route-expansion-preview"></div>
+              </div>
+            </fieldset>
+
+            <label>
+              舱位
+              <select id="cabinSelect" name="cabin"></select>
+            </label>
+
+            <label>
+              中转条件
+              <select id="transferPolicySelect" name="transfer_policy">
+                <option value="any">可中转</option>
+                <option value="direct_only">仅直飞</option>
+                <option value="transfer_only">仅中转</option>
+              </select>
+            </label>
+
+            <label>
+              人数
+              <input id="passengersInput" name="passengers" type="number" min="1" max="9" value="1" required />
+            </label>
+
+            <label class="span-2">
+              航司偏好
+              <input id="airlinesInput" name="preferred_airlines" placeholder="可填 CA,MU,CZ，用逗号分隔；留空为不限" />
+            </label>
+
+            <div id="multiCityBuilder" class="span-2 segment-builder" hidden>
+              <div class="segment-builder-head">
+                <div>
+                  <strong>多程分段</strong>
+                  <p class="muted">像携程多程查询一样逐段填写。每一程包含出发地、目的地和出发日期。</p>
+                </div>
+                <button id="addSegmentBtn" class="ghost" type="button">+ 再加一程</button>
+              </div>
+              <div id="segmentRows" class="segment-rows"></div>
+            </div>
+
+            <fieldset class="span-2 provider-fieldset">
+              <legend>查询平台</legend>
+              <div id="providerCheckboxes" class="provider-options"></div>
+            </fieldset>
+
+            <div class="span-2 form-actions">
+              <button type="submit" class="primary">保存航线</button>
+            </div>
+          </form>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head">
+            <h2>已配置航线</h2>
+            <span class="muted">可单独开启 12h 自动查询</span>
+          </div>
+          <div id="routeList" class="route-list"></div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <h2>任务与筛选</h2>
+          <button id="reloadBtn" class="ghost">刷新数据</button>
+        </div>
+        <div class="filters">
+          <label>
+            平台
+            <select id="providerFilter">
+              <option value="">全部</option>
+            </select>
+          </label>
+          <label>
+            舱位
+            <select id="cabinFilter">
+              <option value="">全部</option>
+            </select>
+          </label>
+          <label class="filter-search">
+            航线关键词
+            <input id="routeSearchInput" placeholder="如 PEK、SHA、SIN、北京" />
+          </label>
+        </div>
+        <div class="task-summary" id="taskSummary"></div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>状态</th>
+                <th>平台</th>
+                <th>航线</th>
+                <th>日期</th>
+                <th>筛选</th>
+                <th>最新价格</th>
+                <th>最新查询时间</th>
+                <th>最低价航班</th>
+                <th>自动查询</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody id="taskTableBody"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="grid log-workspace">
+        <div class="panel">
+          <div class="panel-head">
+            <h2>最近日志</h2>
+            <button id="reloadLogBtn" class="ghost">刷新日志</button>
+          </div>
+          <pre id="logBox">加载中...</pre>
+        </div>
+      </section>
+    </main>
+
+    <template id="segmentRowTemplate">
+      <div class="segment-row">
+        <div class="segment-number"></div>
+        <label>
+          出发地
+          <input class="segment-origin" data-airport-input placeholder="PEK 或 SEL/PUS/CJU" autocomplete="off" />
+        </label>
+        <label>
+          目的地
+          <input class="segment-destination" data-airport-input placeholder="BJS 或 ATH/MIL/ROM/PAR" autocomplete="off" />
+        </label>
+        <label>
+          出发日期
+          <input class="segment-date" type="date" />
+        </label>
+        <button class="ghost danger segment-remove" type="button">删除</button>
+      </div>
+    </template>
+
+    <script src="/static/airport_data.js?v={{ static_version }}"></script>
+    <script src="/static/airport_ui.js?v={{ static_version }}"></script>
+    <script src="/static/app.js?v={{ static_version }}"></script>
+  </body>
+</html>
