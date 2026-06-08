@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from config_manager import ConfigManager
+from browser_profile_service import BrowserProfileService
 from dashboard_builder import build_dashboard_payload
 from data_storage import PriceRepository
 from legacy_run_service import LegacyRunService
@@ -58,6 +59,7 @@ class FlightPriceApplication:
         self.repository = PriceRepository(self.config.database_path)
         self.repository.initialize()
         self.report_service = ReportService(config=self.config, repository=self.repository)
+        self.browser_profile_service = BrowserProfileService(config=self.config, repository=self.repository)
         self._run_lock = threading.Lock()
         self.run_summary = RunSummaryStore()
         self.legacy_run_service = LegacyRunService(
@@ -91,6 +93,7 @@ class FlightPriceApplication:
     def refresh_config(self) -> None:
         self.config = self.config_manager.load()
         self.report_service.refresh_config(self.config)
+        self.browser_profile_service.refresh_config(self.config)
         self.legacy_run_service.refresh_config(self.config)
 
     def save_credentials(self, provider: str, username: str, password: str) -> None:
@@ -411,10 +414,11 @@ class FlightPriceApplication:
             last_run_summary=self.run_summary.get(),
             auto_query_interval_hours=self.AUTO_QUERY_INTERVAL_HOURS,
             auto_query_min_gap_minutes=self.AUTO_QUERY_MIN_GAP_MINUTES,
-            session_hints=self.browser_session_hints(),
+            session_hints=self.browser_profile_service.browser_session_hints(),
         )
 
     def browser_session_hints(self) -> list[dict[str, Any]]:
+        return self.browser_profile_service.browser_session_hints()
         if self.config.browser_backend != "chrome":
             return []
         from browser_session_manager import BrowserSessionManager
@@ -440,6 +444,7 @@ class FlightPriceApplication:
         return hints
 
     def browser_session_diagnostics(self) -> dict[str, Any]:
+        return self.browser_profile_service.browser_session_diagnostics()
         from browser_session_manager import BrowserSessionManager
 
         manager = BrowserSessionManager(self.config)
@@ -470,6 +475,7 @@ class FlightPriceApplication:
         }
 
     def browser_profiles(self) -> dict[str, Any]:
+        return self.browser_profile_service.browser_profiles()
         from browser_session_manager import BrowserSessionManager
 
         manager = BrowserSessionManager(self.config)
@@ -500,6 +506,7 @@ class FlightPriceApplication:
         }
 
     def open_browser_profile(self, provider_name: str, *, profile: str | None = None) -> dict[str, Any]:
+        return self.browser_profile_service.open_browser_profile(provider_name, profile=profile)
         from backends.chrome import _find_system_chrome
         from browser_session_manager import BrowserSessionManager
 
@@ -532,6 +539,7 @@ class FlightPriceApplication:
         return {"opened": True, "provider": provider.name, "profile_name": profile_name, "profile_path": str(profile_path)}
 
     def switch_browser_profile(self, provider_name: str, *, profile: str) -> dict[str, Any]:
+        return self.browser_profile_service.switch_browser_profile(provider_name, profile=profile)
         from browser_session_manager import BrowserSessionManager
 
         provider = self.config.providers.get(provider_name)
@@ -548,6 +556,7 @@ class FlightPriceApplication:
         return self.browser_profiles()
 
     def reset_recovery_profile(self, provider_name: str) -> dict[str, Any]:
+        return self.browser_profile_service.reset_recovery_profile(provider_name)
         from browser_session_manager import BrowserSessionManager, CHROME_PROFILE_RECOVERY_SUFFIXES
 
         provider = self.config.providers.get(provider_name)
@@ -565,6 +574,11 @@ class FlightPriceApplication:
         return {"removed": removed, "profiles": self.browser_profiles()}
 
     def clean_browser_profile(self, provider_name: str, *, profile: str | None = None, switch_to_recovery: bool = False) -> dict[str, Any]:
+        return self.browser_profile_service.clean_browser_profile(
+            provider_name,
+            profile=profile,
+            switch_to_recovery=switch_to_recovery,
+        )
         from browser_session_manager import BrowserSessionManager
 
         provider = self.config.providers.get(provider_name)

@@ -13,6 +13,11 @@ class ConfigManagerTests(unittest.TestCase):
         self.assertEqual("VVO", normalize_airport_code("海参崴"))
         self.assertEqual("VVO", normalize_airport_code("符拉迪沃斯托克"))
 
+    def test_normalize_airport_code_supports_clean_airport_suffixes(self) -> None:
+        self.assertEqual("PEK", normalize_airport_code("首都国际机场"))
+        self.assertEqual("PVG", normalize_airport_code("浦东机场"))
+        self.assertEqual("CTU", normalize_airport_code("成都双机场"))
+
     def test_explicit_config_uses_sibling_env_by_default(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             config_path = Path(tmp_dir) / "config.json"

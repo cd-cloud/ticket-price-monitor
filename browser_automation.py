@@ -10,6 +10,13 @@ from typing import Callable
 from urllib.parse import quote
 
 from playwright.async_api import BrowserContext, Page, TimeoutError
+from browser_query_result import OfferDetails, QueryResult, build_query_result
+from browser_retry_policy import (
+    looks_like_ctrip_profile_pollution,
+    looks_like_no_fare,
+    looks_like_rate_limit,
+    should_stop_after_no_fare,
+)
 
 from browser_session_policy import (
     BrowserSessionArtifact,
@@ -200,49 +207,25 @@ class BrowserAutomation:
                 await attach_response_listeners(page, response_store)
                 await self.login(provider_name, page=page, context=context)
                 outcome = await self._query_provider_with_handler(provider, route, page, response_store)
-                raw_payload = {
-                    "automation_backend": self.automation_backend,
-                    **session_metadata.to_payload(),
-                    "backend_attempts": [*errors, f"{backend_name}: ok"],
-                    "browser_use": {
-                        "available": self.browser_use_adapter.status.available,
-                        "reason": self.browser_use_adapter.status.reason,
-                        "config_dir": self.browser_use_adapter.status.config_dir,
-                    },
-                    "search_url": outcome.final_url,
-                    "title": outcome.title,
-                    "route_type": route.route_type,
-                    "best_offer": {
-                        "price": outcome.price,
-                        "departure_time": outcome.departure_time,
-                        "row_text": outcome.row_text,
-                    },
-                    "captured_at": datetime.utcnow().isoformat() + "Z",
-                    "network_hits": response_store[-20:],
-                }
-                raw_payload.update(outcome.extra_payload)
-                if outcome.flight_details:
-                    raw_payload["flight_details"] = outcome.flight_details
-                return QueryResult(
-                    provider=provider_name,
+                result = build_query_result(
+                    provider_name=provider_name,
                     route=route,
-                    price=outcome.price,
-                    currency="USD" if provider_name == "priceline" else self.app_config.default_currency,
-                    observed_at=datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
-                    notes=[
-                        f"local browser automation via {self.automation_backend}",
-                        self.browser_use_adapter.backend_note,
-                        f"provider={provider_name}",
-                        f"browser_backend={session_metadata.browser_backend}",
-                        f"final_url={outcome.final_url}",
-                    ],
-                    raw_payload=raw_payload,
+                    outcome=outcome,
+                    session_metadata=session_metadata,
+                    response_store=response_store,
+                    automation_backend=self.automation_backend,
+                    browser_use_status=self.browser_use_adapter.status,
+                    browser_use_note=self.browser_use_adapter.backend_note,
+                    default_currency=self.app_config.default_currency,
+                    include_browser_backend_note=True,
                 )
+                result.raw_payload["backend_attempts"] = [*errors, f"{backend_name}: ok"]
+                return result
             except Exception as exc:
                 message = f"{backend_name}: {exc}"
                 errors.append(message)
                 LOGGER.warning("query provider=%s route=%s backend=%s failed: %s", provider_name, route.route_key, backend_name, exc)
-                if self._looks_like_ctrip_profile_pollution(provider_name, backend_name, exc) and not profile_retry_used:
+                if looks_like_ctrip_profile_pollution(provider_name, backend_name, exc) and not profile_retry_used:
                     polluted_profile_name = self.session_manager.profile_name_for_context(context)
                     retry_current_backend = True
                     profile_retry_used = True
@@ -253,10 +236,10 @@ class BrowserAutomation:
                         backend_name,
                         polluted_profile_name or "selected",
                     )
-                elif self._looks_like_rate_limit(exc):
+                elif looks_like_rate_limit(exc):
                     LOGGER.warning("rate-limit signal detected for provider=%s; aborting backend retries", provider_name)
                     break
-                elif self._looks_like_no_fare(exc) and self._should_stop_after_no_fare(
+                elif looks_like_no_fare(exc) and should_stop_after_no_fare(
                     provider_name,
                     route,
                     attempt_index,
@@ -292,41 +275,17 @@ class BrowserAutomation:
             await attach_response_listeners(page, response_store)
             await self.login(provider_name, page=page, context=context)
             outcome = await self._query_provider_with_handler(provider, route, page, response_store)
-            raw_payload = {
-                "automation_backend": self.automation_backend,
-                **session_metadata.to_payload(),
-                "browser_use": {
-                    "available": self.browser_use_adapter.status.available,
-                    "reason": self.browser_use_adapter.status.reason,
-                    "config_dir": self.browser_use_adapter.status.config_dir,
-                },
-                "search_url": outcome.final_url,
-                "title": outcome.title,
-                "route_type": route.route_type,
-                "best_offer": {
-                    "price": outcome.price,
-                    "departure_time": outcome.departure_time,
-                    "row_text": outcome.row_text,
-                },
-                "captured_at": datetime.utcnow().isoformat() + "Z",
-                "network_hits": response_store[-20:],
-            }
-            raw_payload.update(outcome.extra_payload)
-            if outcome.flight_details:
-                raw_payload["flight_details"] = outcome.flight_details
-            return QueryResult(
-                provider=provider_name,
+            return build_query_result(
+                provider_name=provider_name,
                 route=route,
-                price=outcome.price,
-                currency="USD" if provider_name == "priceline" else self.app_config.default_currency,
-                observed_at=datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
-                notes=[
-                    f"local browser automation via {self.automation_backend}",
-                    self.browser_use_adapter.backend_note,
-                    f"provider={provider_name}",
-                    f"final_url={outcome.final_url}",
-                ],
-                raw_payload=raw_payload,
+                outcome=outcome,
+                session_metadata=session_metadata,
+                response_store=response_store,
+                automation_backend=self.automation_backend,
+                browser_use_status=self.browser_use_adapter.status,
+                browser_use_note=self.browser_use_adapter.backend_note,
+                default_currency=self.app_config.default_currency,
+                include_browser_backend_note=False,
             )
         finally:
             await self._close_context_quietly(context)

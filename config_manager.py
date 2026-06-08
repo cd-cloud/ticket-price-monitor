@@ -11,6 +11,7 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from dotenv import load_dotenv
 
+from airport_aliases import CLEAN_AIRPORT_ALIAS_CODE_MAP
 from providers.registry import provider_definition
 
 
@@ -479,6 +480,35 @@ def normalize_airport_code(value: Any) -> str:
         compact.replace(" ", "").lower(),
     ]
     for candidate in alias_candidates:
+        code = AIRPORT_ALIAS_CODE_MAP.get(candidate)
+        if code:
+            return code
+    return text.upper()
+
+
+def normalize_airport_code(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if len(text) == 3 and text.isascii() and text.isalpha():
+        return text.upper()
+
+    compact = text
+    for suffix in ["国际机场", "机场", "國際機場", "機場", "鍥介檯鏈哄満", "鏈哄満"]:
+        compact = compact.replace(suffix, "")
+    compact = compact.strip()
+    alias_candidates = [
+        text,
+        compact,
+        text.lower(),
+        compact.lower(),
+        text.replace(" ", "").lower(),
+        compact.replace(" ", "").lower(),
+    ]
+    for candidate in alias_candidates:
+        code = CLEAN_AIRPORT_ALIAS_CODE_MAP.get(candidate)
+        if code:
+            return code
         code = AIRPORT_ALIAS_CODE_MAP.get(candidate)
         if code:
             return code

@@ -4,6 +4,7 @@
 config.json
 runtime/
 output/
+.tmp/
 __pycache__/
 *.pyc
 *.pyo

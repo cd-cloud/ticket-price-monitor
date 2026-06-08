@@ -9,6 +9,7 @@ from app_service import FlightPriceApplication
 from backends import known_backend_names
 from config_manager import ConfigManager
 from internal_smoke_test import run_internal_smoke_test
+from local_smoke_test import run_local_smoke_test
 from providers.registry import CLI_PROVIDER_CHOICES
 from web_ui import create_app
 
@@ -77,6 +78,11 @@ def build_parser() -> argparse.ArgumentParser:
     smoke_cmd.add_argument("--timezone", default="Asia/Shanghai")
     smoke_cmd.add_argument("--viewport", default="1365x900")
     smoke_cmd.add_argument("--access-service-token-env", default="CF_ACCESS_CLIENT_ID,CF_ACCESS_CLIENT_SECRET")
+
+    local_smoke_cmd = subparsers.add_parser("local-smoke-test", help="Run deterministic local smoke checks")
+    local_smoke_cmd.add_argument("--output-dir", default="./runtime/local_smoke_tests")
+    local_smoke_cmd.add_argument("--timeout-seconds", type=int, default=30)
+    local_smoke_cmd.add_argument("--keep-temp", action="store_true")
     return parser
 
 
@@ -133,6 +139,8 @@ def main() -> int:
         return 0
     if args.command == "internal-smoke-test":
         return asyncio.run(run_internal_smoke_test(args))
+    if args.command == "local-smoke-test":
+        return run_local_smoke_test(args)
     parser.print_help()
     return 1
 

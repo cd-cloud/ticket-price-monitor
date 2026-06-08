@@ -18,7 +18,7 @@ def write_config(path: Path, *, include_group_routes: bool = False) -> None:
         {
             "origin": "SHA",
             "destination": "PEK",
-            "departure_date": "2026-06-01",
+            "departure_date": "2099-01-01",
             "cabin": "economy",
             "passengers": 1,
             "providers": ["ctrip", "disabled"],
@@ -30,7 +30,7 @@ def write_config(path: Path, *, include_group_routes: bool = False) -> None:
                 {
                     "origin": "SEL",
                     "destination": "PAR",
-                    "departure_date": "2026-06-01",
+                    "departure_date": "2099-01-01",
                     "cabin": "economy",
                     "passengers": 1,
                     "providers": ["ctrip"],
@@ -40,7 +40,7 @@ def write_config(path: Path, *, include_group_routes: bool = False) -> None:
                 {
                     "origin": "CJU",
                     "destination": "BCN",
-                    "departure_date": "2026-06-01",
+                    "departure_date": "2099-01-01",
                     "cabin": "economy",
                     "passengers": 1,
                     "providers": ["ctrip"],
@@ -217,7 +217,7 @@ class QueryServiceTests(unittest.TestCase):
             config_path = Path(tmp_dir) / "config.json"
             write_config(config_path)
             payload = json.loads(config_path.read_text(encoding="utf-8"))
-            payload["routes"][0]["departure_date"] = "2026-05-01"
+            payload["routes"][0]["departure_date"] = "2000-01-01"
             config_path.write_text(json.dumps(payload), encoding="utf-8")
             service, repository, _summaries = self.make_service(config_path)
 
@@ -331,7 +331,7 @@ class QueryServiceTests(unittest.TestCase):
             self.assertEqual(result["saved"], 2)
             self.assertEqual(result["errors"], [])
             self.assertEqual(
-                {"SEL|PAR|2026-06-01||economy|any|1", "CJU|BCN|2026-06-01||economy|any|1"},
+                {"SEL|PAR|2099-01-01||economy|any|1", "CJU|BCN|2099-01-01||economy|any|1"},
                 {item["route_key"] for item in snapshots},
             )
             self.assertEqual(summaries[0]["running"], True)
