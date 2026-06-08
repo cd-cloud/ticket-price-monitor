@@ -1137,6 +1137,140 @@ textarea {
   margin-bottom: 16px;
 }
 
+.run-progress-summary,
+.result-change-summary {
+  display: grid;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.run-progress-card,
+.change-summary-card {
+  display: grid;
+  gap: 10px;
+  padding: 14px 16px;
+  border: 1px solid rgba(45, 60, 53, 0.1);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.62);
+}
+
+.run-progress-card.active {
+  border-color: rgba(15, 118, 110, 0.22);
+  background: rgba(15, 118, 110, 0.07);
+}
+
+.progress-head,
+.change-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+}
+
+.progress-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: rgba(15, 118, 110, 0.12);
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.progress-track {
+  height: 10px;
+  border-radius: 999px;
+  background: rgba(45, 60, 53, 0.12);
+  overflow: hidden;
+}
+
+.progress-bar {
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--accent), #14b8a6);
+  transition: width 0.25s ease;
+}
+
+.progress-kpis,
+.change-kpis {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.progress-kpis div,
+.change-kpis div {
+  display: grid;
+  gap: 4px;
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.progress-log,
+.change-list {
+  display: grid;
+  gap: 8px;
+}
+
+.progress-log-item,
+.change-item {
+  display: grid;
+  gap: 4px;
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.78);
+}
+
+.change-item.down strong { color: #0f766e; }
+.change-item.up strong { color: #b45309; }
+.change-item.same strong { color: #475569; }
+.change-item.new strong { color: #2563eb; }
+
+.price-cell {
+  display: grid;
+  gap: 6px;
+}
+
+.price-change-pill {
+  display: inline-flex;
+  width: fit-content;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 9px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.price-change-pill.down {
+  background: rgba(15, 118, 110, 0.12);
+  color: #0f766e;
+}
+
+.price-change-pill.up {
+  background: rgba(180, 83, 9, 0.12);
+  color: #b45309;
+}
+
+.price-change-pill.same {
+  background: rgba(71, 85, 105, 0.12);
+  color: #475569;
+}
+
+.price-change-pill.new {
+  background: rgba(37, 99, 235, 0.12);
+  color: #1d4ed8;
+}
+
+.change-columns {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
 .summary-card {
   display: grid;
   gap: 4px;
@@ -1440,7 +1574,10 @@ pre {
   .route-form,
   .tail-form,
   .filters,
-  .task-summary {
+  .task-summary,
+  .progress-kpis,
+  .change-kpis,
+  .change-columns {
     grid-template-columns: 1fr;
   }
 

@@ -5,7 +5,7 @@ import importlib
 import logging
 import random
 import threading
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from typing import Any, Callable
 
 from config_manager import AppConfig, ConfigManager, RouteQuery
@@ -202,19 +202,63 @@ class QueryService:
         credentials = self.config_manager.load_credentials(allow_missing=True)
         saved = 0
         errors: list[str] = []
+        targets = list(self._iter_query_targets(config, routes, provider_filter=provider_filter))
+        total_targets = len(targets)
+        completed_targets = 0
+        saved_pairs: list[dict[str, Any]] = []
+        recent_successes: list[dict[str, Any]] = []
+        recent_failures: list[dict[str, Any]] = []
+        started_at = self._now_iso()
+        self._set_summary(
+            {
+                "running": True,
+                "saved": 0,
+                "errors": [],
+                "completed_targets": 0,
+                "total_targets": total_targets,
+                "current_target": None,
+                "started_at": started_at,
+                "finished_at": None,
+                "saved_pairs": [],
+                "recent_successes": [],
+                "recent_failures": [],
+            }
+        )
         if provider_filter == "feizhu":
-            saved = await self._query_cli_provider_routes(config, routes, errors, provider_filter)
+            (
+                saved,
+                completed_targets,
+                saved_pairs,
+                recent_successes,
+                recent_failures,
+            ) = await self._query_cli_provider_routes(
+                config,
+                targets,
+                errors,
+                provider_filter,
+                total_targets=total_targets,
+            )
         else:
             try:
                 automation_context = self.automation_factory(config, credentials)
                 if backend_override and hasattr(automation_context, "backend_override"):
                     automation_context.backend_override = backend_override
                 async with automation_context as automation:
-                    for route, provider_name, provider_cfg in self._iter_query_targets(
-                        config,
-                        routes,
-                        provider_filter=provider_filter,
-                    ):
+                    for route, provider_name, provider_cfg in targets:
+                        self._set_summary(
+                            {
+                                **self.last_run_summary,
+                                "running": True,
+                                "current_target": self._target_payload(route, provider_name),
+                                "completed_targets": completed_targets,
+                                "total_targets": total_targets,
+                                "saved": saved,
+                                "errors": list(errors),
+                                "saved_pairs": list(saved_pairs),
+                                "recent_successes": list(recent_successes),
+                                "recent_failures": list(recent_failures),
+                            }
+                        )
                         try:
                             timeout_seconds = self._provider_query_timeout_seconds(
                                 config,
@@ -227,6 +271,23 @@ class QueryService:
                             )
                             self._insert_snapshot(route, result)
                             saved += 1
+                            saved_pair = {
+                                "provider": provider_name,
+                                "route_key": route.route_key,
+                                "price": result.price,
+                                "observed_at": result.observed_at,
+                            }
+                            saved_pairs.append(saved_pair)
+                            recent_successes.append(
+                                {
+                                    "provider": provider_name,
+                                    "route_key": route.route_key,
+                                    "route_display": getattr(route, "display_label", route.route_key),
+                                    "price": result.price,
+                                    "observed_at": result.observed_at,
+                                }
+                            )
+                            recent_successes[:] = recent_successes[-8:]
                             logging.info(
                                 "saved snapshot provider=%s route=%s price=%s",
                                 provider_name,
@@ -239,36 +300,100 @@ class QueryService:
                                 f"query timed out after {timeout_seconds:.1f}s"
                             )
                             errors.append(message)
+                            recent_failures.append(
+                                {
+                                    "provider": provider_name,
+                                    "route_key": route.route_key,
+                                    "route_display": getattr(route, "display_label", route.route_key),
+                                    "error": "query timed out",
+                                }
+                            )
+                            recent_failures[:] = recent_failures[-8:]
                             logging.error(message)
                         except Exception as exc:
                             message = f"provider={provider_name} route={route.route_key} failed: {exc}"
                             errors.append(message)
+                            recent_failures.append(
+                                {
+                                    "provider": provider_name,
+                                    "route_key": route.route_key,
+                                    "route_display": getattr(route, "display_label", route.route_key),
+                                    "error": str(exc),
+                                }
+                            )
+                            recent_failures[:] = recent_failures[-8:]
                             logging.exception(message)
+                        completed_targets += 1
+                        self._set_summary(
+                            {
+                                **self.last_run_summary,
+                                "running": True,
+                                "current_target": self._target_payload(route, provider_name),
+                                "completed_targets": completed_targets,
+                                "total_targets": total_targets,
+                                "saved": saved,
+                                "errors": list(errors),
+                                "saved_pairs": list(saved_pairs),
+                                "recent_successes": list(recent_successes),
+                                "recent_failures": list(recent_failures),
+                            }
+                        )
             except Exception as exc:
                 target = provider_filter or "browser providers"
                 message = f"provider={target} failed before querying routes: {exc}"
                 errors.append(message)
+                recent_failures.append(
+                    {"provider": target, "route_key": "", "route_display": target, "error": str(exc)}
+                )
                 logging.exception(message)
 
-        summary = {"running": False, "saved": saved, "errors": errors}
+        summary = {
+            "running": False,
+            "saved": saved,
+            "errors": errors,
+            "completed_targets": completed_targets,
+            "total_targets": total_targets,
+            "current_target": None,
+            "started_at": started_at,
+            "finished_at": self._now_iso(),
+            "saved_pairs": saved_pairs,
+            "recent_successes": recent_successes,
+            "recent_failures": recent_failures,
+        }
         self._set_summary(summary)
         return summary
 
     async def _query_cli_provider_routes(
         self,
         config: AppConfig,
-        routes: list[RouteQuery],
+        targets: list[tuple[RouteQuery, str, Any]],
         errors: list[str],
         provider_filter: str,
-    ) -> int:
+        *,
+        total_targets: int,
+    ) -> tuple[int, int, list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
         saved = 0
+        completed_targets = 0
+        saved_pairs: list[dict[str, Any]] = []
+        recent_successes: list[dict[str, Any]] = []
+        recent_failures: list[dict[str, Any]] = []
         runtime = CliProviderRuntime()
         provider_module = importlib.import_module(f"providers.{provider_filter}")
-        for route, provider_name, provider_cfg in self._iter_query_targets(
-            config,
-            routes,
-            provider_filter=provider_filter,
-        ):
+        for route, provider_name, provider_cfg in targets:
+            self._set_summary(
+                {
+                    **self.last_run_summary,
+                    "running": True,
+                    "current_target": self._target_payload(route, provider_name),
+                    "completed_targets": completed_targets,
+                    "total_targets": total_targets,
+                    "saved": saved,
+                    "errors": list(errors),
+                    "saved_pairs": list(saved_pairs),
+                    "recent_successes": list(recent_successes),
+                    "recent_failures": list(recent_failures),
+                }
+            )
             try:
                 timeout_seconds = self._provider_query_timeout_seconds(config, provider_cfg)
                 result = await asyncio.wait_for(
@@ -291,6 +416,23 @@ class QueryService:
                 )
                 self._insert_snapshot(route, snapshot_result)
                 saved += 1
+                saved_pair = {
+                    "provider": provider_name,
+                    "route_key": route.route_key,
+                    "price": result.price,
+                    "observed_at": snapshot_result.observed_at,
+                }
+                saved_pairs.append(saved_pair)
+                recent_successes.append(
+                    {
+                        "provider": provider_name,
+                        "route_key": route.route_key,
+                        "route_display": getattr(route, "display_label", route.route_key),
+                        "price": result.price,
+                        "observed_at": snapshot_result.observed_at,
+                    }
+                )
+                recent_successes[:] = recent_successes[-8:]
                 logging.info(
                     "saved CLI snapshot provider=%s route=%s price=%s",
                     provider_name,
@@ -303,12 +445,45 @@ class QueryService:
                     f"query timed out after {timeout_seconds:.1f}s"
                 )
                 errors.append(message)
+                recent_failures.append(
+                    {
+                        "provider": provider_name,
+                        "route_key": route.route_key,
+                        "route_display": getattr(route, "display_label", route.route_key),
+                        "error": "query timed out",
+                    }
+                )
+                recent_failures[:] = recent_failures[-8:]
                 logging.error(message)
             except Exception as exc:
                 message = f"provider={provider_name} route={route.route_key} failed: {exc}"
                 errors.append(message)
+                recent_failures.append(
+                    {
+                        "provider": provider_name,
+                        "route_key": route.route_key,
+                        "route_display": getattr(route, "display_label", route.route_key),
+                        "error": str(exc),
+                    }
+                )
+                recent_failures[:] = recent_failures[-8:]
                 logging.exception(message)
-        return saved
+            completed_targets += 1
+            self._set_summary(
+                {
+                    **self.last_run_summary,
+                    "running": True,
+                    "current_target": self._target_payload(route, provider_name),
+                    "completed_targets": completed_targets,
+                    "total_targets": total_targets,
+                    "saved": saved,
+                    "errors": list(errors),
+                    "saved_pairs": list(saved_pairs),
+                    "recent_successes": list(recent_successes),
+                    "recent_failures": list(recent_failures),
+                }
+            )
+        return saved, completed_targets, saved_pairs, recent_successes, recent_failures
 
     def _iter_query_targets(
         self,
@@ -362,6 +537,15 @@ class QueryService:
         self.last_run_summary = self.summary_store.set(summary)
         if self.update_summary:
             self.update_summary(self.last_run_summary)
+
+    @staticmethod
+    def _target_payload(route: RouteQuery, provider_name: str) -> dict[str, Any]:
+        return {
+            "provider": provider_name,
+            "route_key": route.route_key,
+            "route_display": getattr(route, "display_label", route.route_key),
+            "route_type": getattr(route, "route_type", "one_way"),
+        }
 
     def _provider_query_timeout_seconds(
         self,
@@ -417,6 +601,10 @@ class QueryService:
     def _provider_has_handler(provider_name: str) -> bool:
         definition = provider_definition(provider_name)
         return bool(definition and definition.has_handler)
+
+    @staticmethod
+    def _now_iso() -> str:
+        return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
     @staticmethod
     def _route_is_expired(route: RouteQuery) -> bool:

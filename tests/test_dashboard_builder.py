@@ -7,6 +7,69 @@ from dashboard_builder import build_dashboard_payload
 
 
 class DashboardBuilderTests(unittest.TestCase):
+    def test_dashboard_includes_price_change_direction_for_latest_snapshot(self) -> None:
+        route = RouteQuery(
+            origin="PEK",
+            destination="SHA",
+            departure_date="2099-01-01",
+            providers=["ctrip"],
+        )
+        config = SimpleNamespace(
+            routes=[route],
+            providers={
+                "ctrip": ProviderConfig(
+                    name="ctrip",
+                    enabled=True,
+                    login_url="https://example.test/login",
+                    search_url_template="https://example.test/search",
+                    storage_state_file=Path("state.json"),
+                    selectors={},
+                    timeout_ms=1000,
+                    extra_headers={},
+                    min_delay_seconds=0,
+                    max_delay_seconds=0,
+                    locale="zh-CN",
+                    timezone="Asia/Shanghai",
+                )
+            },
+            default_currency="CNY",
+        )
+
+        payload = build_dashboard_payload(
+            config=config,
+            routes=[],
+            snapshots=[
+                {
+                    "provider": "ctrip",
+                    "route_key": route.route_key,
+                    "price": 1200,
+                    "currency": "CNY",
+                    "observed_at": "2026-05-16T10:00:00",
+                    "scraped_at": "2026-05-16T10:00:00",
+                    "raw_payload": {"search_url": "https://flights.ctrip.com/online/list/oneway-pek0-sha0"},
+                },
+                {
+                    "provider": "ctrip",
+                    "route_key": route.route_key,
+                    "price": 980,
+                    "currency": "CNY",
+                    "observed_at": "2026-05-17T10:00:00",
+                    "scraped_at": "2026-05-17T10:00:00",
+                    "raw_payload": {"search_url": "https://flights.ctrip.com/online/list/oneway-pek0-sha0"},
+                },
+            ],
+            report_paths={},
+            last_run_summary={"errors": []},
+            auto_query_interval_hours=12,
+            auto_query_min_gap_minutes=30,
+        )
+
+        task = payload["tasks"][0]
+        self.assertEqual(980, task["latest_price"])
+        self.assertEqual(1200, task["previous_price"])
+        self.assertEqual(-220, task["latest_price_delta_amount"])
+        self.assertEqual("down", task["latest_price_delta_direction"])
+
     def test_error_status_hides_stale_latest_price(self) -> None:
         route = RouteQuery(
             origin="PUS",

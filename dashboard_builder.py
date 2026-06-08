@@ -28,17 +28,7 @@ def build_dashboard_payload(
     auto_query_min_gap_minutes: int,
     session_hints: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    latest_by_pair: dict[str, dict[str, Any]] = {}
-    for row in snapshots:
-        key = f"{row['provider']}::{row['route_key']}"
-        existing = latest_by_pair.get(key)
-        if existing is None:
-            latest_by_pair[key] = row
-            continue
-        existing_valid = snapshot_looks_valid(existing)
-        current_valid = snapshot_looks_valid(row)
-        if current_valid or not existing_valid:
-            latest_by_pair[key] = row
+    latest_by_pair, previous_by_pair = build_snapshot_history_maps(snapshots)
 
     route_errors = summarize_route_errors(last_run_summary.get("errors", []))
     tasks = []
@@ -48,8 +38,10 @@ def build_dashboard_payload(
         for provider_name in providers:
             key = f"{provider_name}::{route.route_key}"
             latest = latest_by_pair.get(key)
+            previous = previous_by_pair.get(key)
             last_error = route_errors.get(route.route_key)
             display_latest = None if last_error else latest
+            display_previous = None if last_error else previous
             raw_payload = parse_json_field(display_latest.get("raw_payload")) if display_latest else {}
             best_offer = raw_payload.get("best_offer", {}) if isinstance(raw_payload, dict) else {}
             offer_summary = extract_offer_summary(best_offer.get("row_text"))
@@ -84,6 +76,9 @@ def build_dashboard_payload(
                     "passengers": route.passengers,
                     "preferred_airlines": route.preferred_airlines or [],
                     "latest_price": display_latest["price"] if display_latest else None,
+                    "previous_price": display_previous["price"] if display_previous else None,
+                    "latest_price_delta_amount": price_delta_amount(display_latest, display_previous),
+                    "latest_price_delta_direction": price_delta_direction(display_latest, display_previous),
                     "stale_latest_price": latest["price"] if last_error and latest else None,
                     "currency": display_latest["currency"] if display_latest else config.default_currency,
                     "last_query_time": display_latest["observed_at"] if display_latest else None,
@@ -109,6 +104,11 @@ def build_dashboard_payload(
             )
 
     task_groups = build_task_groups(tasks)
+    run_feedback = build_run_feedback(
+        latest_by_pair=latest_by_pair,
+        previous_by_pair=previous_by_pair,
+        last_run_summary=last_run_summary,
+    )
     return {
         "tasks": tasks,
         "task_groups": task_groups,
@@ -123,12 +123,108 @@ def build_dashboard_payload(
         "cabin_options": CABIN_OPTIONS,
         "snapshots": snapshots,
         "last_run": last_run_summary,
+        "run_feedback": run_feedback,
         "report_paths": report_paths,
         "auto_query_policy": {
             "interval_hours": auto_query_interval_hours,
             "min_gap_minutes": auto_query_min_gap_minutes,
         },
         "session_hints": session_hints or [],
+    }
+
+
+def build_snapshot_history_maps(
+    snapshots: list[dict[str, Any]],
+) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
+    latest_by_pair: dict[str, dict[str, Any]] = {}
+    previous_by_pair: dict[str, dict[str, Any]] = {}
+    for row in snapshots:
+        key = f"{row['provider']}::{row['route_key']}"
+        existing = latest_by_pair.get(key)
+        if existing is None:
+            latest_by_pair[key] = row
+            continue
+        existing_valid = snapshot_looks_valid(existing)
+        current_valid = snapshot_looks_valid(row)
+        if current_valid or not existing_valid:
+            previous_by_pair[key] = existing
+            latest_by_pair[key] = row
+        elif key not in previous_by_pair:
+            previous_by_pair[key] = row
+    return latest_by_pair, previous_by_pair
+
+
+def build_run_feedback(
+    *,
+    latest_by_pair: dict[str, dict[str, Any]],
+    previous_by_pair: dict[str, dict[str, Any]],
+    last_run_summary: dict[str, Any],
+) -> dict[str, Any]:
+    saved_pairs = [item for item in (last_run_summary.get("saved_pairs") or []) if isinstance(item, dict)]
+    changes: list[dict[str, Any]] = []
+    for item in saved_pairs:
+        key = f"{item.get('provider')}::{item.get('route_key')}"
+        latest = latest_by_pair.get(key)
+        previous = previous_by_pair.get(key)
+        latest_price = safe_float((latest or {}).get("price"))
+        previous_price = safe_float((previous or {}).get("price"))
+        direction = "new"
+        amount = None
+        if latest_price is not None and previous_price is not None:
+            amount = round(latest_price - previous_price, 2)
+            if amount < 0:
+                direction = "down"
+            elif amount > 0:
+                direction = "up"
+            else:
+                direction = "same"
+        changes.append(
+            {
+                "provider": item.get("provider"),
+                "route_key": item.get("route_key"),
+                "latest_price": latest_price,
+                "previous_price": previous_price,
+                "currency": (latest or {}).get("currency") or "CNY",
+                "direction": direction,
+                "delta_amount": amount,
+                "observed_at": (latest or item).get("observed_at"),
+            }
+        )
+    counts = {
+        "down": sum(1 for item in changes if item["direction"] == "down"),
+        "up": sum(1 for item in changes if item["direction"] == "up"),
+        "same": sum(1 for item in changes if item["direction"] == "same"),
+        "new": sum(1 for item in changes if item["direction"] == "new"),
+    }
+    top_down = sorted(
+        [item for item in changes if item["direction"] == "down" and item["delta_amount"] is not None],
+        key=lambda item: item["delta_amount"],
+    )[:5]
+    top_up = sorted(
+        [item for item in changes if item["direction"] == "up" and item["delta_amount"] is not None],
+        key=lambda item: item["delta_amount"],
+        reverse=True,
+    )[:5]
+    return {
+        "progress": {
+            "running": bool(last_run_summary.get("running")),
+            "saved": int(last_run_summary.get("saved", 0) or 0),
+            "errors": list(last_run_summary.get("errors") or []),
+            "completed_targets": int(last_run_summary.get("completed_targets", 0) or 0),
+            "total_targets": int(last_run_summary.get("total_targets", 0) or 0),
+            "current_target": last_run_summary.get("current_target"),
+            "started_at": last_run_summary.get("started_at"),
+            "finished_at": last_run_summary.get("finished_at"),
+            "recent_successes": list(last_run_summary.get("recent_successes") or []),
+            "recent_failures": list(last_run_summary.get("recent_failures") or []),
+        },
+        "changes": {
+            "total_saved_pairs": len(saved_pairs),
+            "counts": counts,
+            "top_down": top_down,
+            "top_up": top_up,
+            "items": changes,
+        },
     }
 
 
@@ -221,6 +317,36 @@ def parse_json_field(value: Any) -> dict[str, Any]:
             return {}
         return loaded if isinstance(loaded, dict) else {}
     return {}
+
+
+def safe_float(value: Any) -> float | None:
+    try:
+        if value is None or value == "":
+            return None
+        return float(value)
+    except Exception:
+        return None
+
+
+def price_delta_amount(latest: dict[str, Any] | None, previous: dict[str, Any] | None) -> float | None:
+    latest_price = safe_float((latest or {}).get("price"))
+    previous_price = safe_float((previous or {}).get("price"))
+    if latest_price is None or previous_price is None:
+        return None
+    return round(latest_price - previous_price, 2)
+
+
+def price_delta_direction(latest: dict[str, Any] | None, previous: dict[str, Any] | None) -> str | None:
+    if not latest:
+        return None
+    delta = price_delta_amount(latest, previous)
+    if delta is None:
+        return "new" if previous is None else None
+    if delta < 0:
+        return "down"
+    if delta > 0:
+        return "up"
+    return "same"
 
 
 def normalize_network_flight_details(details: list[Any], *, default_cabin: str) -> list[dict[str, Any]]:

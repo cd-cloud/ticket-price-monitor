@@ -146,18 +146,40 @@ def create_app(config_path: str | None = None) -> FastAPI:
     @app.post("/api/run-once")
     async def run_once(provider: str | None = None) -> dict:
         try:
-            result = await asyncio.to_thread(service.run_once_blocking, provider)
-            await asyncio.to_thread(service.report)
-            return result
+            routes = service.list_routes()
+            if provider and not any(provider in (route.get("providers") or []) for route in routes):
+                raise HTTPException(status_code=404, detail="Provider not found in routes")
+
+            def run_and_report() -> None:
+                try:
+                    service.run_once_blocking(provider)
+                    service.report()
+                except Exception:
+                    LOGGER.exception("background run-once query failed: provider=%s", provider)
+
+            asyncio.create_task(asyncio.to_thread(run_and_report))
+            return {"running": True, "saved": 0, "errors": [], "provider": provider}
         except Exception as exc:
             raise HTTPException(status_code=500, detail=str(exc))
 
     @app.post("/api/routes/{route_key:path}/run-once")
     async def run_route_once(route_key: str, provider: str | None = None) -> dict:
         try:
-            result = await asyncio.to_thread(service.run_route_once_blocking, route_key, provider)
-            await asyncio.to_thread(service.report)
-            return result
+            route = next((item for item in service.list_routes() if item.get("route_key") == route_key), None)
+            if route is None:
+                raise HTTPException(status_code=404, detail="Route not found")
+            if provider and provider not in (route.get("providers") or []):
+                raise HTTPException(status_code=404, detail="Provider not found in route")
+
+            def run_and_report() -> None:
+                try:
+                    service.run_route_once_blocking(route_key, provider)
+                    service.report()
+                except Exception:
+                    LOGGER.exception("background route query failed: route_key=%s provider=%s", route_key, provider)
+
+            asyncio.create_task(asyncio.to_thread(run_and_report))
+            return {"running": True, "saved": 0, "errors": [], "route_key": route_key, "provider": provider}
         except Exception as exc:
             raise HTTPException(status_code=500, detail=str(exc))
 

@@ -8,6 +8,8 @@ let dashboardData = {
   last_run: { running: false, saved: 0, errors: [] },
 };
 let activeTaskView = "all";
+let dashboardPollTimer = null;
+let dashboardPollInFlight = false;
 let tailDiscoveryResults = [];
 let tailSafeBatchSize = 3;
 let tailDefaultProfiles = {};
@@ -680,6 +682,131 @@ function renderTaskSummary(tasks) {
   `;
 }
 
+function formatCurrencyAmount(currency, amount) {
+  if (amount === null || amount === undefined || Number.isNaN(Number(amount))) return "-";
+  return `${currency || "CNY"} ${Number(amount).toFixed(0)}`;
+}
+
+function renderPriceChangePill(task) {
+  const direction = task.latest_price_delta_direction;
+  const delta = Number(task.latest_price_delta_amount || 0);
+  if (!direction) return "";
+  if (direction === "new") {
+    return '<span class="price-change-pill new">首次记录</span>';
+  }
+  if (direction === "same") {
+    return '<span class="price-change-pill same">持平</span>';
+  }
+  const sign = delta > 0 ? "+" : "";
+  const label = direction === "down" ? "降价" : "涨价";
+  return `<span class="price-change-pill ${escapeHtml(direction)}">${label} ${sign}${delta.toFixed(0)}</span>`;
+}
+
+function progressPercent(progress) {
+  const total = Number(progress?.total_targets || 0);
+  const completed = Number(progress?.completed_targets || 0);
+  if (!total) return 0;
+  return Math.max(0, Math.min(100, Math.round((completed / total) * 100)));
+}
+
+function renderRunProgressSummary(progress = {}) {
+  const container = document.getElementById("runProgressSummary");
+  if (!container) return;
+  const current = progress.current_target || {};
+  const percent = progressPercent(progress);
+  const total = Number(progress.total_targets || 0);
+  const completed = Number(progress.completed_targets || 0);
+  const recentSuccesses = (progress.recent_successes || []).slice(-4).reverse();
+  const recentFailures = (progress.recent_failures || []).slice(-3).reverse();
+  const activeLabel = progress.running
+    ? `${providerLabel(current.provider || "")} · ${cleanDisplayText(current.route_display || current.route_key || "正在准备任务")}`
+    : "当前没有正在运行的查询";
+  const logItems = [
+    ...recentSuccesses.map((item) => `
+      <div class="progress-log-item">
+        <strong>已保存</strong>
+        <span>${escapeHtml(cleanDisplayText(item.route_display || item.route_key || "-"))}</span>
+        <small>${escapeHtml(providerLabel(item.provider || ""))} · ${escapeHtml(formatCurrencyAmount("CNY", item.price))}</small>
+      </div>
+    `),
+    ...recentFailures.map((item) => `
+      <div class="progress-log-item">
+        <strong>失败</strong>
+        <span>${escapeHtml(cleanDisplayText(item.route_display || item.route_key || "-"))}</span>
+        <small>${escapeHtml(item.error || "-")}</small>
+      </div>
+    `),
+  ].join("");
+  container.innerHTML = `
+    <div class="run-progress-card ${progress.running ? "active" : ""}">
+      <div class="progress-head">
+        <div>
+          <h3>查询进度</h3>
+          <p class="muted">${escapeHtml(activeLabel)}</p>
+        </div>
+        <span class="progress-pill">${progress.running ? "查询进行中" : "查询空闲"}</span>
+      </div>
+      <div class="progress-track"><div class="progress-bar" style="width:${percent}%"></div></div>
+      <div class="progress-kpis">
+        <div><span>完成进度</span><strong>${completed}/${total || 0}</strong></div>
+        <div><span>本轮已保存</span><strong>${Number(progress.saved || 0)}</strong></div>
+        <div><span>错误数</span><strong>${(progress.errors || []).length}</strong></div>
+        <div><span>最近结束</span><strong>${escapeHtml(formatQueryTime(progress.finished_at || progress.started_at))}</strong></div>
+      </div>
+      ${logItems ? `<div class="progress-log">${logItems}</div>` : ""}
+    </div>
+  `;
+}
+
+function renderResultChangeSummary(feedback = {}) {
+  const container = document.getElementById("resultChangeSummary");
+  if (!container) return;
+  const changes = feedback.changes || {};
+  const counts = changes.counts || {};
+  const topDown = changes.top_down || [];
+  const topUp = changes.top_up || [];
+  const renderChangeList = (items, emptyText) => {
+    if (!items.length) return `<div class="change-item"><span class="muted">${escapeHtml(emptyText)}</span></div>`;
+    return items.map((item) => {
+      const delta = Number(item.delta_amount || 0);
+      const sign = delta > 0 ? "+" : "";
+      return `
+        <div class="change-item ${escapeHtml(item.direction || "same")}">
+          <strong>${escapeHtml(cleanDisplayText(item.route_key || "-"))}</strong>
+          <span>${escapeHtml(providerLabel(item.provider || ""))}</span>
+          <small>${escapeHtml(formatCurrencyAmount(item.currency, item.previous_price))} -> ${escapeHtml(formatCurrencyAmount(item.currency, item.latest_price))} (${sign}${delta.toFixed(0)})</small>
+        </div>
+      `;
+    }).join("");
+  };
+  container.innerHTML = `
+    <div class="change-summary-card">
+      <div class="change-head">
+        <div>
+          <h3>本轮结果变化摘要</h3>
+          <p class="muted">基于最近一轮成功保存的航线，对比上一条历史快照。</p>
+        </div>
+      </div>
+      <div class="change-kpis">
+        <div><span>成功保存</span><strong>${Number(changes.total_saved_pairs || 0)}</strong></div>
+        <div><span>降价</span><strong>${Number(counts.down || 0)}</strong></div>
+        <div><span>涨价</span><strong>${Number(counts.up || 0)}</strong></div>
+        <div><span>持平/首次</span><strong>${Number(counts.same || 0) + Number(counts.new || 0)}</strong></div>
+      </div>
+      <div class="change-columns">
+        <div class="change-list">
+          <strong>最值得关注的降价</strong>
+          ${renderChangeList(topDown, "这一轮没有出现明显降价。")}
+        </div>
+        <div class="change-list">
+          <strong>明显涨价</strong>
+          ${renderChangeList(topUp, "这一轮没有出现明显涨价。")}
+        </div>
+      </div>
+    </div>
+  `;
+}
+
 function ensureTaskViewTabs() {
   if (document.getElementById("taskViewTabs")) return;
   const filters = document.querySelector(".filters");
@@ -798,7 +925,12 @@ function renderTaskRow(task) {
     <td>${escapeHtml(taskRouteDisplay(task))}${groupLine}</td>
     <td>${escapeHtml(dateText)}</td>
     <td>${cabinLabel(task.cabin)}<br><span class="muted">${transferPolicy} · ${airlines}</span></td>
-    <td>${task.latest_price ? `${task.currency} ${task.latest_price}` : "暂无"}</td>
+    <td>
+      <div class="price-cell">
+        <strong>${task.latest_price ? `${task.currency} ${task.latest_price}` : "暂无"}</strong>
+        ${renderPriceChangePill(task)}
+      </div>
+    </td>
     <td>${formatQueryTime(task.last_query_time)}</td>
     <td>
       <div class="task-flight-mini">
@@ -998,6 +1130,8 @@ function renderDashboard(data) {
     renderCabinOptions(data.cabin_options || []);
   }
   renderTasks(data.tasks || []);
+  renderRunProgressSummary(data.run_feedback?.progress || {});
+  renderResultChangeSummary(data.run_feedback || {});
   renderRoutes(data.routes || []);
   renderSessionHints(data.session_hints || []);
   updateWorkspaceTabs();
@@ -1027,10 +1161,24 @@ async function fetchLog() {
 }
 
 async function runAction(url, successMessage = "操作已完成") {
-  await fetch(url, { method: "POST" });
+  const response = await fetch(url, { method: "POST" });
+  if (!response.ok) {
+    throw new Error(await responseErrorMessage(response, "操作失败"));
+  }
   await fetchDashboard();
   await fetchLog();
   notifyComplete(successMessage);
+}
+
+async function runAsyncQuery(url, successMessage, fallbackMessage = "查询启动失败") {
+  const response = await fetch(url, { method: "POST" });
+  if (!response.ok) {
+    throw new Error(await responseErrorMessage(response, fallbackMessage));
+  }
+  await fetchDashboard();
+  await fetchLog();
+  notifyComplete(successMessage);
+  scheduleDashboardPolling(1200);
 }
 
 function resetRouteForm() {
@@ -1187,6 +1335,7 @@ async function runRouteGroup(groupId, provider = "") {
   notifyComplete(provider ? `已开始查询${providerLabel(provider)}航线组` : "已开始查询整组");
   await fetchDashboard();
   await fetchLog();
+  scheduleDashboardPolling(1200);
 }
 
 async function toggleAutoQuery(routeKey, enabled) {
@@ -1205,14 +1354,33 @@ async function toggleAutoQuery(routeKey, enabled) {
 
 async function runSingleRoute(routeKey, provider) {
   const params = provider ? `?provider=${encodeURIComponent(provider)}` : "";
-  const response = await fetch(`/api/routes/${encodeURIComponent(routeKey)}/run-once${params}`, { method: "POST" });
-  const data = await response.json();
-  if (!response.ok) {
-    throw new Error(data.detail || "查询此航线失败");
+  await runAsyncQuery(
+    `/api/routes/${encodeURIComponent(routeKey)}/run-once${params}`,
+    "已开始查询此航线",
+    "查询此航线失败",
+  );
+}
+
+function scheduleDashboardPolling(delayMs = 4000) {
+  window.clearTimeout(dashboardPollTimer);
+  dashboardPollTimer = window.setTimeout(pollDashboardLoop, delayMs);
+}
+
+async function pollDashboardLoop() {
+  if (dashboardPollInFlight) return;
+  dashboardPollInFlight = true;
+  try {
+    await fetchDashboard();
+    const running = Boolean(dashboardData.last_run?.running);
+    if (running || activeTailJobId) {
+      await fetchLog();
+    }
+    scheduleDashboardPolling(running ? 1500 : 8000);
+  } catch (_error) {
+    scheduleDashboardPolling(6000);
+  } finally {
+    dashboardPollInFlight = false;
   }
-  await fetchDashboard();
-  await fetchLog();
-  notifyComplete("已开始查询此航线");
 }
 
 function ensureBrowserProfilePanel() {
@@ -2196,7 +2364,7 @@ function updateWorkspaceTabs() {
   });
 }
 
-document.getElementById("runAllBtn").addEventListener("click", () => runAction("/api/run-once", "已开始查询全部航线"));
+document.getElementById("runAllBtn").addEventListener("click", () => runAsyncQuery("/api/run-once", "已开始查询全部航线", "启动全部查询失败"));
 document.getElementById("reportBtn").addEventListener("click", () => runAction("/api/report", "报告已刷新"));
 document.getElementById("reloadBtn").addEventListener("click", fetchDashboard);
 document.getElementById("reloadLogBtn")?.addEventListener("click", fetchLog);
@@ -2320,5 +2488,5 @@ fetchTailResults();
 fetchTailJobs();
 fetchBrowserProfiles().catch(() => {});
 resumeLatestTailJob().catch(() => {});
-fetchDashboard();
+fetchDashboard().then(() => scheduleDashboardPolling(3000));
 

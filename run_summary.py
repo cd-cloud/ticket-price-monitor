@@ -8,6 +8,14 @@ DEFAULT_RUN_SUMMARY = {
     "running": False,
     "saved": 0,
     "errors": [],
+    "completed_targets": 0,
+    "total_targets": 0,
+    "current_target": None,
+    "started_at": None,
+    "finished_at": None,
+    "saved_pairs": [],
+    "recent_successes": [],
+    "recent_failures": [],
 }
 
 
@@ -41,4 +49,16 @@ class RunSummaryStore:
         copied = dict(summary)
         if isinstance(copied.get("errors"), list):
             copied["errors"] = list(copied["errors"])
+        if isinstance(copied.get("saved_pairs"), list):
+            copied["saved_pairs"] = [dict(item) if isinstance(item, dict) else item for item in copied["saved_pairs"]]
+        if isinstance(copied.get("recent_successes"), list):
+            copied["recent_successes"] = [
+                dict(item) if isinstance(item, dict) else item for item in copied["recent_successes"]
+            ]
+        if isinstance(copied.get("recent_failures"), list):
+            copied["recent_failures"] = [
+                dict(item) if isinstance(item, dict) else item for item in copied["recent_failures"]
+            ]
+        if isinstance(copied.get("current_target"), dict):
+            copied["current_target"] = dict(copied["current_target"])
         return copied
