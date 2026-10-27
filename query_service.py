@@ -84,13 +84,12 @@ class QueryService:
         if not self.run_lock.acquire(blocking=False):
             return {"running": True, "saved": 0, "errors": ["A query run is already in progress."]}
 
-        self.refresh_config()
-        config = self.get_config()
-        if provider_filter and not self._provider_has_handler(provider_filter):
-            self.run_lock.release()
-            return {"running": False, "saved": 0, "errors": [f"Unknown provider: {provider_filter}"]}
-        self._set_summary({"running": True, "saved": 0, "errors": []})
         try:
+            self.refresh_config()
+            config = self.get_config()
+            if provider_filter and not self._provider_has_handler(provider_filter):
+                return {"running": False, "saved": 0, "errors": [f"Unknown provider: {provider_filter}"]}
+            self._set_summary({"running": True, "saved": 0, "errors": []})
             return await self._query_routes(
                 config.routes,
                 provider_filter=provider_filter,
@@ -108,18 +107,15 @@ class QueryService:
         if not self.run_lock.acquire(blocking=False):
             return {"running": True, "saved": 0, "errors": ["A query run is already in progress."]}
 
-        self.refresh_config()
-        config = self.get_config()
-        if provider_filter and not self._provider_has_handler(provider_filter):
-            self.run_lock.release()
-            return {"running": False, "saved": 0, "errors": [f"Unknown provider: {provider_filter}"]}
-        route = next((item for item in self.get_config().routes if item.route_key == route_key), None)
-        if route is None:
-            self.run_lock.release()
-            return {"running": False, "saved": 0, "errors": [f"Route not found: {route_key}"]}
-
-        self._set_summary({"running": True, "saved": 0, "errors": []})
         try:
+            self.refresh_config()
+            config = self.get_config()
+            if provider_filter and not self._provider_has_handler(provider_filter):
+                return {"running": False, "saved": 0, "errors": [f"Unknown provider: {provider_filter}"]}
+            route = next((item for item in config.routes if item.route_key == route_key), None)
+            if route is None:
+                return {"running": False, "saved": 0, "errors": [f"Route not found: {route_key}"]}
+            self._set_summary({"running": True, "saved": 0, "errors": []})
             return await self._query_routes(
                 [route],
                 provider_filter=provider_filter,
@@ -137,18 +133,15 @@ class QueryService:
         if not self.run_lock.acquire(blocking=False):
             return {"running": True, "saved": 0, "errors": ["A query run is already in progress."]}
 
-        self.refresh_config()
-        config = self.get_config()
-        if provider_filter and not self._provider_has_handler(provider_filter):
-            self.run_lock.release()
-            return {"running": False, "saved": 0, "errors": [f"Unknown provider: {provider_filter}"]}
-        routes = [route for route in config.routes if route.group_id == group_id]
-        if not routes:
-            self.run_lock.release()
-            return {"running": False, "saved": 0, "errors": [f"Route group not found: {group_id}"]}
-
-        self._set_summary({"running": True, "saved": 0, "errors": []})
         try:
+            self.refresh_config()
+            config = self.get_config()
+            if provider_filter and not self._provider_has_handler(provider_filter):
+                return {"running": False, "saved": 0, "errors": [f"Unknown provider: {provider_filter}"]}
+            routes = [route for route in config.routes if route.group_id == group_id]
+            if not routes:
+                return {"running": False, "saved": 0, "errors": [f"Route group not found: {group_id}"]}
+            self._set_summary({"running": True, "saved": 0, "errors": []})
             return await self._query_routes(
                 routes,
                 provider_filter=provider_filter,

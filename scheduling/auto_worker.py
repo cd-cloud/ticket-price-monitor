@@ -61,9 +61,16 @@ class AutoQueryWorker:
                 }
 
             route = due_routes[0]
+            previous_started_at = self._last_query_started_at
             self._last_query_started_at = now
             logging.info("starting auto query for route=%s", route.route_key)
             result = self.service.run_route_once_blocking(route.route_key)
+            if result.get("running"):
+                # No query started: retain the due route and retry on the next
+                # worker tick, without consuming the inter-query spacing.
+                self._last_query_started_at = previous_started_at
+                logging.info("auto query deferred because another query is active route=%s", route.route_key)
+                return result
             self.update_route_next_run(route.route_key, started_at=now)
             try:
                 self.service.report()
