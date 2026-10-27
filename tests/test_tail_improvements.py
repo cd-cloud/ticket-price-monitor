@@ -267,6 +267,13 @@ class TailImprovementTests(unittest.TestCase):
         self.run_service()
         self.assertEqual(["CAN", "CAN"], calls)
 
+    def test_feizhu_ignores_legacy_negative_cache_for_targeted_cli_search(self):
+        self.cache_negative("CAN")
+        calls = self.use_client({"CAN": [quote()]})
+        result = self.run_service()
+        self.assertEqual(["CAN"], calls)
+        self.assertEqual(1, result["saved"])
+
     def test_resumed_refresh_still_bypasses_negative_cache(self):
         self.repo.insert_tail_discovery_result(quote())
         self.repo.insert_tail_discovery_result(quote("SZX"))

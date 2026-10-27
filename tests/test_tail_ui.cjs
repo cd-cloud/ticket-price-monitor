@@ -8,8 +8,11 @@ function ui() {
   const elements = {
     tailLatestOnlyInput: {checked:true}, tailSortSelect:{value:'price'}, tailTrustInput:{value:'all'},
     tailDateFilter:{value:''}, tailMaxPriceInput:{value:''}, tailResults:{innerHTML:''},
+    tailSearchScopeInput:{value:'open'},tailProviderSelect:{value:'feizhu'},tailModeInput:{value:'explore'},
+    tailOpenScopeNotice:{hidden:true},tailBudgetCitiesInput:{value:'10'},tailTargetInput:{value:'2'},
+    candidates:{hidden:false},
   };
-  const ctx = vm.createContext({URL, Date, document:{getElementById:id=>elements[id]},
+  const ctx = vm.createContext({URL, Date, document:{getElementById:id=>elements[id],querySelector:()=>elements.candidates},
     escapeHtml: x=>String(x??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])),
     airportCodeDisplayText:x=>x||'', providerLabel:x=>x, cabinLabel:x=>x||'', formatQueryDate:x=>x,
     tailResultConfidence:()=>({level:'medium',label:'需复核'}), tailResultConfidenceScore:()=>50,
@@ -17,7 +20,7 @@ function ui() {
   });
   for (const name of ['compareTailResults','tailQuoteFresh','tailQuoteVerified','prepareTailResults',
     'groupTailResultsByRoute','safeTailReviewUrl','tailQuoteTermsLabel','renderTailBaselines','renderTailFlightGroups',
-    'renderTailResultCard','renderTailRouteGroup','renderTailResults']) {
+    'renderTailResultCard','renderTailRouteGroup','renderTailResults','updateTailSearchScope']) {
     const start = source.indexOf(`function ${name}(`);
     assert.ok(start>=0,name);
     const rest=source.slice(start+1);
@@ -36,6 +39,24 @@ function quote(extra={}) {
 test('latest identity is chosen before price filtering; stale cheap quote cannot reappear',()=>{
   const {ctx,elements}=ui(); elements.tailMaxPriceInput.value='800';
   assert.equal(ctx.prepareTailResults([quote({price:600}),quote({id:2,price:900,observed_at:'2026-10-27T01:00:00Z'})]).length,0);
+});
+test('open destination controls preserve hidden budgets but disable them and reset on unsupported platform',()=>{
+  const {ctx,elements}=ui();
+  ctx.updateTailSearchScope();
+  assert.equal(elements.tailOpenScopeNotice.hidden,false);
+  assert.equal(elements.candidates.hidden,true);
+  assert.equal(elements.tailBudgetCitiesInput.disabled,true);
+  assert.equal(elements.tailTargetInput.disabled,true);
+  assert.equal(elements.tailBudgetCitiesInput.value,'10');
+  elements.tailProviderSelect.value='ctrip';
+  ctx.updateTailSearchScope();
+  assert.equal(elements.tailSearchScopeInput.value,'candidates');
+  assert.equal(elements.tailSearchScopeInput.disabled,true);
+  assert.equal(elements.candidates.hidden,false);
+  elements.tailProviderSelect.value='feizhu';elements.tailModeInput.value='refresh';
+  elements.tailSearchScopeInput.value='open';
+  ctx.updateTailSearchScope();
+  assert.equal(elements.tailSearchScopeInput.value,'candidates');
 });
 test('two flights to the same tail city both remain visible',()=>{
   const {ctx}=ui(); assert.equal(ctx.prepareTailResults([quote(),quote({itinerary_key:'two',first_leg_key:'CA1003'})]).length,2);
@@ -62,4 +83,17 @@ test('review links reject executable schemes and escape source text',()=>{
   const {ctx}=ui(); const html=ctx.renderTailResultCard(quote({review_url:'javascript:alert(1)',destination:'<img src=x>'}),1);
   assert.doesNotMatch(html,/href="javascript:/); assert.doesNotMatch(html,/<img src=x>/);
   assert.equal(ctx.safeTailReviewUrl('https://example.test/x'),'https://example.test/x');
+});
+test('CLI trial notice survives public metadata and is escaped, price scope stays unknown',()=>{
+  const {ctx}=ui();
+  const html=ctx.renderTailResultCard(quote({search_metadata:{system_message:'体验模式 <script>alert(1)</script>'}}),1);
+  assert.match(html,/体验模式/);
+  assert.doesNotMatch(html,/<script>/);
+  assert.match(html,/整段总价未核实/);
+  assert.match(html,/未返回不代表无航线/);
+});
+test('documented adultPrice source is displayed without asserting a total fare',()=>{
+  const {ctx}=ui();
+  const html=ctx.renderTailResultCard(quote({quote_terms:{source_price_field:'adultPrice'}}),1);
+  assert.match(html,/平台 adultPrice · 整段总价未核实/);
 });

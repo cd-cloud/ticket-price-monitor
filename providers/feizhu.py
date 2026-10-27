@@ -3,12 +3,8 @@
 This module replaces the previous browser-automation approach with direct
 CLI calls to @fly-ai/flyai-cli, which accesses Fliggy's MCP API under the hood.
 
-Benefits:
-- No login required (Taobao/Alibaba account not needed)
-- No browser automation (Playwright page not used)
-- No anti-bot / CAPTCHA / risk-control issues
-- Sub-second response times
-- Structured JSON data with full flight details
+No browser automation is required. Trial mode may restrict results; quotas,
+latency and availability are provider-controlled, not guaranteed by this adapter.
 
 Prerequisite:
     npm install -g @fly-ai/flyai-cli
@@ -71,5 +67,8 @@ async def query(
             "journey_type": best.get("journey_type"),
             "total_duration": best.get("total_duration"),
             "alternatives_count": len(offers),
+            "search_metadata": best.get("search_metadata") or {},
+            "source_price_field": best.get("source_price_field"),
+            "source_price_value": best.get("source_price_value"),
         },
     ).to_outcome()

@@ -51,8 +51,8 @@ class FeizhuTailRunnerTests(unittest.IsolatedAsyncioTestCase):
             adapter.search_flights = original_search
 
         self.assertEqual(len(result["attempts"]), 1)
-        self.assertEqual(result["attempts"][0]["status"], "no_match")
-        self.assertEqual(result["attempts"][0]["phase"], "route_absent")
+        self.assertEqual(result["attempts"][0]["status"], "failed")
+        self.assertEqual(result["attempts"][0]["phase"], "search_incomplete")
         self.assertIn("No Feizhu itinerary", result["attempts"][0]["error"])
 
     async def test_run_matches_transfer_route(self) -> None:

@@ -221,3 +221,24 @@ class TailApiValidationTests(unittest.TestCase):
             fn.assert_called_once_with(5)
         with patch("app_service.FlightPriceApplication.recheck_tail_result", side_effect=RuntimeError("busy")):
             self.assertEqual(409, self.client.post("/api/tail-discovery/results/5/recheck").status_code)
+
+    def test_open_destination_validation_and_dispatch(self):
+        from unittest.mock import patch
+        from tail_service import OPEN_DESTINATION, normalize_tail_discovery_request
+        request = {"provider": "ctrip", "origin": "BJS", "transfer": "CGO",
+                   "departure_date": "2027-06-20", "search_scope": "open", "candidates": []}
+        self.assertEqual(400, self.client.post("/api/tail-discovery/run", json=request).status_code)
+        # Enable Feizhu in the isolated app config; mock only job submission, never validation.
+        path = Path(self.temp.name) / "config.json"
+        config = json.loads(path.read_text())
+        config["providers"]["feizhu"] = {**config["providers"]["ctrip"],
+                                        "storage_state_file": "./runtime/feizhu_state.json"}
+        path.write_text(json.dumps(config))
+        with TestClient(create_app(str(path))) as client, \
+             patch("tail_jobs.TailDiscoveryJobManager.submit",
+                   return_value={"job_id": "open-test", "status": "queued"}) as submit:
+            request["provider"] = "feizhu"
+            response = client.post("/api/tail-discovery/run", json=request)
+            self.assertEqual(200, response.status_code, response.text)
+            submitted = submit.call_args.args[0]
+            self.assertEqual(normalize_tail_discovery_request(submitted).candidates, [OPEN_DESTINATION])

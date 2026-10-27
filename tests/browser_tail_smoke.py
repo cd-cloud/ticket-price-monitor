@@ -76,11 +76,32 @@ async def run(output: Path):
             await page.locator("button[data-tail-action='resume']").first.click()
             await page.wait_for_timeout(100)
             assert any(path.endswith("/restart") and json.loads(body)["mode"] == "resume" for path, body in actions)
+            await page.locator("#tailProviderSelect").select_option("feizhu")
+            await page.locator("#tailSearchScopeInput").select_option("open")
+            assert await page.locator("#tailOpenScopeNotice").is_visible()
+            assert await page.locator("#tailBudgetCitiesInput").is_disabled()
+            assert await page.locator("#tailTargetInput").is_disabled()
+            assert not await page.locator("#tailDiscoveryForm .tail-candidates").is_visible()
+            await page.locator("#tailOriginInput").fill("BJS")
+            await page.locator("#tailTransferInput").fill("CGO")
+            await page.locator("#tailDateInput").fill("2027-06-20")
+            await page.locator("#tailRunBtn").click()
+            await page.wait_for_timeout(150)
+            submitted = [json.loads(body) for path, body in actions if path == "/api/tail-discovery/run"]
+            assert submitted and submitted[-1]["search_scope"] == "open"
+            assert submitted[-1]["candidates"] == []
+            assert submitted[-1]["max_candidates"] == 0
+            assert submitted[-1]["target_results"] == 0
+            await page.screenshot(path=str(output / "tail-open-desktop.png"), full_page=True)
             for width in (390, 320):
                 await page.set_viewport_size({"width":width,"height":844})
                 await page.screenshot(path=str(output / f"tail-mobile-{width}.png"), full_page=True)
                 overflow = await page.evaluate("document.documentElement.scrollWidth > innerWidth + 1")
                 assert not overflow, f"horizontal overflow at {width}px"
+            await page.locator("#tailProviderSelect").select_option("ctrip")
+            assert await page.locator("#tailSearchScopeInput").input_value() == "candidates"
+            assert await page.locator("#tailSearchScopeInput").is_disabled()
+            assert await page.locator("#tailDiscoveryForm .tail-candidates").is_visible()
             assert not errors, errors
             await browser.close()
         client.close()

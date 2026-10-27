@@ -217,7 +217,7 @@ class TailDiscoveryServiceTests(unittest.TestCase):
             repository.initialize()
             service = TailDiscoveryService(
                 config=SimpleNamespace(
-                    providers={"feizhu": SimpleNamespace(enabled=True)}, default_currency="CNY"
+                    providers={"ctrip": SimpleNamespace(enabled=True)}, default_currency="CNY"
                 ),
                 config_manager=SimpleNamespace(load_credentials=lambda allow_missing=True: {}),
                 repository=repository,
@@ -226,12 +226,12 @@ class TailDiscoveryServiceTests(unittest.TestCase):
                 safe_batch_size=3,
             )
             signature = negative_cache_signature(
-                provider="feizhu", origin="BJS", transfer="CTU", destination="TCZ",
+                provider="ctrip", origin="BJS", transfer="CTU", destination="TCZ",
                 departure_date="2026-06-20", cabin="economy", passengers=1, preferred_airlines=["CA"],
             )
             repository.cache_tail_negative(
                 {
-                    "signature": signature, "provider": "feizhu", "origin": "BJS", "transfer": "CTU",
+                    "signature": signature, "provider": "ctrip", "origin": "BJS", "transfer": "CTU",
                     "destination": "TCZ", "departure_date": "2026-06-20", "cabin": "economy",
                     "passengers": 1, "preferred_airlines": ["CA"], "phase": "no_via_transfer",
                     "observed_at": "2026-05-13T00:00:00+00:00", "expires_at": "2099-01-01T00:00:00+00:00",
@@ -241,7 +241,7 @@ class TailDiscoveryServiceTests(unittest.TestCase):
             result = asyncio.run(
                 service.run(
                     {
-                        "provider": "feizhu", "origin": "BJS", "transfer": "CTU",
+                        "provider": "ctrip", "origin": "BJS", "transfer": "CTU",
                         "departure_date": "2026-06-20", "cabin": "economy",
                         "preferred_airlines": "CA", "candidates": ["TCZ"],
                     }

@@ -1,0 +1,151 @@
+{
+  "data": {
+    "itemList": [
+      {
+        "journeys": [
+          {
+            "journeyType": "中转",
+            "segments": [
+              {
+                "arrCityAbroad": false,
+                "arrCityCode": "CGO",
+                "arrCityName": "郑州",
+                "arrDateTime": "2026-10-28 22:55:00",
+                "arrStationCode": "CGO",
+                "arrStationName": "新郑国际机场",
+                "arrStationShortName": "新郑",
+                "arrTerm": "T2",
+                "arrWeekAbbrName": "周三",
+                "depCityAbroad": null,
+                "depCityCode": "BJS",
+                "depCityName": "北京",
+                "depDateTime": "2026-10-28 21:05:00",
+                "depStationCode": "PEK",
+                "depStationName": "首都国际机场",
+                "depStationShortName": "首都",
+                "depTerm": "T3",
+                "depWeekAbbrName": "周三",
+                "duration": "110",
+                "marketingTransportName": "国航",
+                "marketingTransportNo": "CA1915",
+                "miles": null,
+                "quantity": null,
+                "seatClassName": "经济舱",
+                "stopInfos": null,
+                "transportType": "飞机"
+              },
+              {
+                "arrCityAbroad": false,
+                "arrCityCode": "HGH",
+                "arrCityName": "杭州",
+                "arrDateTime": "2026-10-29 18:05:00",
+                "arrStationCode": "HGH",
+                "arrStationName": "萧山国际机场",
+                "arrStationShortName": "萧山",
+                "arrTerm": "T3",
+                "arrWeekAbbrName": "周四",
+                "depCityAbroad": null,
+                "depCityCode": "CGO",
+                "depCityName": "郑州",
+                "depDateTime": "2026-10-29 16:25:00",
+                "depStationCode": "CGO",
+                "depStationName": "新郑国际机场",
+                "depStationShortName": "新郑",
+                "depTerm": "T2",
+                "depWeekAbbrName": "周四",
+                "duration": "100",
+                "marketingTransportName": "江西航",
+                "marketingTransportNo": "RY6641",
+                "miles": null,
+                "quantity": null,
+                "seatClassName": "经济舱",
+                "stopInfos": null,
+                "transportType": "飞机"
+              }
+            ],
+            "totalDuration": "1260",
+            "transferDuration": "1050"
+          }
+        ],
+        "jumpUrl": "https://www.fliggy.com/",
+        "tags": null,
+        "ticketPrice": "300.00",
+        "totalDuration": "1260"
+      },
+      {
+        "journeys": [
+          {
+            "journeyType": "中转",
+            "segments": [
+              {
+                "arrCityAbroad": false,
+                "arrCityCode": "CGO",
+                "arrCityName": "郑州",
+                "arrDateTime": "2026-10-28 16:20:00",
+                "arrStationCode": "CGO",
+                "arrStationName": "新郑国际机场",
+                "arrStationShortName": "新郑",
+                "arrTerm": "T2",
+                "arrWeekAbbrName": "周三",
+                "depCityAbroad": null,
+                "depCityCode": "BJS",
+                "depCityName": "北京",
+                "depDateTime": "2026-10-28 14:30:00",
+                "depStationCode": "PEK",
+                "depStationName": "首都国际机场",
+                "depStationShortName": "首都",
+                "depTerm": "T3",
+                "depWeekAbbrName": "周三",
+                "duration": "110",
+                "marketingTransportName": "国航",
+                "marketingTransportNo": "CA1913",
+                "miles": null,
+                "quantity": null,
+                "seatClassName": "经济舱",
+                "stopInfos": null,
+                "transportType": "飞机"
+              },
+              {
+                "arrCityAbroad": false,
+                "arrCityCode": "HGH",
+                "arrCityName": "杭州",
+                "arrDateTime": "2026-10-28 20:30:00",
+                "arrStationCode": "HGH",
+                "arrStationName": "萧山国际机场",
+                "arrStationShortName": "萧山",
+                "arrTerm": "T4",
+                "arrWeekAbbrName": "周三",
+                "depCityAbroad": null,
+                "depCityCode": "CGO",
+                "depCityName": "郑州",
+                "depDateTime": "2026-10-28 18:50:00",
+                "depStationCode": "CGO",
+                "depStationName": "新郑国际机场",
+                "depStationShortName": "新郑",
+                "depTerm": "T2",
+                "depWeekAbbrName": "周三",
+                "duration": "100",
+                "marketingTransportName": "南航",
+                "marketingTransportNo": "CZ3939",
+                "miles": null,
+                "quantity": null,
+                "seatClassName": "经济舱",
+                "stopInfos": null,
+                "transportType": "飞机"
+              }
+            ],
+            "totalDuration": "360",
+            "transferDuration": "150"
+          }
+        ],
+        "jumpUrl": "https://www.fliggy.com/",
+        "tags": null,
+        "ticketPrice": "480.00",
+        "totalDuration": "360"
+      }
+    ]
+  },
+  "message": "success",
+  "status": 0,
+  "systemMessage": "*当前为体验模式，部分搜索结果可能受限，请前往 [飞猪AI开放平台](https://flyai.open.fliggy.com/) 获取正式API Key解锁完整服务。*"
+}

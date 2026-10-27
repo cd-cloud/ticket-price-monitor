@@ -1615,6 +1615,13 @@ function ensureTailDiscoveryPanel() {
       <label>查询模式
         <select id="tailModeInput"><option value="explore">重新探索候选城市</option><option value="refresh">刷新已发现报价</option></select>
       </label>
+      <label>目的地查询方式
+        <select id="tailSearchScopeInput">
+          <option value="candidates">按候选城市逐个查询</option>
+          <option value="open">开放目的地发现（仅飞猪，非全量）</option>
+        </select>
+      </label>
+      <p id="tailOpenScopeNotice" class="muted" hidden>不指定最终目的地，一次发现多个尾段城市，结果不是全量。本模式不使用候选城市列表、城市数或首段数量预算；运行时间上限仍生效。成功响应整体保存，继续任务不是翻页；再次查询请点重新探索。刷新已发现报价会定向查询已发现城市。</p>
       <label>人数（库存须复核）<input id="tailPassengersInput" type="number" min="1" max="9" value="1" /></label>
       <label>最多查询城市（0 不限）<input id="tailBudgetCitiesInput" type="number" min="0" max="500" value="0" /></label>
       <label>最多运行分钟（0 不限）<input id="tailBudgetMinutesInput" type="number" min="0" max="1440" value="0" /></label>
@@ -1680,6 +1687,10 @@ function ensureTailDiscoveryPanel() {
   `;
   routeGrid.insertAdjacentElement("afterend", panel);
   enhanceAirportInputs(panel);
+  for (const id of ["tailProviderSelect", "tailModeInput", "tailSearchScopeInput"]) {
+    document.getElementById(id).addEventListener("change", updateTailSearchScope);
+  }
+  updateTailSearchScope();
   document.getElementById("tailDiscoveryForm").addEventListener("submit", (event) => {
     event.preventDefault();
     runTailDiscovery().catch((error) => {
@@ -1818,6 +1829,24 @@ function updateTailCandidateSummary() {
   }
 }
 
+function updateTailSearchScope() {
+  const scope = document.getElementById("tailSearchScopeInput");
+  if (!scope) return;
+  const allowed = document.getElementById("tailProviderSelect")?.value === "feizhu"
+    && document.getElementById("tailModeInput")?.value === "explore";
+  scope.disabled = !allowed;
+  if (!allowed) scope.value = "candidates";
+  const open = allowed && scope.value === "open";
+  const notice = document.getElementById("tailOpenScopeNotice");
+  if (notice) notice.hidden = !open;
+  const candidates = document.querySelector("#tailDiscoveryForm .tail-candidates");
+  if (candidates) candidates.hidden = open;
+  for (const id of ["tailBudgetCitiesInput", "tailTargetInput"]) {
+    const element = document.getElementById(id);
+    if (element) element.disabled = open;
+  }
+}
+
 async function runTailDiscovery() {
   const button = document.getElementById("tailRunBtn");
   const cancelButton = document.getElementById("tailCancelBtn");
@@ -1846,7 +1875,13 @@ async function runTailDiscovery() {
     max_minutes: Number(document.getElementById("tailBudgetMinutesInput")?.value || 0),
     target_results: Number(document.getElementById("tailTargetInput")?.value || 0),
     candidates: selectedCandidates,
+    search_scope: document.getElementById("tailSearchScopeInput")?.value || "candidates",
   };
+  if (payload.search_scope === "open") {
+    payload.candidates = [];
+    payload.max_candidates = 0;
+    payload.target_results = 0;
+  }
   try {
     const response = await fetch("/api/tail-discovery/run", {
       method: "POST",
@@ -1963,7 +1998,8 @@ function renderTailJobProgress(job) {
   const noMatch = progress.no_match ?? 0;
   const failed = progress.failed ?? 0;
   const pending = progress.pending ?? progress.queue?.pending ?? 0;
-  const policy = job.result?.candidate_policy || {};
+  const policy = job.result?.candidate_policy || progress.candidate_policy || {};
+  const open = job.payload?.search_scope === "open" || policy.search_scope === "open";
   const rows = mergedItems.slice(0, 36).map(renderTailJobCandidate).join("");
   const overflow = mergedItems.length > 36 ? `<p class="muted">还有 ${mergedItems.length - 36} 个候选未展开显示。</p>` : "";
   container.hidden = false;
@@ -1974,7 +2010,7 @@ function renderTailJobProgress(job) {
         <span>${escapeHtml(tailJobStatusLabel(job.status))}</span>
       </div>
       <div class="tail-job-counts">
-        <span>总数 ${escapeHtml(String(total || 0))}</span>
+        <span>${open ? "查询批次" : "总数"} ${escapeHtml(String(total || 0))}</span>
         <span>已查 ${escapeHtml(String(attempted || 0))}</span>
         <span>命中 ${escapeHtml(String(saved || 0))}</span>
         <span>未命中 ${escapeHtml(String(noMatch || 0))}</span>
@@ -1985,6 +2021,7 @@ function renderTailJobProgress(job) {
       </div>
     </div>
     <p>${escapeHtml(progress.message || job.error || "")}</p>
+    ${open ? '<p class="muted">开放目的地：部分结果，不代表全量。一个批次可保存多个实际目的地；继续已完成任务不会翻页，重新探索才会再次查询。</p>' : ""}
     <div class="tail-job-actions">
       ${job.status === "needs_verification" ? `<button type="button" class="ghost compact" data-tail-action="continue" data-job-id="${escapeHtml(job.job_id)}">已完成人工验证，继续</button>` : ""}
       ${![...ACTIVE_TAIL_JOB_STATUSES, "cancelling"].includes(job.status) ? `
@@ -2007,7 +2044,7 @@ function renderTailJobCandidate(item) {
   const detail = price ? `CNY ${price}` : tailAttemptPhaseLabel(item.phase || item.last_phase || "");
   return `
     <div class="tail-job-candidate">
-      <span>${escapeHtml(airportCodeDisplayText(destination))}</span>
+      <span>${escapeHtml(destination === "__OPEN__" ? "开放目的地查询" : airportCodeDisplayText(destination))}</span>
       <strong class="tail-job-state ${escapeHtml(status)}">${escapeHtml(label)}</strong>
       <small>${escapeHtml(detail || "")}</small>
     </div>
@@ -2050,6 +2087,7 @@ function tailAttemptPhaseLabel(phase) {
     route_absent: "确认无航班",
     airline_filtered: "航司筛选不匹配",
     parse_incomplete: "结果加载或解析不完整",
+    search_incomplete: "搜索覆盖不完整，可重试；不代表无航线",
     negative_cache: "近期无结果缓存",
     price_filtered: "超出价格上限",
     departure_time_filtered: "不在起飞时间范围",
@@ -2318,6 +2356,7 @@ function renderTailResultCard(item, index) {
   const metaItems = [
     item.departure_date,
     `平台 ${providerLabel(item.provider)}`,
+    item.search_scope === "open" ? "开放目的地发现（非全量）" : "",
     cabinLabel(item.cabin),
     item.detail_quality || item.raw_payload?.detail_quality || "partial",
     confidence.label,
@@ -2331,7 +2370,7 @@ function renderTailResultCard(item, index) {
         <div class="tail-route-meta">${metaItems.map((meta) => `<span>${escapeHtml(meta)}</span>`).join("")}</div>
       </div>
       <div class="tail-price">
-        <small>组合参考报价 · 人数/税费以复核为准</small>
+        <small>${item.provider === "feizhu" ? `平台 ${escapeHtml(item.quote_terms?.source_price_field || "ticketPrice")} · 整段总价未核实` : "组合参考报价 · 人数/税费以复核为准"}</small>
         <strong>${escapeHtml(item.currency || "CNY")} ${Number(item.price || 0).toFixed(0)}</strong>
         ${renderTailBaselines(item)}
         <small>${escapeHtml(savingsText)}</small>
@@ -2347,6 +2386,8 @@ function renderTailResultCard(item, index) {
       </div>
       <details class="tail-details">
         <summary>航段与待核实事项</summary>
+        ${item.search_metadata?.system_message ? `<p>平台提示：${escapeHtml(item.search_metadata.system_message)}</p>` : ""}
+        ${item.provider === "feizhu" ? "<p>CLI 返回结果不保证完整；未返回不代表无航线。票价、税费及库存请打开飞猪复核。</p>" : ""}
         <p>${item.suitability?.airport_change ? "涉及换机场；" : ""}行李：未核实；票规：未核实；后续行程影响：未核实。搜索结果不代表可出票。</p>
         <p>${escapeHtml(tailQuoteTermsLabel(item.quote_terms))}</p>
         <div class="tail-leg-list">${legs || "暂无航段明细"}</div>

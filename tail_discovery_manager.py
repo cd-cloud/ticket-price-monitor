@@ -127,6 +127,12 @@ class TailDiscoveryManager:
         payload.update(mode=mode, source_job_id=job_id)
         if mode in {"explore", "refresh"}:
             payload.update(expected_itinerary_key="", source_result_id=0)
+        if mode == "refresh" and payload.get("search_scope") == "open":
+            payload.update(search_scope="candidates", candidates=sorted(self.repository.tail_known_destinations(
+                provider=payload["provider"], origin=payload["origin"], transfer=payload["transfer"],
+                departure_date=payload["departure_date"], cabin=payload.get("cabin", "economy_plus"),
+                passengers=int(payload.get("passengers") or 1),
+            )))
         # A resumed refresh must retain its actual candidate set, not the original broad form.
         effective = (job.get("result") or {}).get("effective_candidates") or (job.get("progress") or {}).get("effective_candidates")
         if mode == "resume" and effective:
@@ -141,6 +147,7 @@ class TailDiscoveryManager:
             "provider", "origin", "transfer", "departure_date", "cabin", "passengers",
         )})
         payload.update(mode="recheck", candidates=[result["destination"]], ignore_cache=True,
+                       search_scope="candidates",
                        expected_itinerary_key=itinerary_key(result), source_job_id="",
                        source_result_id=result_id, max_candidates=1, target_results=0, max_price=None)
         return self.submit_tail_discovery(payload)

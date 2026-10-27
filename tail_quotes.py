@@ -118,7 +118,7 @@ def public_quote_metadata(result: dict[str, Any], *, now: datetime | None = None
         fresh = False
     return {
         **{k: raw.get(k) for k in (
-            "quote_terms", "expires_at", "rechecked_at", "recheck_outcome", "baselines", "suitability", "query_fingerprint",
+            "quote_terms", "expires_at", "rechecked_at", "recheck_outcome", "baselines", "suitability", "query_fingerprint", "search_metadata", "search_scope",
         )},
         "first_leg_key": raw.get("first_leg_key") or first_leg_key(result),
         "itinerary_key": raw.get("itinerary_key") or itinerary_key(result),
@@ -191,7 +191,7 @@ def apply_baselines(results: list[dict[str, Any]], baseline: dict[str, Any] | No
     for result in results:
         raw = result.setdefault("raw_payload", {})
         raw.setdefault("quote_terms", quote_terms(result.get("provider", ""), int(result.get("passengers") or 1)))
-        market = (baseline or {}).get("market") or baseline
+        market = baseline.get("market") if baseline and "market" in baseline else baseline
         same = ((baseline or {}).get("same_flights") or {}).get(first_leg_key(result))
         comparisons = {
             "market": _comparison(result, market, same_flight=False),

@@ -2,6 +2,7 @@ from dataclasses import dataclass
 import hashlib
 import json
 import math
+import re
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -16,6 +17,7 @@ from tail_discovery import (
 from tail_models import TailQueueItem, coerce_tail_queue_item
 from providers.ctrip_tail_parser import details_match_airlines, tail_text_tokens
 
+OPEN_DESTINATION = "__OPEN__"  # One atomic query checkpoint, never a result destination.
 
 @dataclass(slots=True)
 class TailDiscoveryRequest:
@@ -41,6 +43,7 @@ class TailDiscoveryRequest:
     quote_ttl_minutes: int = 20
     expected_itinerary_key: str = ""
     source_result_id: int = 0
+    search_scope: str = "candidates"
 
 
 def normalize_tail_discovery_request(payload: dict[str, Any]) -> TailDiscoveryRequest:
@@ -90,17 +93,27 @@ def normalize_tail_discovery_request(payload: dict[str, Any]) -> TailDiscoveryRe
         raise ValueError("Unknown discovery mode.")
     if mode == "resume" and not payload.get("source_job_id"):
         raise ValueError("继续任务需要 source_job_id。")
+    search_scope = str(payload.get("search_scope") or "candidates")
+    if search_scope not in {"candidates", "open"}:
+        raise ValueError("不支持的目的地查询范围。")
+    if search_scope == "open":
+        if provider != "feizhu":
+            raise ValueError("开放目的地仅支持飞猪官方 CLI。")
+        if mode not in {"explore", "resume"}:
+            raise ValueError("开放目的地用于发现；刷新或复核请指定已发现的目的地。")
+        if float(payload.get("max_candidates") or 0) or float(payload.get("target_results") or 0):
+            raise ValueError("开放目的地是单次查询，请使用运行时间预算；城市数和首段目标需设为 0。")
     def budget(name: str, maximum: float, default: float = 0) -> float:
         value = float(payload.get(name, default) or 0)
         if not math.isfinite(value) or value < 0 or value > maximum:
             raise ValueError(f"{name} must be between 0 and {maximum:g}.")
         return value
 
-    if "candidates" in payload and (not isinstance(payload["candidates"], list) or not payload["candidates"]):
+    if search_scope != "open" and "candidates" in payload and (not isinstance(payload["candidates"], list) or not payload["candidates"]):
         raise ValueError("请选择至少一个尾段目的地。")
     requested_candidates = [
         code
-        for item in payload.get("candidates", [])
+        for item in (payload.get("candidates", []) if search_scope != "open" else [])
         if (code := normalize_airport_code(item))
     ]
     candidates = requested_candidates if "candidates" in payload else list(
@@ -110,7 +123,7 @@ def normalize_tail_discovery_request(payload: dict[str, Any]) -> TailDiscoveryRe
         [
             code
             for code in dict.fromkeys(candidates)
-            if tail_candidate_code_allowed(code) and code not in {origin, transfer}
+            if (tail_candidate_code_allowed(code) or provider == "feizhu" and re.fullmatch(r"[A-Z]{3}", code)) and code not in {origin, transfer}
         ],
         preferred_airlines,
     )
@@ -123,7 +136,8 @@ def normalize_tail_discovery_request(payload: dict[str, Any]) -> TailDiscoveryRe
         passengers=passengers,
         preferred_airlines=preferred_airlines,
         candidate_profile=candidate_profile,
-        candidates=candidates,
+        candidates=[OPEN_DESTINATION] if search_scope == "open" else candidates,
+        search_scope=search_scope,
         max_price=max_price,
         departure_time_start=departure_time_start,
         departure_time_end=departure_time_end,

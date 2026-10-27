@@ -14,6 +14,7 @@ from typing import Any, AsyncIterator, Callable
 from config_manager import AppConfig, ConfigManager
 from data_storage import PriceRepository
 from tail_service import (
+    OPEN_DESTINATION,
     build_tail_request_queue,
     load_tail_queue,
     normalize_tail_discovery_request,
@@ -92,12 +93,15 @@ class TailDiscoveryService:
             preferred_airlines=request.preferred_airlines, candidates=candidates, max_price=request.max_price,
             departure_time_start=request.departure_time_start, departure_time_end=request.departure_time_end,
             alternatives_per_flight=request.alternatives_per_flight,
+            **({"search_scope": "open"} if request.search_scope == "open" else {}),
         )
         restored = []
         if request.mode == "resume":
             previous = self.repository.fetch_tail_discovery_job(request.source_job_id)
             if not previous:
                 raise ValueError("找不到原任务，不能继续。")
+            if str((previous.get("payload") or {}).get("search_scope") or "candidates") != request.search_scope:
+                raise ValueError("目的地查询方式已改变，请重新探索而不是继续原任务。")
             execution_mode = str((previous.get("result") or {}).get("execution_mode")
                                  or (previous.get("progress") or {}).get("execution_mode")
                                  or (previous.get("payload") or {}).get("_execution_mode")
@@ -133,21 +137,29 @@ class TailDiscoveryService:
             preferred_airlines=request.preferred_airlines,
         ) for code in candidates}
         cached = set()
-        if execution_mode not in {"refresh", "recheck"} and not request.ignore_cache:
+        # CLI search coverage is not guaranteed. Old Feizhu "no route" entries
+        # must not suppress the new server-side transfer-city queries either.
+        if provider != "feizhu" and execution_mode not in {"refresh", "recheck"} and not request.ignore_cache:
             cached = self.repository.active_negative_cache_codes(signatures, now=datetime.now(timezone.utc).isoformat()) - done
         attempts = [{"destination": code, "status": "no_match", "phase": "negative_cache", "method": "negative_cache"}
                     for code in ordered if code in cached]
+        if request.search_scope == "open":
+            attempts.extend(item["attempt"] for item in restored if item["destination"] in done)
         for attempt in attempts:
             self._apply_queue_attempt(queue, attempt["destination"], attempt)
         pending = [code for code in ordered if code not in done and code not in cached]
         selected = pending[:request.max_candidates] if request.max_candidates else pending
         processed = set()
-        warnings, errors = [], []
+        warnings = (["开放目的地仅返回平台提供的部分方案，不代表全量；继续任务不会请求下一页，重新探索才会重新查询。"]
+                    if request.search_scope == "open" else [])
+        errors = []
         baseline = None
         stop_reason = ""
         policy = {"known_route_edges": len(edges), "cache_skipped": len(cached),
                   "negative_cache_ttl_hours": 6, "ignore_cache": request.ignore_cache,
                   "ranking": "decayed_value_per_second", "exploration_fraction": .2}
+        policy.update(search_scope=request.search_scope,
+                      progress_unit="开放查询批次" if request.search_scope == "open" else "目的地")
 
         def publish(stage="running", message="正在查询", **extra):
             if progress_callback:
@@ -183,14 +195,22 @@ class TailDiscoveryService:
             )
             if request.expected_itinerary_key:
                 kept = [r for r in kept if itinerary_key(r) == request.expected_itinerary_key]
-            kept = select_tail_alternatives(kept, per_first_leg=request.alternatives_per_flight)
+            if request.search_scope == "open":
+                # Preserve alternatives per actual destination, not only the first few cities.
+                kept = [item for dest in dict.fromkeys(r["destination"] for r in kept)
+                        for item in select_tail_alternatives([r for r in kept if r["destination"] == dest],
+                                                            per_first_leg=request.alternatives_per_flight)]
+            else:
+                kept = select_tail_alternatives(kept, per_first_leg=request.alternatives_per_flight)
             for result in kept:
                 annotate_quote(result, ttl_minutes=request.quote_ttl_minutes, rechecked=execution_mode == "recheck")
                 result["raw_payload"].update(query_fingerprint=fingerprint, request=asdict(request), job_id=job_id)
                 result["scraped_at"] = self.repository.now_iso()
             apply_baselines(kept, baseline)
             if kept:
-                attempt.update(status="matched", phase="matched", price=min(r["price"] for r in kept))
+                attempt.update(status="matched",
+                               phase="rate_limited" if attempt.get("phase") == "rate_limited" else "matched",
+                               price=min(r["price"] for r in kept))
             elif candidate_results:
                 attempt.update(status="no_match", phase="validation_failed" if invalid else "filtered",
                                error="; ".join(str(a.get("error") or "") for a in rejected + invalid) or "未找到符合条件的原报价")
@@ -199,7 +219,7 @@ class TailDiscoveryService:
             savings = [r.get("savings_amount") for r in kept if r.get("savings_amount") is not None]
             attempt["savings_amount"] = max(savings) if savings else None
             entry = None
-            if attempt.get("status") == "no_match" and attempt.get("phase") in {"route_absent", "no_via_transfer"}:
+            if provider != "feizhu" and attempt.get("status") == "no_match" and attempt.get("phase") in {"route_absent", "no_via_transfer"}:
                 now = datetime.now(timezone.utc)
                 entry = {"signature": signatures[code], "provider": provider, "origin": request.origin,
                          "transfer": request.transfer, "destination": code, "departure_date": request.departure_date,
@@ -230,7 +250,7 @@ class TailDiscoveryService:
             code = str(event.get("destination") or "")
             if stage == "candidate_started":
                 self._mark_queue_item(queue, code, status="running")
-                publish(message=f"正在查询 {code}")
+                publish(message="正在进行开放目的地查询（非全量）" if code == OPEN_DESTINATION else f"正在查询 {code}")
                 return
             if stage in {"needs_verification", "verification_continued"}:
                 self._mark_queue_item(queue, code, status="needs_verification" if stage == "needs_verification" else "running")
@@ -238,7 +258,8 @@ class TailDiscoveryService:
                 return
             attempt = event.get("attempt")
             if attempt and attempt.get("status") not in {"started", "needs_verification"}:
-                checkpoint(attempt, [r for r in event.get("results") or [] if r.get("destination") == code])
+                checkpoint(attempt, [r for r in event.get("results") or []
+                                     if code == OPEN_DESTINATION or r.get("destination") == code])
 
         async def bounded(coro, maximum=math.inf):
             remaining = min(maximum, deadline - monotonic())
@@ -278,11 +299,13 @@ class TailDiscoveryService:
                                 candidates=batch, preferred_airlines=request.preferred_airlines,
                                 progress_callback=on_event, cancel_checker=should_stop,
                                 verification_continue_checker=verification_continue_checker,
+                                **({"search_scope": "open"} if request.search_scope == "open" else {}),
                             ))
                             # Backward-compatible runners may only publish at batch completion.
                             for attempt in discovery.get("attempts") or []:
                                 checkpoint(attempt, [r for r in discovery.get("results") or []
-                                                     if r.get("destination") == attempt.get("destination")])
+                                                     if attempt.get("destination") == OPEN_DESTINATION
+                                                     or r.get("destination") == attempt.get("destination")])
                             errors.extend(discovery.get("errors") or [])
                             if should_stop():
                                 break
@@ -308,6 +331,8 @@ class TailDiscoveryService:
             "checkpoint_job_id": root_job_id, "query_fingerprint": fingerprint, "mode": request.mode,
             "effective_candidates": candidates,
             "execution_mode": execution_mode,
+            "search_scope": request.search_scope,
+            "discovered_destinations": sorted({r["destination"] for r in results}),
             "report": tail_batch_report(candidates, attempts, len(results)), "candidate_policy": policy,
             "baseline": baseline, "preferred_airlines": request.preferred_airlines,
             "metrics": {"elapsed_seconds": round(elapsed, 2), "queried_candidates": len(processed),
@@ -317,9 +342,10 @@ class TailDiscoveryService:
                       "report": tail_queue_report(queue)},
         }
         summary["progress"] = {**tail_progress_payload("finished", candidates, attempts, len(results),
-                                  f"任务结束：{stop_reason or '扫描完成'}", queue=tail_queue_report(queue)),
+                                  f"任务结束：{stop_reason or ('开放查询完成（非全量）' if request.search_scope == 'open' else '扫描完成')}", queue=tail_queue_report(queue)),
                                "checkpoint_job_id": root_job_id, "query_fingerprint": fingerprint,
-                               "effective_candidates": candidates, "execution_mode": execution_mode}
+                               "effective_candidates": candidates, "execution_mode": execution_mode,
+                               "candidate_policy": policy}
         # Diagnostic JSON is not used for recovery. SQLite is the source of truth.
         try:
             save_tail_queue(self.queue_file, root_job_id, {"attempts": attempts, "queue_items": queue})

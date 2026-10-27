@@ -1,7 +1,8 @@
 """FlyAI CLI adapter for Feizhu/Fliggy flight queries.
 
 Replaces browser automation with direct CLI calls to @fly-ai/flyai-cli,
-which uses Fliggy's MCP API under the hood. No login or browser required.
+which uses Fliggy's MCP API under the hood. Trial results may be restricted;
+successful searches do not establish complete inventory or bookability.
 """
 
 from __future__ import annotations
@@ -9,6 +10,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
+import re
 import os
 import shutil
 import subprocess
@@ -21,25 +24,12 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 
-def _find_flyai_executable() -> list[str]:
-    """Return the command list to invoke flyai-cli.
+class FlightSearchResults(list):
+    """List-compatible results retaining provider notices even for empty searches."""
 
-    We prefer the bare binary on Unix and npx on Windows, because
-    Windows .cmd wrappers don't play well with asyncio subprocess.
-    """
-    # Prefer direct binary on Unix-like systems
-    if sys.platform != "win32":
-        bin_path = shutil.which("flyai")
-        if bin_path:
-            return [bin_path]
-
-    # On Windows (or if bare binary missing), use npx — it works everywhere.
-    # We intentionally use the bare command name (not the full path) because
-    # Windows asyncio subprocess in shell mode needs PATH resolution.
-    if shutil.which("npx"):
-        return ["npx", "--no-install", "flyai"]
-
-    return []
+    def __init__(self, offers=(), *, metadata=None):
+        super().__init__(offers)
+        self.search_metadata = dict(metadata or {})
 
 # City/airport code → Chinese city name mapping for CLI origin/destination args.
 # flyai-cli accepts Chinese city names (e.g. "成都", "新加坡") rather than IATA codes.
@@ -185,6 +175,7 @@ _CABIN_MAP: dict[str, str] = {
     "economy_plus": "economy",
     "premium_economy": "economy",
     "business": "business",
+    "business_first": "business,first",
     "first": "first",
     "any": "economy",
 }
@@ -202,24 +193,35 @@ def _resolve_city_name(code: str) -> str:
 def _build_cli_args(
     *,
     origin: str,
-    destination: str,
+    destination: str | None = None,
     departure_date: str,
     cabin: str = "economy",
     journey_type: str | None = None,
+    transfer_city: str | None = None,
+    transport_no: str | None = None,
 ) -> list[str]:
     """Build flyai search-flight CLI arguments (without the executable name)."""
     args = [
         "search-flight",
         "--origin", _resolve_city_name(origin),
-        "--destination", _resolve_city_name(destination),
         "--dep-date", departure_date,
         "--sort-type", _DEFAULT_SORT_TYPE,
     ]
+    if destination:
+        args.extend(["--destination", _resolve_city_name(destination)])
+    if transport_no:
+        args.extend(["--transport-no", transport_no])
     seat_class = _CABIN_MAP.get(cabin.lower(), "economy")
-    if seat_class != "economy":
+    if cabin.lower() != "any":
         args.extend(["--seat-class-name", seat_class])
     if journey_type is not None:
-        args.extend(["--journey-type", journey_type])
+        if str(journey_type) not in {"1", "2"}:
+            raise ValueError("journey_type must be 1 (direct) or 2 (transit)")
+        args.extend(["--journey-type", str(journey_type)])
+    if transfer_city:
+        if str(journey_type) != "2":
+            raise ValueError("transfer_city requires journey_type=2")
+        args.extend(["--transfer-city", _resolve_city_name(transfer_city)])
     return args
 
 
@@ -259,7 +261,7 @@ def _segment_to_flight_detail(seg: dict[str, Any], *, segment_index: int = 1) ->
 
     duration_raw = seg.get("duration")
     try:
-        duration_minutes = int(duration_raw) if duration_raw is not None else None
+        duration_minutes = int(str(duration_raw).removesuffix("分钟").strip()) if duration_raw is not None else None
     except (ValueError, TypeError):
         duration_minutes = None
 
@@ -278,6 +280,7 @@ def _segment_to_flight_detail(seg: dict[str, Any], *, segment_index: int = 1) ->
         "origin": seg.get("depCityCode"),
         "destination": seg.get("arrCityCode"),
         "departure_date": dep_date,
+        "arrival_date": arr_dt.split(" ")[0] if " " in arr_dt else None,
         "duration_minutes": duration_minutes,
         "aircraft": None,
         "stops": None,
@@ -287,8 +290,8 @@ def _segment_to_flight_detail(seg: dict[str, Any], *, segment_index: int = 1) ->
 def _item_to_offer(item: dict[str, Any]) -> dict[str, Any]:
     """Convert a single flyai-cli item into our internal offer representation."""
     journeys = item.get("journeys") or []
-    if not journeys:
-        raise ValueError("flyai item has no journeys")
+    if len(journeys) != 1:
+        raise ValueError("Expected exactly one journey for a one-way search")
 
     journey = journeys[0]
     segments = journey.get("segments") or []
@@ -296,11 +299,18 @@ def _item_to_offer(item: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("flyai journey has no segments")
 
     # Price
-    price_raw = item.get("ticketPrice")
+    source_price_field = "ticketPrice" if item.get("ticketPrice") not in (None, "") else "adultPrice"
+    price_raw = item.get(source_price_field)
+    # Only accept a complete positive numeric price, optionally prefixed by CNY/RMB/¥.
+    # Do not silently extract digits from ranges, "from" prices or other currencies.
+    price_text = str(price_raw).strip()
+    match = re.fullmatch(r"(?:CNY|RMB|[¥￥])?\s*((?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?)", price_text, re.I)
     try:
-        price = float(price_raw) if price_raw is not None else 0.0
+        price = float(match[1].replace(",", "")) if match else 0.0
     except (ValueError, TypeError):
         price = 0.0
+    if not math.isfinite(price) or price <= 0:
+        raise ValueError("flyai item has no valid positive ticket price")
 
     # First segment drives the title and departure_time
     first_seg = segments[0]
@@ -324,6 +334,8 @@ def _item_to_offer(item: dict[str, Any]) -> dict[str, Any]:
 
     return {
         "price": price,
+        "source_price_field": source_price_field,
+        "source_price_value": price_raw,
         "title": title,
         "departure_time": departure_time,
         "row_text": row_text,
@@ -337,10 +349,12 @@ def _item_to_offer(item: dict[str, Any]) -> dict[str, Any]:
 async def search_flights(
     *,
     origin: str,
-    destination: str,
+    destination: str | None = None,
     departure_date: str,
     cabin: str = "economy",
     journey_type: str | None = None,
+    transfer_city: str | None = None,
+    transport_no: str | None = None,
     timeout_seconds: int = 30,
 ) -> list[dict[str, Any]]:
     """Call flyai-cli search-flight and return a list of offer dicts.
@@ -361,6 +375,8 @@ async def search_flights(
         departure_date=departure_date,
         cabin=cabin,
         journey_type=journey_type,
+        transfer_city=transfer_city,
+        transport_no=transport_no,
     )
 
     logger.debug("Running flyai-cli: %s", " ".join(args))
@@ -384,13 +400,27 @@ async def search_flights(
         raise RuntimeError("flyai-cli returned empty stdout.")
 
     parsed = _parse_flyai_response(stdout_text)
+    if isinstance(parsed, dict) and parsed.get("status") not in (None, 0, "0"):
+        raise RuntimeError(
+            f"flyai-cli API status={parsed.get('status')}: "
+            f"{str(parsed.get('message') or parsed.get('systemMessage') or 'search failed')[:500]}"
+        )
     data = parsed.get("data") if isinstance(parsed, dict) else None
     if not isinstance(data, dict) or not isinstance(data.get("itemList"), list):
         raise RuntimeError("flyai-cli returned an incomplete response; this is not evidence of no flights.")
     item_list = data["itemList"]
+    notice = str(parsed.get("systemMessage") or "")
+    trial = any(marker in notice.lower() for marker in ("体验模式", "trial mode"))
+    metadata = {
+        "system_message": notice, "trial_mode": trial,
+        "coverage": "limited" if trial else "unknown",
+        "returned_count": len(item_list),
+        "query": {"journey_type": journey_type, "transfer_city": transfer_city,
+                  "transport_no": transport_no, "destination": destination},
+    }
     if not item_list:
         logger.warning("flyai-cli returned no flight items for %s→%s on %s", origin, destination, departure_date)
-        return []
+        return FlightSearchResults(metadata=metadata)
 
     offers: list[dict[str, Any]] = []
     for item in item_list:
@@ -403,7 +433,10 @@ async def search_flights(
 
     if not offers:
         raise RuntimeError("flyai-cli flight items could not be parsed; please retry or inspect the response.")
-    return sorted(offers, key=lambda o: o["price"])
+    metadata["parsed_count"] = len(offers)
+    for offer in offers:
+        offer["search_metadata"] = dict(metadata)
+    return FlightSearchResults(sorted(offers, key=lambda o: o["price"]), metadata=metadata)
 
 
 async def _run_flyai_command_async(args: list[str], timeout_seconds: int) -> subprocess.CompletedProcess[str]:
