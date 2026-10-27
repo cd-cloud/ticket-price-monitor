@@ -115,7 +115,7 @@ class TailJobManagerTests(unittest.TestCase):
 
         self.assertEqual(job["status"], "interrupted")
         self.assertEqual(job["progress"]["stage"], "interrupted")
-        self.assertIn("请重新发起", job["progress"]["message"])
+        self.assertIn("可继续任务", job["progress"]["message"])
 
     def test_terminal_persisted_job_resets_running_queue_items(self) -> None:
         job = TailDiscoveryJobManager._normalize_persisted_job(

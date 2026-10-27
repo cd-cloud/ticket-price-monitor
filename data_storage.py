@@ -1,6 +1,7 @@
 import csv
 import json
 import sqlite3
+import threading
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -8,9 +9,24 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from tail_models import TailDiscoveryAttempt, TailDiscoveryResult, coerce_tail_attempt, coerce_tail_result
+from tail_quotes import itinerary_key
 
 
 SCHEMA = """
+CREATE TABLE IF NOT EXISTS tail_provider_cooldowns (
+    provider TEXT PRIMARY KEY,
+    until_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS tail_candidate_checkpoints (
+    job_id TEXT NOT NULL,
+    destination TEXT NOT NULL,
+    fingerprint TEXT NOT NULL,
+    status TEXT NOT NULL,
+    attempt TEXT NOT NULL,
+    result_ids TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY(job_id, destination)
+);
 CREATE TABLE IF NOT EXISTS price_snapshots (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     provider TEXT NOT NULL,
@@ -160,20 +176,45 @@ class PriceRepository:
     def __init__(self, database_path: Path) -> None:
         self.database_path = database_path
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
+        self._transaction = threading.local()
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:
-        conn = sqlite3.connect(self.database_path)
+        active = getattr(self._transaction, "connection", None)
+        if active is not None:
+            yield active
+            return
+        conn = sqlite3.connect(self.database_path, timeout=30)
         conn.row_factory = sqlite3.Row
         try:
             yield conn
             conn.commit()
+        except BaseException:
+            conn.rollback()
+            raise
         finally:
             conn.close()
+
+    @contextmanager
+    def transaction(self) -> Iterator[sqlite3.Connection]:
+        """Nested repository calls share one transaction, isolated per worker thread."""
+        if getattr(self._transaction, "connection", None) is not None:
+            raise RuntimeError("Nested write transactions are not supported.")
+        with self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            self._transaction.connection = conn
+            try:
+                yield conn
+            finally:
+                self._transaction.connection = None
 
     def initialize(self) -> None:
         with self.connect() as conn:
             conn.executescript(SCHEMA)
+            self._ensure_columns(conn, "tail_discovery_results", {"itinerary_key": "TEXT"})
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_tail_itinerary ON tail_discovery_results(itinerary_key, observed_at)"
+            )
             self._ensure_columns(
                 conn,
                 "price_snapshots",
@@ -316,6 +357,7 @@ class PriceRepository:
 
     def insert_tail_discovery_result(self, result: TailDiscoveryResult | dict[str, Any]) -> int:
         result = coerce_tail_result(result).to_record()
+        key = itinerary_key(result)
         values = (
             result["provider"],
             result["origin"],
@@ -331,13 +373,14 @@ class PriceRepository:
             json.dumps(result.get("flight_details") or [], ensure_ascii=False),
             json.dumps(result.get("raw_payload") or {}, ensure_ascii=False),
         )
-        identity = values[:7] + (result["observed_at"],)
+        identity = values[:7] + (result["observed_at"], key)
         with self.connect() as conn:
             existing = conn.execute(
                 """
                 SELECT id FROM tail_discovery_results
                 WHERE provider = ? AND origin = ? AND transfer = ? AND destination = ?
                   AND departure_date = ? AND cabin = ? AND passengers = ? AND observed_at = ?
+                  AND itinerary_key = ?
                 """,
                 identity,
             ).fetchone()
@@ -355,12 +398,120 @@ class PriceRepository:
                 """
                 INSERT INTO tail_discovery_results (
                     provider, origin, transfer, destination, departure_date, cabin, passengers,
-                    currency, price, observed_at, scraped_at, flight_details, raw_payload
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    currency, price, observed_at, scraped_at, flight_details, raw_payload, itinerary_key
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                values,
+                (*values, key),
             )
             return int(cursor.lastrowid)
+
+    def fetch_tail_result(self, result_id: int) -> dict[str, Any]:
+        with self.connect() as conn:
+            row = conn.execute("SELECT * FROM tail_discovery_results WHERE id = ?", (result_id,)).fetchone()
+        if row is None:
+            raise KeyError(result_id)
+        item = dict(row)
+        item["flight_details"] = json.loads(item.get("flight_details") or "[]")
+        item["raw_payload"] = json.loads(item.get("raw_payload") or "{}")
+        return item
+
+    def tail_known_destinations(self, *, provider: str, origin: str, transfer: str,
+                                departure_date: str, cabin: str, passengers: int) -> set[str]:
+        """Do not let the UI's history page limit truncate the refresh search scope."""
+        with self.connect() as conn:
+            rows = conn.execute(
+                """SELECT DISTINCT destination FROM tail_discovery_results
+                   WHERE provider=? AND origin=? AND transfer=? AND departure_date=?
+                   AND cabin=? AND passengers=?""",
+                (provider, origin, transfer, departure_date, cabin, passengers),
+            ).fetchall()
+        return {str(row["destination"]) for row in rows}
+
+    def checkpoint_tail_candidate(
+        self, *, root_job_id: str, fingerprint: str, attempt: dict[str, Any],
+        results: list[dict[str, Any]], negative_entry: dict[str, Any] | None = None,
+        recheck_result_id: int = 0,
+        positive_signature: str | None = None,
+    ) -> list[int]:
+        """Commit results, evidence and completion together; safe to repeat a callback."""
+        with self.transaction() as conn:
+            previous = conn.execute(
+                "SELECT status, result_ids FROM tail_candidate_checkpoints WHERE job_id=? AND destination=?",
+                (root_job_id, attempt["destination"]),
+            ).fetchone()
+            if previous and previous["status"] in {"matched", "no_match"}:
+                return json.loads(previous["result_ids"])
+            ids = []
+            for result in results:
+                ids.append(self.insert_tail_discovery_result(result))
+                self.record_tail_route_edges(result)
+            if ids and positive_signature:
+                conn.execute("DELETE FROM tail_negative_cache WHERE signature=?", (positive_signature,))
+            self.insert_tail_discovery_attempt(attempt)
+            if negative_entry:
+                self.cache_tail_negative(negative_entry)
+            if recheck_result_id:
+                previous_quote = self.fetch_tail_result(recheck_result_id)
+                raw = previous_quote["raw_payload"]
+                raw["recheck_outcome"] = {
+                    "status": "found" if ids else "not_found" if attempt["status"] == "no_match" else "failed",
+                    "observed_at": self.now_iso(), "result_ids": ids,
+                }
+                # A failed recheck must not leave the old price looking current.
+                if recheck_result_id not in ids:
+                    raw["expires_at"] = self.now_iso()
+                conn.execute("UPDATE tail_discovery_results SET raw_payload=? WHERE id=?",
+                             (json.dumps(raw, ensure_ascii=False), recheck_result_id))
+            conn.execute(
+                """INSERT INTO tail_candidate_checkpoints
+                   (job_id,destination,fingerprint,status,attempt,result_ids,updated_at)
+                   VALUES (?,?,?,?,?,?,?)
+                   ON CONFLICT(job_id,destination) DO UPDATE SET
+                   fingerprint=excluded.fingerprint,status=excluded.status,attempt=excluded.attempt,
+                   result_ids=excluded.result_ids,updated_at=excluded.updated_at""",
+                (root_job_id, attempt["destination"], fingerprint, attempt["status"],
+                 json.dumps(attempt, ensure_ascii=False), json.dumps(ids), self.now_iso()),
+            )
+        return ids
+
+    def tail_checkpoints(self, job_id: str) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute("SELECT * FROM tail_candidate_checkpoints WHERE job_id=?", (job_id,)).fetchall()
+        items = []
+        for row in rows:
+            item = dict(row)
+            item["attempt"] = json.loads(item["attempt"])
+            item["result_ids"] = json.loads(item["result_ids"])
+            items.append(item)
+        return items
+
+    def set_tail_cooldown(self, provider: str, until_at: str) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """INSERT INTO tail_provider_cooldowns(provider, until_at) VALUES (?,?)
+                   ON CONFLICT(provider) DO UPDATE SET until_at=MAX(until_at, excluded.until_at)""",
+                (provider, until_at),
+            )
+
+    def tail_cooldown(self, provider: str) -> str | None:
+        with self.connect() as conn:
+            row = conn.execute("SELECT until_at FROM tail_provider_cooldowns WHERE provider=?", (provider,)).fetchone()
+        if row and datetime.fromisoformat(row["until_at"]) > datetime.now(timezone.utc):
+            return str(row["until_at"])
+        return None
+
+    def tail_candidate_evidence(self, *, origin: str, transfer: str, candidates: list[str]) -> list[dict[str, Any]]:
+        if not candidates:
+            return []
+        with self.connect() as conn:
+            rows = conn.execute(
+                f"""SELECT provider,cabin,destination,status,phase,observed_at,raw_payload
+                    FROM tail_discovery_attempts WHERE origin=? AND transfer=?
+                    AND destination IN ({','.join('?' for _ in candidates)})
+                    ORDER BY observed_at DESC LIMIT 3000""",
+                [origin, transfer, *candidates],
+            ).fetchall()
+        return [{**dict(row), "raw_payload": json.loads(row["raw_payload"] or "{}")} for row in rows]
 
     def record_tail_route_edges(self, result: TailDiscoveryResult | dict[str, Any]) -> None:
         result = coerce_tail_result(result).to_record()

@@ -1,6 +1,8 @@
 from dataclasses import dataclass
 import hashlib
 import json
+import math
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -30,40 +32,78 @@ class TailDiscoveryRequest:
     departure_time_start: str
     departure_time_end: str
     ignore_cache: bool
+    mode: str = "explore"
+    source_job_id: str = ""
+    max_candidates: int = 0
+    max_minutes: float = 0
+    target_results: int = 0
+    alternatives_per_flight: int = 3
+    quote_ttl_minutes: int = 20
+    expected_itinerary_key: str = ""
+    source_result_id: int = 0
 
 
 def normalize_tail_discovery_request(payload: dict[str, Any]) -> TailDiscoveryRequest:
     provider = str(payload.get("provider") or "ctrip").strip().lower()
     if provider not in {"ctrip", "feizhu"}:
-        provider = "ctrip"
+        raise ValueError("Unsupported tail-discovery provider.")
     origin = normalize_airport_code(payload.get("origin"))
     transfer = normalize_airport_code(payload.get("transfer"))
     departure_date = str(payload.get("departure_date") or "").strip()
     cabin = str(payload.get("cabin") or "economy_plus").strip().lower()
+    if cabin not in {"economy_plus", "business_first", "economy", "premium_economy", "business", "first"}:
+        raise ValueError("不支持的舱位。")
     candidate_profile = str(payload.get("candidate_profile") or "").strip().upper()
-    preferred_airlines = [
+    airline_input = payload.get("preferred_airlines") or ""
+    if isinstance(airline_input, list):
+        airline_input = ",".join(str(item) for item in airline_input)
+    preferred_airlines = sorted(set(
         item.strip().upper()
-        for item in str(payload.get("preferred_airlines") or "").replace("\uff0c", ",").split(",")
+        for item in str(airline_input).replace("\uff0c", ",").split(",")
         if item.strip()
-    ]
+    ))
     try:
-        passengers = max(1, min(int(payload.get("passengers") or 1), 9))
-    except Exception:
-        passengers = 1
+        passengers = int(payload.get("passengers", 1))
+        if not 1 <= passengers <= 9:
+            raise ValueError()
+    except (ValueError, TypeError):
+        raise ValueError("人数必须为 1 到 9 的整数。")
     try:
         max_price_value = float(payload.get("max_price") or 0)
+        if not math.isfinite(max_price_value) or max_price_value < 0:
+            raise ValueError()
         max_price = max_price_value if max_price_value > 0 else None
-    except Exception:
-        max_price = None
+    except (ValueError, TypeError):
+        raise ValueError("价格上限必须为非负有效数字。")
     departure_time_start = normalize_tail_time(payload.get("departure_time_start"))
     departure_time_end = normalize_tail_time(payload.get("departure_time_end"))
+    if not origin or not transfer or origin == transfer:
+        raise ValueError("请填写不同的出发地和目标中转地。")
+    date.fromisoformat(departure_date)
+    for field in ("departure_time_start", "departure_time_end"):
+        if payload.get(field) and not normalize_tail_time(payload[field]):
+            raise ValueError("出发时段必须为有效的 HH:MM。")
+    if departure_time_start and departure_time_end and departure_time_start > departure_time_end:
+        raise ValueError("出发时段结束时间不能早于开始时间。")
+    mode = str(payload.get("mode") or "explore")
+    if mode not in {"explore", "resume", "refresh", "recheck"}:
+        raise ValueError("Unknown discovery mode.")
+    if mode == "resume" and not payload.get("source_job_id"):
+        raise ValueError("继续任务需要 source_job_id。")
+    def budget(name: str, maximum: float, default: float = 0) -> float:
+        value = float(payload.get(name, default) or 0)
+        if not math.isfinite(value) or value < 0 or value > maximum:
+            raise ValueError(f"{name} must be between 0 and {maximum:g}.")
+        return value
 
+    if "candidates" in payload and (not isinstance(payload["candidates"], list) or not payload["candidates"]):
+        raise ValueError("请选择至少一个尾段目的地。")
     requested_candidates = [
         code
         for item in payload.get("candidates", [])
         if (code := normalize_airport_code(item))
     ]
-    candidates = requested_candidates or list(
+    candidates = requested_candidates if "candidates" in payload else list(
         default_tail_codes_for_airlines(preferred_airlines, candidate_profile=candidate_profile)
     )
     candidates = prioritize_tail_codes(
@@ -88,6 +128,15 @@ def normalize_tail_discovery_request(payload: dict[str, Any]) -> TailDiscoveryRe
         departure_time_start=departure_time_start,
         departure_time_end=departure_time_end,
         ignore_cache=str(payload.get("ignore_cache") or "").lower() in {"1", "true", "yes", "on"},
+        mode=mode,
+        source_job_id=str(payload.get("source_job_id") or ""),
+        max_candidates=int(budget("max_candidates", 500)),
+        max_minutes=budget("max_minutes", 1440),
+        target_results=int(budget("target_results", 100)),
+        alternatives_per_flight=max(1, int(budget("alternatives_per_flight", 10, 3))),
+        quote_ttl_minutes=max(1, int(budget("quote_ttl_minutes", 120, 20))),
+        expected_itinerary_key=str(payload.get("expected_itinerary_key") or ""),
+        source_result_id=int(budget("source_result_id", 2**53)),
     )
 
 
@@ -136,7 +185,7 @@ def validate_tail_result(
     first = details[0] if isinstance(details[0], dict) else {}
     last = details[-1] if isinstance(details[-1], dict) else {}
     evidence_text = tail_result_evidence_text(result, details, raw_payload)
-    strict_evidence = source in {"text_fallback", "dom_transit_card"}
+    strict_evidence = source in {"text_fallback", "dom_transit_card", "cleaned_text_fallback"}
 
     route_checks = {
         "first_leg_starts_at_origin": detail_matches_place(first, origin, ["origin", "departure_airport"]),
@@ -145,6 +194,8 @@ def validate_tail_result(
         "last_leg_ends_at_destination": detail_matches_place(last, destination, ["destination", "arrival_airport"]),
     }
     checks.update(route_checks)
+    if len(details) != 2:
+        reasons.append("当前甩尾查询只接受已确认的 A-B-C 两航段组合。")
     for check, ok in route_checks.items():
         if not ok:
             reasons.append(f"{check} 未通过。")
@@ -176,6 +227,8 @@ def validate_tail_result(
         reasons.append(f"航段日期与查询日期不一致：{', '.join(sorted(set(mismatched_dates)))}。")
     elif not date_values:
         warnings.append("航段里没有可校验的出发日期。")
+    if not first.get("departure_date"):
+        warnings.append("首段的实际出发日期未确认。")
 
     checks["airline_matches"] = details_match_airlines(details, preferred_airlines)
     if not checks["airline_matches"]:
@@ -183,7 +236,7 @@ def validate_tail_result(
 
     if reasons:
         return {"status": "invalid", "checks": checks, "reasons": reasons, "warnings": warnings}
-    if warnings or source in {"text_fallback", "dom_transit_card"}:
+    if warnings or source in {"text_fallback", "dom_transit_card", "cleaned_text_fallback"}:
         return {"status": "needs_review", "checks": checks, "reasons": reasons, "warnings": warnings}
     return {"status": "valid", "checks": checks, "reasons": reasons, "warnings": warnings}
 
@@ -233,6 +286,10 @@ def tail_result_evidence_text(
 
 
 def tail_queue_key(**payload: Any) -> str:
+    payload = dict(payload)
+    for field in ("candidates", "preferred_airlines"):
+        if isinstance(payload.get(field), list):
+            payload[field] = sorted(set(payload[field]))
     text = json.dumps(payload, ensure_ascii=False, sort_keys=True)
     return hashlib.sha1(text.encode("utf-8")).hexdigest()[:16]
 
@@ -250,7 +307,9 @@ def load_tail_queue(queue_file: Path, queue_key: str) -> dict[str, Any]:
 def save_tail_queue(queue_file: Path, queue_key: str, state: dict[str, Any]) -> None:
     queue_file.parent.mkdir(parents=True, exist_ok=True)
     state["key"] = queue_key
-    queue_file.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    temporary = queue_file.with_suffix(queue_file.suffix + ".tmp")
+    temporary.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    temporary.replace(queue_file)
 
 
 def build_tail_request_queue(

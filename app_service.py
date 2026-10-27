@@ -239,6 +239,14 @@ class FlightPriceApplication:
         self.refresh_config()
         return self.tail_discovery_manager.submit_tail_discovery(payload)
 
+    def restart_tail_discovery(self, job_id: str, mode: str) -> dict[str, Any]:
+        self.refresh_config()
+        return self.tail_discovery_manager.restart_job(job_id, mode)
+
+    def recheck_tail_result(self, result_id: int) -> dict[str, Any]:
+        self.refresh_config()
+        return self.tail_discovery_manager.recheck_result(result_id)
+
     def tail_discovery_job(self, job_id: str) -> dict[str, Any]:
         return self.tail_discovery_manager.tail_discovery_job(job_id)
 

@@ -46,6 +46,17 @@ query results, reports, and schedule state on the user's machine.
 - `analyzer.py`: CSV export and markdown reports.
 - `static/app.js`, `static/app.css`, `templates/index.html`: local dashboard UI.
 
+## Tail-discovery execution
+
+Tail providers enumerate offers; `TailDiscoveryService` filters and validates them before ranking.
+`tail_quotes.py` owns itinerary/first-leg identities, quote freshness and comparable baseline rules.
+`TailDiscoveryJobManager` provides in-process lifecycle and explicit resume/refresh/explore actions.
+Per-destination results, attempts and completion checkpoints commit together through
+`PriceRepository.transaction()`. SQLite, not the diagnostic queue JSON, is authoritative for recovery.
+Feizhu tail discovery calls the CLI directly and does not start a browser. Rate limits create a
+persisted provider cooldown instead of triggering backend hopping.
+See [TAIL_DISCOVERY.md](TAIL_DISCOVERY.md) for API, migration, quote semantics and test commands.
+
 ## Browser Backend Policy
 
 The default backend is Chrome. Provider execution order is Chrome first, then Playwright

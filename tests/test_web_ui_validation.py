@@ -192,3 +192,32 @@ class WebUiValidationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class TailApiValidationTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.addCleanup(self.temp.cleanup)
+        path = Path(self.temp.name) / "config.json"
+        write_config(path)
+        self.client = TestClient(create_app(str(path)))
+        self.addCleanup(self.client.close)
+
+    def test_invalid_tail_request_returns_400_without_starting_job(self):
+        response = self.client.post("/api/tail-discovery/run", json={"origin": "BJS", "transfer": "BJS"})
+        self.assertEqual(400, response.status_code)
+        self.assertEqual([], self.client.get("/api/tail-discovery/jobs").json()["jobs"])
+
+    def test_unknown_recheck_returns_404(self):
+        self.assertEqual(404, self.client.post("/api/tail-discovery/results/999/recheck").status_code)
+
+    def test_unknown_resume_returns_404(self):
+        self.assertEqual(404, self.client.post("/api/tail-discovery/jobs/unknown/restart", json={"mode": "resume"}).status_code)
+
+    def test_recheck_dispatch_and_busy_error(self):
+        from unittest.mock import patch
+        with patch("app_service.FlightPriceApplication.recheck_tail_result", return_value={"job_id": "j", "status": "queued"}) as fn:
+            response = self.client.post("/api/tail-discovery/results/5/recheck")
+            self.assertEqual(200, response.status_code)
+            fn.assert_called_once_with(5)
+        with patch("app_service.FlightPriceApplication.recheck_tail_result", side_effect=RuntimeError("busy")):
+            self.assertEqual(409, self.client.post("/api/tail-discovery/results/5/recheck").status_code)

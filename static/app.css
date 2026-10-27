@@ -1621,3 +1621,18 @@ pre {
     bottom: 16px;
   }
 }
+
+/* Tail quote comparison: group by the flight that actually reaches B. */
+.tail-job-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
+.tail-flight-group { margin: 12px 0 24px; min-width: 0; }
+.tail-flight-group h4 { margin: 8px 0; }
+.tail-flight-group > p { overflow-wrap: anywhere; }
+.tail-price small { max-width: 260px; white-space: normal; overflow-wrap: anywhere; }
+.tail-review-actions { flex-wrap: wrap; }
+.tail-result-main { align-content: start; }
+.tail-route-meta { align-items: flex-start; align-content: flex-start; }
+#tailActionError { color: #b42318; }
+@media (max-width: 640px) {
+  .tail-job-actions > button { flex: 1 1 130px; }
+  .tail-flight-group .tail-result-card { min-width: 0; }
+}

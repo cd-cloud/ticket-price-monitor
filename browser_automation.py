@@ -302,6 +302,9 @@ class BrowserAutomation:
         departure_date: str,
         cabin: str,
         passengers: int,
+        departure_time_start: str = "",
+        departure_time_end: str = "",
+        preferred_airlines: list[str] | None = None,
     ) -> dict[str, object] | None:
         return await create_tail_runner(provider_name, self).query_baseline(
             origin=origin,
@@ -309,6 +312,9 @@ class BrowserAutomation:
             departure_date=departure_date,
             cabin=cabin,
             passengers=passengers,
+            departure_time_start=departure_time_start,
+            departure_time_end=departure_time_end,
+            preferred_airlines=preferred_airlines,
         )
 
     async def discover_tail_routes(

@@ -272,9 +272,8 @@ class FeizhuTailRunnerTests(unittest.IsolatedAsyncioTestCase):
         finally:
             adapter.search_flights = original_search
 
-        self.assertEqual(len(events), 1)
-        self.assertEqual(events[0]["stage"], "candidate_finished")
-        self.assertEqual(events[0]["destination"], "SIN")
+        self.assertEqual([event["stage"] for event in events], ["candidate_started", "candidate_finished"])
+        self.assertEqual(events[-1]["destination"], "SIN")
 
     async def test_cancel_checker_stops_early(self) -> None:
         runner = FeizhuTailDiscoveryRunner(FakeAutomation())

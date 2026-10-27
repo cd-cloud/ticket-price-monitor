@@ -14,6 +14,8 @@ from tail_discovery import (
 )
 from tail_discovery_service import TailDiscoveryService
 from tail_jobs import TailDiscoveryJobManager
+from tail_service import normalize_tail_discovery_request
+from tail_quotes import public_quote_metadata, itinerary_key
 
 
 class TailDiscoveryManager:
@@ -82,7 +84,66 @@ class TailDiscoveryManager:
         )
 
     def submit_tail_discovery(self, payload: dict[str, Any]) -> dict[str, Any]:
+        payload = {key: value for key, value in payload.items() if not key.startswith("_")}
+        request = normalize_tail_discovery_request(payload)
+        if not request.candidates:
+            raise ValueError("请选择至少一个有效的尾段目的地。")
+        if request.provider not in self.config.providers or not self.config.providers[request.provider].enabled:
+            raise ValueError("所选平台未启用。")
+        if request.mode == "resume":
+            source = self.job_manager.get(request.source_job_id)
+            if source["status"] in {"queued", "running", "needs_verification", "cancelling"}:
+                raise ValueError("任务仍在运行；人工验证请使用继续验证。")
+            payload["_checkpoint_job_id"] = (
+                (source.get("result") or {}).get("checkpoint_job_id")
+                or (source.get("progress") or {}).get("checkpoint_job_id")
+                or (source.get("payload") or {}).get("_checkpoint_job_id")
+                or request.source_job_id
+            )
+            payload["_execution_mode"] = (
+                (source.get("result") or {}).get("execution_mode")
+                or (source.get("progress") or {}).get("execution_mode")
+                or (source.get("payload") or {}).get("_execution_mode")
+                or (source.get("payload") or {}).get("mode") or "explore"
+            )
+        if request.mode == "recheck":
+            if not request.source_result_id or not request.expected_itinerary_key:
+                raise ValueError("报价复核需要原报价 ID 和行程标识。")
+            original = self.repository.fetch_tail_result(request.source_result_id)
+            if itinerary_key(original) != request.expected_itinerary_key:
+                raise ValueError("复核行程与原报价不一致。")
+        if self.run_lock.locked():
+            raise RuntimeError("已有查询正在运行，请稍后再试。")
+        cooldown = self.repository.tail_cooldown(request.provider)
+        if cooldown:
+            raise RuntimeError(f"平台限流冷却中，{cooldown} 后再试。")
         return self.job_manager.submit(payload)
+
+    def restart_job(self, job_id: str, mode: str) -> dict[str, Any]:
+        if mode not in {"resume", "refresh", "explore"}:
+            raise ValueError("Unknown task action.")
+        job = self.job_manager.get(job_id)
+        payload = {key: value for key, value in (job.get("payload") or {}).items() if not key.startswith("_")}
+        payload.update(mode=mode, source_job_id=job_id)
+        if mode in {"explore", "refresh"}:
+            payload.update(expected_itinerary_key="", source_result_id=0)
+        # A resumed refresh must retain its actual candidate set, not the original broad form.
+        effective = (job.get("result") or {}).get("effective_candidates") or (job.get("progress") or {}).get("effective_candidates")
+        if mode == "resume" and effective:
+            payload["candidates"] = effective
+        return self.submit_tail_discovery(payload)
+
+    def recheck_result(self, result_id: int) -> dict[str, Any]:
+        result = self.repository.fetch_tail_result(result_id)
+        raw = result.get("raw_payload") or {}
+        payload = dict(raw.get("request") or {})
+        payload.update({key: result[key] for key in (
+            "provider", "origin", "transfer", "departure_date", "cabin", "passengers",
+        )})
+        payload.update(mode="recheck", candidates=[result["destination"]], ignore_cache=True,
+                       expected_itinerary_key=itinerary_key(result), source_job_id="",
+                       source_result_id=result_id, max_candidates=1, target_results=0, max_price=None)
+        return self.submit_tail_discovery(payload)
 
     def tail_discovery_job(self, job_id: str) -> dict[str, Any]:
         return self.job_manager.get(job_id)
@@ -115,7 +176,8 @@ class TailDiscoveryManager:
             raise ValueError("No failed destinations found for this job.")
         payload["candidates"] = failed_codes
         payload["retry_of"] = job_id
-        return self.job_manager.submit(payload)
+        payload.update(mode="explore", ignore_cache=True)
+        return self.submit_tail_discovery(payload)
 
     def latest_tail_discovery_job(self) -> dict[str, Any] | None:
         return self.job_manager.latest()
@@ -144,6 +206,7 @@ class TailDiscoveryManager:
         results = self.repository.fetch_tail_discovery_results(limit=limit)
         for item in results:
             raw_payload = item.get("raw_payload") if isinstance(item.get("raw_payload"), dict) else {}
+            item.update(public_quote_metadata(item))
             if raw_payload:
                 item["detail_source"] = raw_payload.get("detail_source") or item.get("detail_source")
                 item["detail_quality"] = raw_payload.get("detail_quality") or item.get("detail_quality")

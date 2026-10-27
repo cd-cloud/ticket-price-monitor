@@ -130,7 +130,7 @@ class TailDiscoveryServiceTests(unittest.TestCase):
             self.assertEqual(1, len(result["report"]["attempts"]))
             self.assertEqual("current", result["report"]["attempts"][0]["phase"])
             saved_queue = json.loads(queue_file.read_text(encoding="utf-8"))
-            self.assertEqual(2, len(saved_queue["attempts"]))
+            self.assertEqual(1, len(saved_queue["attempts"]))  # New exploration never inherits legacy queue state.
 
     def test_feizhu_tail_discovery_does_not_start_browser_backend(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -198,11 +198,12 @@ class TailDiscoveryServiceTests(unittest.TestCase):
             self.assertEqual(1, len(repository.fetch_tail_discovery_attempts(limit=10)))
 
     def test_baseline_enriches_results_with_savings(self) -> None:
-        results = [{"price": 600, "raw_payload": {}}]
+        terms = {"currency": "CNY", "price_basis": "per_person", "tax_included": True, "priced_passengers": 1}
+        results = [{"price": 600, "observed_at": "2026-05-13T00:00:00Z", "raw_payload": {"quote_terms": terms}}]
 
         apply_tail_baseline(
             results,
-            {"price": 1000, "observed_at": "2026-05-13T00:00:00Z", "review_url": "https://example.test"},
+            {"price": 1000, "observed_at": "2026-05-13T00:00:00Z", "review_url": "https://example.test", "quote_terms": terms},
         )
 
         self.assertEqual(1000, results[0]["baseline_price"])
@@ -277,11 +278,8 @@ class TailDiscoveryServiceTests(unittest.TestCase):
                     ],
                 }]
 
-            cancel_calls = 0
             def cancel_checker():
-                nonlocal cancel_calls
-                cancel_calls += 1
-                return cancel_calls >= 3
+                return bool(repository.fetch_tail_discovery_results())
 
             with patch("providers.feizhu_flyai_adapter.search_flights", fake_search):
                 result = asyncio.run(
@@ -297,7 +295,7 @@ class TailDiscoveryServiceTests(unittest.TestCase):
 
             self.assertEqual(1, result["saved"])
             self.assertEqual(1, len(repository.fetch_tail_discovery_results()))
-            self.assertEqual(400, result["results"][0]["savings_amount"])
+            self.assertIsNone(result["results"][0]["savings_amount"])  # Missing fare terms cannot prove savings.
 
     def test_reset_running_queue_items_after_cancel(self) -> None:
         queue_items = [

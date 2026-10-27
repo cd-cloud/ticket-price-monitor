@@ -229,7 +229,36 @@ def create_app(config_path: str | None = None) -> FastAPI:
 
     @app.post("/api/tail-discovery/run")
     async def run_tail_discovery(payload: dict = Body(...)) -> dict:
-        return await asyncio.to_thread(service.submit_tail_discovery, payload)
+        try:
+            return await asyncio.to_thread(service.submit_tail_discovery, payload)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="Source job not found")
+        except (ValueError, TypeError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+
+    @app.post("/api/tail-discovery/jobs/{job_id}/restart")
+    async def restart_tail_discovery(job_id: str, payload: dict = Body(...)) -> dict:
+        try:
+            return await asyncio.to_thread(service.restart_tail_discovery, job_id, str(payload.get("mode") or "resume"))
+        except KeyError:
+            raise HTTPException(status_code=404, detail="Source job not found")
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+
+    @app.post("/api/tail-discovery/results/{result_id}/recheck")
+    async def recheck_tail_result(result_id: int) -> dict:
+        try:
+            return await asyncio.to_thread(service.recheck_tail_result, result_id)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="Quote not found")
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
 
     @app.get("/api/tail-discovery/jobs/latest")
     async def latest_tail_discovery_job() -> dict:

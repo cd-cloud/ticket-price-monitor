@@ -2,6 +2,7 @@ import logging
 import inspect
 import threading
 import uuid
+from copy import deepcopy
 from collections import Counter
 from datetime import datetime, timezone
 from typing import Any, Callable
@@ -92,8 +93,15 @@ class TailDiscoveryJobManager:
             "continue_requested": False,
         }
         with self._lock:
+            if any(item.get("status") in {"queued", "running", "needs_verification", "cancelling"}
+                   for item in self._jobs.values()):
+                raise RuntimeError("A tail discovery job is already active.")
             self._jobs[job_id] = job
-        self._persist(job)
+            try:
+                self._persist(job)
+            except Exception:
+                self._jobs.pop(job_id, None)
+                raise
 
         worker = threading.Thread(target=self._run_job, args=(job_id, payload), daemon=True)
         worker.start()
@@ -107,7 +115,7 @@ class TailDiscoveryJobManager:
                 if persisted:
                     return self._normalize_persisted_job(persisted) or persisted
                 raise KeyError(job_id)
-            return dict(job)
+            return deepcopy(job)
 
     def latest(self) -> dict[str, Any] | None:
         with self._lock:
@@ -139,7 +147,7 @@ class TailDiscoveryJobManager:
                 if not persisted:
                     raise KeyError(job_id)
                 return self._normalize_persisted_job(persisted) or persisted
-            if job.get("status") in {"finished", "failed", "cancelled", "interrupted"}:
+            if job.get("status") in {"finished", "failed", "cancelled", "interrupted", "paused"}:
                 return dict(job)
             progress = dict(job.get("progress") or {})
             progress["stage"] = "cancelling"
@@ -175,14 +183,14 @@ class TailDiscoveryJobManager:
     def _normalize_persisted_job(job: dict[str, Any] | None) -> dict[str, Any] | None:
         if not job:
             return None
-        if job.get("status") in {"queued", "running", "needs_verification"}:
+        if job.get("status") in {"queued", "running", "needs_verification", "cancelling"}:
             job = dict(job)
             job["status"] = "interrupted"
             progress = dict(job.get("progress") or {})
             progress["stage"] = "interrupted"
-            progress["message"] = "服务曾重启，原来的自动化浏览器页面已经关闭；请重新发起甩尾查询。"
+            progress["message"] = "服务曾重启，浏览器已关闭；可继续任务，已完成结果保留。"
             job["progress"] = progress
-        if job.get("status") in {"finished", "failed", "cancelled", "interrupted"}:
+        if job.get("status") in {"finished", "failed", "cancelled", "interrupted", "paused"}:
             job = dict(job)
             job = _normalize_terminal_queue_payload(job)
         return job
@@ -192,6 +200,8 @@ class TailDiscoveryJobManager:
             job = self._jobs.get(job_id)
             if not job:
                 return
+            if job.get("cancel_requested") and changes.get("status") in {"running", "needs_verification"}:
+                changes["status"] = "cancelling"
             job.update(changes)
             job["updated_at"] = now_iso()
             self._persist(job)
@@ -201,6 +211,7 @@ class TailDiscoveryJobManager:
             self._repository.upsert_tail_discovery_job(job)
         except Exception:
             LOGGER.exception("failed to persist tail discovery job: %s", job.get("job_id"))
+            raise
 
     def _progress_callback(self, job_id: str) -> Callable[[dict[str, Any]], None]:
         def callback(progress: dict[str, Any]) -> None:
@@ -269,6 +280,10 @@ class TailDiscoveryJobManager:
                 "pending": 0,
             }
             final_status = "cancelled" if result.get("cancelled") else "finished"
+            if result.get("stop_reason") and not result.get("cancelled"):
+                final_status = "paused"
+                progress = {**progress, "stage": "paused",
+                            "message": f"任务已停止：{result['stop_reason']}；可继续未完成项。"}
             if progress.get("stage") == "needs_verification" or result.get("needs_verification"):
                 final_status = "needs_verification"
             if final_status == "cancelled":

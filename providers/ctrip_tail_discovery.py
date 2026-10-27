@@ -34,7 +34,7 @@ def response_store_has_flight_itineraries(response_store: list[dict], *, data_wa
     return False
 
 
-def extract_tail_match_from_network(
+def extract_tail_matches_from_network(
     automation: Any,
     response_store: list[dict],
     *,
@@ -42,8 +42,8 @@ def extract_tail_match_from_network(
     transfer: str,
     destination: str,
     preferred_airlines: list[str] | None = None,
-) -> dict[str, object] | None:
-    best_match: tuple[float, dict, dict] | None = None
+) -> list[dict[str, object]]:
+    matches = []
     for item in response_store:
         payload = item.get("payload")
         if not isinstance(payload, dict):
@@ -66,18 +66,17 @@ def extract_tail_match_from_network(
                         continue
                     if not ctrip_tail_parser.details_match_airlines(details, preferred_airlines):
                         continue
-                    if best_match is None or total < best_match[0]:
-                        best_match = (total, itinerary, price)
+                    matches.append({
+                        "total_price": total, "details": details,
+                        "detail_source": "network_exact", "detail_quality": "complete",
+                    })
+    return sorted(matches, key=lambda item: float(item["total_price"]))
 
-    if best_match is None:
-        return None
-    total_price, itinerary, price = best_match
-    return {
-        "total_price": total_price,
-        "details": ctrip_itinerary.build_itinerary_details(itinerary, price),
-        "detail_source": "network_exact",
-        "detail_quality": "complete",
-    }
+
+def extract_tail_match_from_network(automation: Any, response_store: list[dict], **kwargs):
+    """Compatibility helper; discovery consumes the plural interface."""
+    matches = extract_tail_matches_from_network(automation, response_store, **kwargs)
+    return matches[0] if matches else None
 
 
 def network_diagnostics(
@@ -363,72 +362,37 @@ async def warm_tail_result_data(automation: Any, page: Any, response_store: list
             return
 
 
-async def extract_tail_match_from_page(
-    page: Any,
-    *,
-    origin: str,
-    transfer: str,
-    destination: str,
-    departure_date: str,
-    cabin: str,
-    preferred_airlines: list[str] | None = None,
-) -> dict[str, object] | None:
+async def extract_tail_matches_from_page(page: Any, **kwargs) -> list[dict[str, object]]:
     cards = await ctrip_tail_parser.extract_transit_cards_from_page(page)
-    dom_match = ctrip_tail_parser.find_tail_match_from_cards(
-        cards,
-        origin=origin,
-        transfer=transfer,
-        destination=destination,
-        departure_date=departure_date,
-        cabin=cabin,
-        preferred_airlines=preferred_airlines,
-    )
-    if dom_match is not None:
-        return dom_match
-
+    matches = [match for card in cards
+               if (match := ctrip_tail_parser.find_tail_match_from_cards([card], **kwargs))]
+    if matches:
+        return matches
     try:
         text = await page.locator("body").inner_text()
     except Exception:
-        return None
+        text = ""
     blocks = await ctrip_tail_parser.text_blocks_from_page(page, text)
-    text_match = ctrip_tail_parser.find_tail_match_from_text_blocks(
-        blocks,
-        origin=origin,
-        transfer=transfer,
-        destination=destination,
-        departure_date=departure_date,
-        cabin=cabin,
-        preferred_airlines=preferred_airlines,
-    )
-    if text_match is not None:
-        return text_match
-
+    matches = [match for block in blocks
+               if (match := ctrip_tail_parser.find_tail_match_from_text_blocks([block], **kwargs))]
+    if matches:
+        return matches
     try:
         cleaned = clean_html_text(await page.content(), url=page.url)
     except Exception:
-        cleaned = {}
-    cleaned_text = str(cleaned.get("text") or "")
-    if cleaned_text and cleaned_text != text:
-        cleaned_blocks = ctrip_tail_parser.split_result_blocks(cleaned_text)
-        cleaned_match = ctrip_tail_parser.find_tail_match_from_text_blocks(
-            cleaned_blocks,
-            origin=origin,
-            transfer=transfer,
-            destination=destination,
-            departure_date=departure_date,
-            cabin=cabin,
-            preferred_airlines=preferred_airlines,
-        )
-        if cleaned_match is not None:
-            cleaned_match["detail_source"] = "cleaned_text_fallback"
-            cleaned_match["detail_quality"] = "needs_review"
-            cleaned_match["text_cleaner"] = {
-                "engine": cleaned.get("engine"),
-                "available": cleaned.get("available"),
-                "length": cleaned.get("length"),
-            }
-            return cleaned_match
-    return None
+        return []
+    for block in ctrip_tail_parser.split_result_blocks(str(cleaned.get("text") or "")):
+        match = ctrip_tail_parser.find_tail_match_from_text_blocks([block], **kwargs)
+        if match:
+            match.update(detail_source="cleaned_text_fallback", detail_quality="needs_review",
+                         text_cleaner={key: cleaned.get(key) for key in ("engine", "available", "length")})
+            matches.append(match)
+    return matches
+
+
+async def extract_tail_match_from_page(page: Any, **kwargs) -> dict[str, object] | None:
+    matches = await extract_tail_matches_from_page(page, **kwargs)
+    return min(matches, key=lambda item: float(item["total_price"])) if matches else None
 
 
 async def extract_tail_page_diagnostics(

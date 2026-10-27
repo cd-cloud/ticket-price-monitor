@@ -13,6 +13,9 @@ import os
 import shutil
 import subprocess
 import sys
+import signal
+import threading
+from time import monotonic
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -363,7 +366,7 @@ async def search_flights(
     logger.debug("Running flyai-cli: %s", " ".join(args))
 
     try:
-        completed = await asyncio.to_thread(_run_flyai_command, args, timeout_seconds)
+        completed = await _run_flyai_command_async(args, timeout_seconds)
     except subprocess.TimeoutExpired as exc:
         raise RuntimeError(f"flyai-cli timed out after {timeout_seconds}s") from exc
 
@@ -381,7 +384,10 @@ async def search_flights(
         raise RuntimeError("flyai-cli returned empty stdout.")
 
     parsed = _parse_flyai_response(stdout_text)
-    item_list = parsed.get("data", {}).get("itemList", [])
+    data = parsed.get("data") if isinstance(parsed, dict) else None
+    if not isinstance(data, dict) or not isinstance(data.get("itemList"), list):
+        raise RuntimeError("flyai-cli returned an incomplete response; this is not evidence of no flights.")
+    item_list = data["itemList"]
     if not item_list:
         logger.warning("flyai-cli returned no flight items for %s→%s on %s", origin, destination, departure_date)
         return []
@@ -395,23 +401,61 @@ async def search_flights(
             logger.warning("Skipping malformed flyai item: %s", exc)
             continue
 
+    if not offers:
+        raise RuntimeError("flyai-cli flight items could not be parsed; please retry or inspect the response.")
     return sorted(offers, key=lambda o: o["price"])
 
 
-def _run_flyai_command(args: list[str], timeout_seconds: int) -> subprocess.CompletedProcess[str]:
+async def _run_flyai_command_async(args: list[str], timeout_seconds: int) -> subprocess.CompletedProcess[str]:
+    cancelled = threading.Event()
+    worker = asyncio.create_task(asyncio.to_thread(_run_flyai_command, args, timeout_seconds, cancelled))
+    try:
+        return await asyncio.shield(worker)
+    except asyncio.CancelledError:
+        cancelled.set()
+        # Do not release the task's run lock while a CLI child is still querying.
+        try:
+            await worker
+        except Exception:
+            pass
+        raise
+
+
+def _run_flyai_command(
+    args: list[str], timeout_seconds: int, cancelled: threading.Event | None = None,
+) -> subprocess.CompletedProcess[str]:
     env = dict(os.environ)
     if sys.platform == "win32":
         env["PATHEXT"] = env.get("PATHEXT") or ".COM;.EXE;.BAT;.CMD"
-    return subprocess.run(
-        args,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=timeout_seconds,
-        env=env,
-        check=False,
+    deadline = monotonic() + timeout_seconds
+    process = subprocess.Popen(
+        args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        encoding="utf-8", errors="replace", env=env,
+        start_new_session=sys.platform != "win32",
     )
+    try:
+        while True:
+            if cancelled and cancelled.is_set():
+                raise RuntimeError("flyai-cli cancelled")
+            remaining = deadline - monotonic()
+            if remaining <= 0:
+                raise subprocess.TimeoutExpired(args, timeout_seconds)
+            try:
+                stdout, stderr = process.communicate(timeout=min(.2, remaining))
+                return subprocess.CompletedProcess(args, process.returncode, stdout, stderr)
+            except subprocess.TimeoutExpired:
+                continue
+    finally:
+        if process.poll() is None:
+            if sys.platform == "win32":
+                subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                               capture_output=True, check=False, timeout=5)
+            else:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            process.communicate()
 
 
 def _find_flyai_executable() -> list[str]:
