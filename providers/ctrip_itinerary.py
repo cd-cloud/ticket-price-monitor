@@ -107,6 +107,7 @@ def build_multi_city_details(itinerary: dict[str, Any], price: dict[str, Any]) -
                 "origin": flight_info.get("DepartureCityCode"),
                 "destination": flight_info.get("ArrivalCityCode"),
                 "departure_date": str(flight_info.get("TakeOffDateTime", "")).split(" ")[0] or None,
+                "arrival_date": str(flight_info.get("ArrivalDateTime") or "")[:10] or None,
             }
         )
     return details
@@ -153,6 +154,7 @@ def build_domestic_online_details(itinerary: dict[str, Any], price: dict[str, An
                     "origin": flight.get("departureCityCode") or flight.get("departureAirportCode"),
                     "destination": flight.get("arrivalCityCode") or flight.get("arrivalAirportCode"),
                     "departure_date": str(departure_time or "").split(" ")[0] or None,
+                    "arrival_date": str(arrival_time or "")[:10] or None,
                 }
             )
     return details

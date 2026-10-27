@@ -118,7 +118,7 @@ def public_quote_metadata(result: dict[str, Any], *, now: datetime | None = None
         fresh = False
     return {
         **{k: raw.get(k) for k in (
-            "quote_terms", "expires_at", "rechecked_at", "recheck_outcome", "baselines", "suitability", "query_fingerprint", "search_metadata", "search_scope",
+            "quote_terms", "expires_at", "rechecked_at", "recheck_outcome", "baselines", "suitability", "query_fingerprint", "search_metadata", "search_scope", "filter_scope",
         )},
         "first_leg_key": raw.get("first_leg_key") or first_leg_key(result),
         "itinerary_key": raw.get("itinerary_key") or itinerary_key(result),

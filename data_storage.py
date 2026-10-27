@@ -13,6 +13,39 @@ from tail_quotes import itinerary_key
 
 
 SCHEMA = """
+CREATE TABLE IF NOT EXISTS tail_route_observations (
+    root_job_id TEXT NOT NULL,
+    source_candidate TEXT NOT NULL,
+    observation_key TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    origin TEXT NOT NULL,
+    transfer TEXT NOT NULL,
+    destination TEXT NOT NULL,
+    quality TEXT NOT NULL,
+    observed_at TEXT NOT NULL,
+    context TEXT NOT NULL,
+    flight_details TEXT NOT NULL,
+    PRIMARY KEY(root_job_id, source_candidate, observation_key)
+);
+CREATE INDEX IF NOT EXISTS idx_tail_observations_route
+ON tail_route_observations(origin, transfer, destination, observed_at);
+CREATE TABLE IF NOT EXISTS tail_search_outcomes (
+    root_job_id TEXT NOT NULL,
+    source_candidate TEXT NOT NULL,
+    destination TEXT NOT NULL,
+    origin TEXT NOT NULL,
+    transfer TEXT NOT NULL,
+    query_scope TEXT NOT NULL,
+    outcome TEXT NOT NULL,
+    observed_at TEXT NOT NULL,
+    elapsed_seconds REAL,
+    savings_amount REAL,
+    currency TEXT,
+    context TEXT NOT NULL,
+    PRIMARY KEY(root_job_id, source_candidate, destination)
+);
+CREATE INDEX IF NOT EXISTS idx_tail_outcomes_route
+ON tail_search_outcomes(origin, transfer, destination, observed_at);
 CREATE TABLE IF NOT EXISTS tail_provider_cooldowns (
     provider TEXT PRIMARY KEY,
     until_at TEXT NOT NULL
@@ -432,6 +465,8 @@ class PriceRepository:
         results: list[dict[str, Any]], negative_entry: dict[str, Any] | None = None,
         recheck_result_id: int = 0,
         positive_signature: str | None = None,
+        route_observations: list[dict[str, Any]] | None = None,
+        learning_context: dict[str, Any] | None = None,
     ) -> list[int]:
         """Commit results, evidence and completion together; safe to repeat a callback."""
         with self.transaction() as conn:
@@ -444,7 +479,10 @@ class PriceRepository:
             ids = []
             for result in results:
                 ids.append(self.insert_tail_discovery_result(result))
-                self.record_tail_route_edges(result)
+                if (result.get("raw_payload") or {}).get("validation", {}).get("status") == "valid":
+                    self.record_tail_route_edges(result)
+            if learning_context is not None:
+                self.record_tail_learning(root_job_id, attempt, route_observations or [], learning_context)
             if ids and positive_signature:
                 conn.execute("DELETE FROM tail_negative_cache WHERE signature=?", (positive_signature,))
             self.insert_tail_discovery_attempt(attempt)
@@ -454,7 +492,9 @@ class PriceRepository:
                 previous_quote = self.fetch_tail_result(recheck_result_id)
                 raw = previous_quote["raw_payload"]
                 raw["recheck_outcome"] = {
-                    "status": "found" if ids else "not_found" if attempt["status"] == "no_match" else "failed",
+                    "status": ("found" if ids else "inconclusive"
+                               if attempt.get("recheck_outcome") == "inconclusive"
+                               or attempt["status"] == "no_match" else "failed"),
                     "observed_at": self.now_iso(), "result_ids": ids,
                 }
                 # A failed recheck must not leave the old price looking current.
@@ -513,10 +553,95 @@ class PriceRepository:
             ).fetchall()
         return [{**dict(row), "raw_payload": json.loads(row["raw_payload"] or "{}")} for row in rows]
 
+    def record_tail_learning(self, root_job_id, attempt, observations, context):
+        """Called within checkpoint transaction; retry replaces one query's learning."""
+        from tail_service import OPEN_DESTINATION
+        source = attempt["destination"]
+        observed_at = self.now_iso()
+        grouped = {}
+        with self.connect() as conn:
+            # Keep previous positive structural evidence if a retry returns nothing.
+            for observation in observations:
+                destination = observation["destination"]
+                grouped.setdefault(destination, []).append(observation)
+                if observation["quality"] == "valid":
+                    self.record_route_edge_details(context["provider"], observation["flight_details"],
+                                                   observation["observed_at"])
+                conn.execute(
+                    """INSERT INTO tail_route_observations VALUES (?,?,?,?,?,?,?,?,?,?,?)
+                       ON CONFLICT(root_job_id,source_candidate,observation_key) DO UPDATE SET
+                       quality=excluded.quality,observed_at=excluded.observed_at,
+                       context=excluded.context,flight_details=excluded.flight_details""",
+                    (root_job_id, source, observation["observation_key"], context["provider"],
+                     context["origin"], context["transfer"], destination, observation["quality"],
+                     observation["observed_at"], json.dumps(context, ensure_ascii=False),
+                     json.dumps(observation["flight_details"], ensure_ascii=False)))
+            # Open search gives no evidence at all about unreturned destinations.
+            destinations = list(grouped) if source == OPEN_DESTINATION else [source]
+            for destination in destinations:
+                rows = grouped.get(destination, [])
+                valid = [r for r in rows if r["quality"] == "valid"]
+                matched = [r for r in valid if r["quote_matched"]]
+                # A recheck may intentionally discard other flights; not a bad-city signal.
+                outcome = ("matched" if matched else "filtered" if valid and
+                           all(r.get("quote_outcome") == "filtered" for r in valid) and
+                           context.get("execution_mode") not in {"recheck"} else "unknown")
+                savings = [r["savings_amount"] for r in matched
+                           if r.get("savings_amount") is not None and r["currency"] == "CNY"]
+                conn.execute(
+                    """INSERT INTO tail_search_outcomes VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+                       ON CONFLICT(root_job_id,source_candidate,destination) DO UPDATE SET
+                       outcome=excluded.outcome,observed_at=excluded.observed_at,
+                       elapsed_seconds=excluded.elapsed_seconds,savings_amount=excluded.savings_amount,
+                       currency=excluded.currency,context=excluded.context""",
+                    (root_job_id, source, destination, context["origin"], context["transfer"],
+                     "open" if source == OPEN_DESTINATION else "candidates", outcome, observed_at,
+                     attempt.get("elapsed_seconds"), max(savings) if savings else None,
+                     "CNY", json.dumps(context, ensure_ascii=False)))
+
+    def tail_history_bundle(self, *, origin, transfer, candidates):
+        if not candidates:
+            return {"observations": [], "outcomes": [], "edges": [], "legacy": []}
+        codes = list(dict.fromkeys(candidates))
+        placeholders = ",".join("?" for _ in codes)
+        with self.connect() as conn:
+            bundle = {}
+            for table, key in (("tail_route_observations", "observations"), ("tail_search_outcomes", "outcomes")):
+                rows = conn.execute(
+                    f"""SELECT * FROM {table} WHERE origin=? AND transfer=?
+                        AND destination IN ({placeholders}) ORDER BY observed_at DESC LIMIT 6000""",
+                    [origin, transfer, *codes]).fetchall()
+                bundle[key] = [{**dict(row), "context": json.loads(row["context"])} for row in rows]
+            rows = conn.execute(
+                f"""SELECT * FROM tail_route_edges WHERE origin=? AND destination IN ({placeholders})
+                    ORDER BY last_observed_at DESC LIMIT 3000""", [transfer, *codes]).fetchall()
+            bundle["edges"] = [dict(row) for row in rows]
+        # Avoid counting new-format attempts a second time as legacy evidence.
+        bundle["legacy"] = [row for row in self.tail_candidate_evidence(
+            origin=origin, transfer=transfer, candidates=codes)
+            if not row["raw_payload"].get("learning_version")]
+        return bundle
+
+    def tail_history_destinations(self, *, origin, transfer, limit=200):
+        """Candidate hints only: recent observed full paths or outgoing B→C edges."""
+        with self.connect() as conn:
+            rows = conn.execute(
+                """SELECT destination, MAX(stamp) AS last_seen FROM (
+                    SELECT destination, observed_at AS stamp FROM tail_route_observations
+                      WHERE origin=? AND transfer=? AND quality='valid'
+                    UNION ALL
+                    SELECT destination, last_observed_at AS stamp FROM tail_route_edges WHERE origin=?
+                ) WHERE julianday(stamp) >= julianday('now', '-60 days') AND julianday(stamp) <= julianday('now')
+                GROUP BY destination ORDER BY last_seen DESC, destination LIMIT ?""",
+                (origin, transfer, transfer, limit)).fetchall()
+        return [row["destination"] for row in rows
+                if row["destination"] not in {origin, transfer}]
+
     def record_tail_route_edges(self, result: TailDiscoveryResult | dict[str, Any]) -> None:
         result = coerce_tail_result(result).to_record()
-        details = result.get("flight_details") or []
-        observed_at = result["observed_at"]
+        self.record_route_edge_details(result["provider"], result.get("flight_details") or [], result["observed_at"])
+
+    def record_route_edge_details(self, provider, details, observed_at):
         with self.connect() as conn:
             for detail in details:
                 origin = str(detail.get("origin") or detail.get("departure_airport") or "").upper()
@@ -530,9 +655,12 @@ class PriceRepository:
                         provider, origin, destination, airline, first_observed_at, last_observed_at
                     ) VALUES (?, ?, ?, ?, ?, ?)
                     ON CONFLICT(provider, origin, destination, airline) DO UPDATE SET
-                        last_observed_at = excluded.last_observed_at
+                        first_observed_at = CASE WHEN julianday(excluded.first_observed_at) < julianday(tail_route_edges.first_observed_at)
+                            THEN excluded.first_observed_at ELSE tail_route_edges.first_observed_at END,
+                        last_observed_at = CASE WHEN julianday(excluded.last_observed_at) > julianday(tail_route_edges.last_observed_at)
+                            THEN excluded.last_observed_at ELSE tail_route_edges.last_observed_at END
                     """,
-                    (result["provider"], origin, destination, airline, observed_at, observed_at),
+                    (provider, origin, destination, airline, observed_at, observed_at),
                 )
 
     def fetch_tail_route_edge_codes(

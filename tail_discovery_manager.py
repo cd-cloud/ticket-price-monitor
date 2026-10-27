@@ -86,7 +86,7 @@ class TailDiscoveryManager:
     def submit_tail_discovery(self, payload: dict[str, Any]) -> dict[str, Any]:
         payload = {key: value for key, value in payload.items() if not key.startswith("_")}
         request = normalize_tail_discovery_request(payload)
-        if not request.candidates:
+        if not request.candidates and request.search_scope != "hybrid":
             raise ValueError("请选择至少一个有效的尾段目的地。")
         if request.provider not in self.config.providers or not self.config.providers[request.provider].enabled:
             raise ValueError("所选平台未启用。")
@@ -127,7 +127,7 @@ class TailDiscoveryManager:
         payload.update(mode=mode, source_job_id=job_id)
         if mode in {"explore", "refresh"}:
             payload.update(expected_itinerary_key="", source_result_id=0)
-        if mode == "refresh" and payload.get("search_scope") == "open":
+        if mode == "refresh" and payload.get("search_scope") in {"open", "hybrid"}:
             payload.update(search_scope="candidates", candidates=sorted(self.repository.tail_known_destinations(
                 provider=payload["provider"], origin=payload["origin"], transfer=payload["transfer"],
                 departure_date=payload["departure_date"], cabin=payload.get("cabin", "economy_plus"),
@@ -135,7 +135,7 @@ class TailDiscoveryManager:
             )))
         # A resumed refresh must retain its actual candidate set, not the original broad form.
         effective = (job.get("result") or {}).get("effective_candidates") or (job.get("progress") or {}).get("effective_candidates")
-        if mode == "resume" and effective:
+        if mode == "resume" and effective and payload.get("search_scope") != "hybrid":
             payload["candidates"] = effective
         return self.submit_tail_discovery(payload)
 
@@ -181,6 +181,8 @@ class TailDiscoveryManager:
         failed_codes = list(dict.fromkeys([code for code in failed_codes if code]))
         if not failed_codes:
             raise ValueError("No failed destinations found for this job.")
+        if payload.get("search_scope") == "hybrid":
+            return self.restart_job(job_id, "resume")
         payload["candidates"] = failed_codes
         payload["retry_of"] = job_id
         payload.update(mode="explore", ignore_cache=True)

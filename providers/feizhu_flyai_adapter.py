@@ -255,9 +255,11 @@ def _segment_to_flight_detail(seg: dict[str, Any], *, segment_index: int = 1) ->
     """Convert a flyai-cli segment dict into our canonical flight_detail format."""
     dep_dt = str(seg.get("depDateTime") or "")
     arr_dt = str(seg.get("arrDateTime") or "")
-    dep_time = dep_dt.split(" ")[1] if " " in dep_dt else dep_dt
-    arr_time = arr_dt.split(" ")[1] if " " in arr_dt else arr_dt
-    dep_date = dep_dt.split(" ")[0] if " " in dep_dt else None
+    dep_parts = re.split(r"[T ]", dep_dt, maxsplit=1)
+    arr_parts = re.split(r"[T ]", arr_dt, maxsplit=1)
+    dep_time = dep_parts[-1]
+    arr_time = arr_parts[-1]
+    dep_date = dep_parts[0] if len(dep_parts) == 2 else None
 
     duration_raw = seg.get("duration")
     try:
@@ -280,7 +282,7 @@ def _segment_to_flight_detail(seg: dict[str, Any], *, segment_index: int = 1) ->
         "origin": seg.get("depCityCode"),
         "destination": seg.get("arrCityCode"),
         "departure_date": dep_date,
-        "arrival_date": arr_dt.split(" ")[0] if " " in arr_dt else None,
+        "arrival_date": arr_parts[0] if len(arr_parts) == 2 else None,
         "duration_minutes": duration_minutes,
         "aircraft": None,
         "stops": None,

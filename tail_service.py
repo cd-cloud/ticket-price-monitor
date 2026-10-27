@@ -44,6 +44,10 @@ class TailDiscoveryRequest:
     expected_itinerary_key: str = ""
     source_result_id: int = 0
     search_scope: str = "candidates"
+    filter_scope: str = "first_leg"
+    max_baseline_queries: int = 3
+    max_followup_candidates: int = 5
+    max_provider_calls: int = 0
 
 
 def normalize_tail_discovery_request(payload: dict[str, Any]) -> TailDiscoveryRequest:
@@ -94,23 +98,37 @@ def normalize_tail_discovery_request(payload: dict[str, Any]) -> TailDiscoveryRe
     if mode == "resume" and not payload.get("source_job_id"):
         raise ValueError("继续任务需要 source_job_id。")
     search_scope = str(payload.get("search_scope") or "candidates")
-    if search_scope not in {"candidates", "open"}:
+    filter_scope = str(payload.get("filter_scope") or "first_leg")
+    if filter_scope not in {"first_leg", "all_legs"}:
+        raise ValueError("筛选范围必须为首段或全行程。")
+    if search_scope not in {"candidates", "open", "hybrid"}:
         raise ValueError("不支持的目的地查询范围。")
-    if search_scope == "open":
+    if search_scope in {"open", "hybrid"}:
         if provider != "feizhu":
             raise ValueError("开放目的地仅支持飞猪官方 CLI。")
         if mode not in {"explore", "resume"}:
             raise ValueError("开放目的地用于发现；刷新或复核请指定已发现的目的地。")
         if float(payload.get("max_candidates") or 0) or float(payload.get("target_results") or 0):
-            raise ValueError("开放目的地是单次查询，请使用运行时间预算；城市数和首段目标需设为 0。")
+            raise ValueError("开放/混合模式请使用时间、调用和定向补查预算；城市数和首段目标需设为 0。")
     def budget(name: str, maximum: float, default: float = 0) -> float:
         value = float(payload.get(name, default) or 0)
         if not math.isfinite(value) or value < 0 or value > maximum:
             raise ValueError(f"{name} must be between 0 and {maximum:g}.")
         return value
 
-    if search_scope != "open" and "candidates" in payload and (not isinstance(payload["candidates"], list) or not payload["candidates"]):
+    baseline_budget = budget("max_baseline_queries", 20, 3)
+    if not baseline_budget.is_integer():
+        raise ValueError("补查基准次数必须为 0 到 20 的整数。")
+    followup_budget = budget("max_followup_candidates", 50, 5)
+    call_budget = budget("max_provider_calls", 500, 20 if search_scope == "hybrid" else 0)
+    if not followup_budget.is_integer() or not call_budget.is_integer():
+        raise ValueError("调用次数及定向补查城市数必须为整数。")
+    if provider != "feizhu" and call_budget:
+        raise ValueError("平台调用预算仅支持飞猪；携程请使用城市数和时间预算。")
+    if search_scope == "candidates" and "candidates" in payload and (not isinstance(payload["candidates"], list) or not payload["candidates"]):
         raise ValueError("请选择至少一个尾段目的地。")
+    if search_scope == "hybrid" and "candidates" in payload and not isinstance(payload["candidates"], list):
+        raise ValueError("混合模式候选种子必须为列表，可为空。")
     requested_candidates = [
         code
         for item in (payload.get("candidates", []) if search_scope != "open" else [])
@@ -127,6 +145,8 @@ def normalize_tail_discovery_request(payload: dict[str, Any]) -> TailDiscoveryRe
         ],
         preferred_airlines,
     )
+    if len(candidates) > 500:
+        raise ValueError("候选种子最多 500 个城市。")
     return TailDiscoveryRequest(
         provider=provider,
         origin=origin,
@@ -138,6 +158,10 @@ def normalize_tail_discovery_request(payload: dict[str, Any]) -> TailDiscoveryRe
         candidate_profile=candidate_profile,
         candidates=[OPEN_DESTINATION] if search_scope == "open" else candidates,
         search_scope=search_scope,
+        filter_scope=filter_scope,
+        max_baseline_queries=int(baseline_budget),
+        max_followup_candidates=int(followup_budget),
+        max_provider_calls=int(call_budget),
         max_price=max_price,
         departure_time_start=departure_time_start,
         departure_time_end=departure_time_end,
@@ -182,6 +206,7 @@ def validate_tail_result(
     destination: str,
     departure_date: str,
     preferred_airlines: list[str] | None = None,
+    filter_scope: str = "first_leg",
 ) -> dict[str, Any]:
     details = result.get("flight_details") or []
     raw_payload = result.get("raw_payload") if isinstance(result.get("raw_payload"), dict) else {}
@@ -195,6 +220,8 @@ def validate_tail_result(
         reasons.append("航段数不足，无法确认 A-B-X。")
         return {"status": "invalid", "checks": checks, "reasons": reasons, "warnings": warnings}
     checks["has_two_or_more_legs"] = True
+    if any(not isinstance(leg, dict) for leg in details):
+        return {"status": "invalid", "checks": checks, "reasons": ["航段结构无效"], "warnings": []}
 
     first = details[0] if isinstance(details[0], dict) else {}
     last = details[-1] if isinstance(details[-1], dict) else {}
@@ -229,12 +256,7 @@ def validate_tail_result(
         if not checks["evidence_mentions_transfer"]:
             warnings.append("原始证据未明确出现中转地。")
 
-    date_values = [
-        str(detail.get("departure_date") or "").strip()
-        for detail in details
-        if isinstance(detail, dict) and str(detail.get("departure_date") or "").strip()
-    ]
-    date_values = tail_date_values_for_validation(date_values, departure_date)
+    date_values = [str(first["departure_date"]).strip()] if first.get("departure_date") else []
     mismatched_dates = [value for value in date_values if value[:10] != departure_date]
     checks["date_matches"] = not mismatched_dates
     if mismatched_dates:
@@ -244,7 +266,13 @@ def validate_tail_result(
     if not first.get("departure_date"):
         warnings.append("首段的实际出发日期未确认。")
 
-    checks["airline_matches"] = details_match_airlines(details, preferred_airlines)
+    from tail_validation import chronology_checks
+    time_reasons, time_warnings = chronology_checks(details, departure_date)
+    reasons.extend(time_reasons)
+    warnings.extend(time_warnings)
+    checks["chronology_confirmed"] = not time_reasons and not time_warnings
+    selected_legs = details[:1] if filter_scope == "first_leg" else details
+    checks["airline_matches"] = all(details_match_airlines([leg], preferred_airlines) for leg in selected_legs)
     if not checks["airline_matches"]:
         reasons.append("航司筛选不匹配。")
 
@@ -253,16 +281,6 @@ def validate_tail_result(
     if warnings or source in {"text_fallback", "dom_transit_card", "cleaned_text_fallback"}:
         return {"status": "needs_review", "checks": checks, "reasons": reasons, "warnings": warnings}
     return {"status": "valid", "checks": checks, "reasons": reasons, "warnings": warnings}
-
-
-def tail_date_values_for_validation(date_values: list[str], departure_date: str) -> list[str]:
-    if not date_values or date_values[0][:10] != departure_date:
-        return date_values
-    # Later legs in a valid connecting itinerary may depart after midnight.
-    return [
-        value if index == 0 or value[:10] < departure_date else departure_date
-        for index, value in enumerate(date_values)
-    ]
 
 
 def detail_matches_place(detail: dict[str, Any], code: str, keys: list[str]) -> bool:

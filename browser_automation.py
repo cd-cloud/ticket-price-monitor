@@ -331,6 +331,7 @@ class BrowserAutomation:
         progress_callback: Callable[[dict[str, object]], None] | None = None,
         cancel_checker: Callable[[], bool] | None = None,
         verification_continue_checker: Callable[[], bool] | None = None,
+        filter_scope: str = "first_leg",
     ) -> dict[str, object]:
         return await create_tail_runner(provider_name, self).run(
             origin=origin,
@@ -343,6 +344,7 @@ class BrowserAutomation:
             progress_callback=progress_callback,
             cancel_checker=cancel_checker,
             verification_continue_checker=verification_continue_checker,
+            filter_scope=filter_scope,
         )
 
     async def discover_ctrip_tail_routes(

@@ -211,6 +211,7 @@ class CtripTailDiscoveryRunner:
         candidates: list[str], preferred_airlines: list[str] | None = None,
         progress_callback: Callable | None = None, cancel_checker: Callable | None = None,
         verification_continue_checker: Callable | None = None,
+        filter_scope: str = "first_leg",
     ) -> dict[str, object]:
         provider = self.app_config.providers["ctrip"]
         page, context, metadata, responses = await self._open_tail_context(provider)
@@ -231,8 +232,11 @@ class CtripTailDiscoveryRunner:
                 if progress_callback:
                     progress_callback({"stage": "candidate_started", "destination": destination})
                 trace_started, stop = False, False
+                query_cabin = ({"economy": "economy_plus", "premium_economy": "economy_plus",
+                                "business": "business_first", "first": "business_first"}.get(cabin, cabin)
+                               if filter_scope == "first_leg" else cabin)
                 route = RouteQuery(origin=origin, destination=destination, departure_date=departure_date,
-                                   route_type="one_way", cabin=cabin, transfer_policy="any",
+                                   route_type="one_way", cabin=query_cabin, transfer_policy="any",
                                    passengers=passengers, providers=["ctrip"])
                 try:
                     await self._verification_gate(page, context, attempt, progress_callback, cancel_checker, verification_continue_checker)
@@ -276,11 +280,11 @@ class CtripTailDiscoveryRunner:
                         await self._warm_ctrip_tail_result_data(page, responses)
                     attempt["date_evidence"] = await self._ctrip_results_date_evidence(page, route)
                     matches = extract_tail_matches_from_network(self.automation, responses, origin=origin, transfer=transfer,
-                                                               destination=destination, preferred_airlines=preferred_airlines)
+                                                               destination=destination, preferred_airlines=None)
                     if not matches:
                         matches = await extract_tail_matches_from_page(page, origin=origin, transfer=transfer,
                                                                        destination=destination, departure_date=departure_date,
-                                                                       cabin=cabin, preferred_airlines=preferred_airlines)
+                                                                       cabin=cabin, preferred_airlines=None)
                     if not matches:
                         attempt.update(status="no_match", phase=classify_tail_no_match(
                             tail_network_route_stats(responses, origin=origin, transfer=transfer, destination=destination,
@@ -318,6 +322,8 @@ class CtripTailDiscoveryRunner:
                     stop = limited or verification
                     attempt.update(status="failed", phase="rate_limited" if limited else "verification_timeout" if verification else "query_failed",
                                    error=str(exc) or type(exc).__name__)
+                    if stop:
+                        attempt["stop_reason"] = attempt["phase"]
                     errors.append(f"{origin}->{destination}: {attempt['error']}")
                 finally:
                     trace = await self._stop_ctrip_tail_trace(context, trace_started=trace_started)

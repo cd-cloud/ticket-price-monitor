@@ -10,6 +10,7 @@ function ui() {
     tailDateFilter:{value:''}, tailMaxPriceInput:{value:''}, tailResults:{innerHTML:''},
     tailSearchScopeInput:{value:'open'},tailProviderSelect:{value:'feizhu'},tailModeInput:{value:'explore'},
     tailOpenScopeNotice:{hidden:true},tailBudgetCitiesInput:{value:'10'},tailTargetInput:{value:'2'},
+    tailHybridScopeNotice:{hidden:true},tailFollowupBudgetInput:{value:'5'},tailCallBudgetInput:{value:'20'},
     candidates:{hidden:false},
   };
   const ctx = vm.createContext({URL, Date, document:{getElementById:id=>elements[id],querySelector:()=>elements.candidates},
@@ -20,7 +21,7 @@ function ui() {
   });
   for (const name of ['compareTailResults','tailQuoteFresh','tailQuoteVerified','prepareTailResults',
     'groupTailResultsByRoute','safeTailReviewUrl','tailQuoteTermsLabel','renderTailBaselines','renderTailFlightGroups',
-    'renderTailResultCard','renderTailRouteGroup','renderTailResults','updateTailSearchScope']) {
+    'renderTailResultCard','renderTailRouteGroup','renderTailResults','updateTailSearchScope','renderTailPriorities']) {
     const start = source.indexOf(`function ${name}(`);
     assert.ok(start>=0,name);
     const rest=source.slice(start+1);
@@ -96,4 +97,46 @@ test('documented adultPrice source is displayed without asserting a total fare',
   const {ctx}=ui();
   const html=ctx.renderTailResultCard(quote({quote_terms:{source_price_field:'adultPrice'}}),1);
   assert.match(html,/平台 adultPrice · 整段总价未核实/);
+});
+test('inconclusive and legacy not_found rechecks do not assert delisting',()=>{
+  const {ctx}=ui();
+  for (const status of ['inconclusive','not_found']) {
+    const html=ctx.renderTailResultCard(quote({recheck_outcome:{status}}),1);
+    assert.match(html,/无法确认原行程/);
+    assert.match(html,/可重试/);
+    assert.match(html,/不代表已下架/);
+    assert.doesNotMatch(html,/旧价已失效/);
+  }
+});
+test('result cards distinguish first-leg and entire-itinerary filter scopes',()=>{
+  const {ctx}=ui();
+  assert.match(ctx.renderTailResultCard(quote({filter_scope:'first_leg'}),1),/舱位／航司仅约束首段/);
+  assert.match(ctx.renderTailResultCard(quote({filter_scope:'all_legs'}),1),/舱位／航司约束全行程/);
+});
+test('hybrid controls retain seed cities and expose separate finite budgets',()=>{
+  const {ctx,elements}=ui();
+  elements.tailSearchScopeInput.value='hybrid';
+  ctx.updateTailSearchScope();
+  assert.equal(elements.candidates.hidden,false);
+  assert.equal(elements.tailHybridScopeNotice.hidden,false);
+  assert.equal(elements.tailOpenScopeNotice.hidden,true);
+  assert.equal(elements.tailBudgetCitiesInput.disabled,true);
+  assert.equal(elements.tailTargetInput.disabled,true);
+  assert.equal(elements.tailFollowupBudgetInput.disabled,false);
+  assert.equal(elements.tailCallBudgetInput.disabled,false);
+  elements.tailProviderSelect.value='ctrip';
+  ctx.updateTailSearchScope();
+  assert.equal(elements.tailSearchScopeInput.value,'candidates');
+  assert.equal(elements.tailCallBudgetInput.disabled,true);
+  assert.equal(elements.tailFollowupBudgetInput.disabled,true);
+});
+test('priority explanations escape source data and do not promise bookability',()=>{
+  const {ctx}=ui();
+  const html=ctx.renderTailPriorities({ranking:'contextual_history_v1',
+    provider_calls:{used:3,limit:20},next_candidates:[{destination:'CAN',reasons:['<img src=x onerror=x>','近期有效联程证据']}]});
+  assert.match(html,/3 \/ 20/);
+  assert.match(html,/非可售保证/);
+  assert.match(html,/近期有效联程证据/);
+  assert.doesNotMatch(html,/<img/);
+  assert.equal(ctx.renderTailPriorities({}),'');
 });

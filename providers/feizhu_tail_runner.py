@@ -14,6 +14,7 @@ from providers import feizhu_flyai_adapter
 from providers.ctrip_tail_discovery import details_match_tail_route, code_matches_target
 from providers.ctrip_tail_parser import details_match_airlines
 from tail_quotes import build_baseline_catalog, quote_terms, first_leg_key
+from tail_call_budget import TailCallBudget, ProviderCallBudgetExceeded
 
 LOGGER = logging.getLogger(__name__)
 _MIN_CANDIDATE_DELAY_SECONDS = 3.0
@@ -28,6 +29,12 @@ class FeizhuTailDiscoveryRunner:
         self._baseline_catalog = None
         self._baseline_request = None
         self._baseline_attempted = set()
+        self._baseline_queries = 0
+        self.call_budget = TailCallBudget()
+
+    async def _search_flights(self, kind, **kwargs):
+        self.call_budget.consume(kind)
+        return await feizhu_flyai_adapter.search_flights(**kwargs)
 
     async def run(
         self, *, origin: str, transfer: str, departure_date: str, cabin: str,
@@ -35,6 +42,10 @@ class FeizhuTailDiscoveryRunner:
         progress_callback: Callable | None = None, cancel_checker: Callable | None = None,
         verification_continue_checker: Callable | None = None,
         search_scope: str = "candidates",
+        filter_scope: str = "first_leg",
+        result_filter: Callable | None = None,
+        max_baseline_queries: int = 3,
+        transport_no: str | None = None,
     ) -> dict[str, object]:
         origin, transfer = origin.upper(), transfer.upper()
         from tail_service import OPEN_DESTINATION
@@ -58,6 +69,7 @@ class FeizhuTailDiscoveryRunner:
                     origin=origin, transfer=transfer,
                     destination=None if search_scope == "open" else destination,
                     departure_date=departure_date, cabin=cabin, preferred_airlines=preferred_airlines,
+                    filter_scope=filter_scope, transport_no=transport_no,
                 )
                 attempt["search_metadata"] = dict(getattr(self, "_last_search_metadata", {}))
                 if not matches:
@@ -87,23 +99,37 @@ class FeizhuTailDiscoveryRunner:
                                 "source_price_value": match.get("source_price_value"),
                                 "search_metadata": match.get("search_metadata") or {},
                                 "search_scope": search_scope,
+                                "filter_scope": filter_scope,
                             },
                         })
                     attempt.update(status="matched", phase="matched", price=min(m["price"] for m in matches),
                                    detail_source="flyai_mcp_api", detail_quality="complete")
-                    # One extra query at most per candidate, only for a missing first flight.
-                    # Shared catalog is updated before the service commits/computes comparisons.
-                    stop = await self._fill_same_flight_baseline(
-                        [r for r in results if search_scope == "open" or r["destination"] == destination],
-                        attempt=attempt, cancel_checker=cancel_checker,
-                    )
+                    rows = [r for r in results if search_scope == "open" or r["destination"] == destination]
+                    # Service supplies the exact same validation/dedup pipeline as checkpointing.
+                    # Without it, skip enrichment rather than spend quota on unvalidated offers.
+                    if result_filter:
+                        eligible = result_filter(rows)
+                        while self._baseline_queries < max_baseline_queries:
+                            before = self._baseline_queries
+                            stop = await self._fill_same_flight_baseline(
+                                eligible, attempt=attempt, cancel_checker=cancel_checker)
+                            if stop or self._baseline_queries == before:
+                                break
+                    attempt.update(baseline_queries=self._baseline_queries,
+                                   baseline_query_budget=max_baseline_queries)
             except asyncio.CancelledError:
                 attempt.update(status="failed", phase="cancelled_before_query", error="Task deadline or cancellation")
                 raise
+            except ProviderCallBudgetExceeded as exc:
+                stop = True
+                attempt.update(status="failed", phase="provider_call_budget",
+                               stop_reason="provider_call_budget", error=str(exc))
             except Exception as exc:
                 stop = looks_like_rate_limit(exc)
                 attempt.update(status="failed", phase="rate_limited" if stop else "query_failed",
                                error=str(exc) or "query timed out")
+                if stop:
+                    attempt["stop_reason"] = "rate_limited"
                 errors.append(f"{origin}->{destination}: {attempt['error']}")
                 LOGGER.warning("Feizhu tail query failed: %s", attempt["error"])
             finally:
@@ -125,7 +151,7 @@ class FeizhuTailDiscoveryRunner:
                              cabin: str, passengers: int, departure_time_start: str = "",
                              departure_time_end: str = "", preferred_airlines=None,
                              transport_no: str | None = None) -> dict | None:
-        offers = await feizhu_flyai_adapter.search_flights(
+        offers = await self._search_flights("same_flight_baseline" if transport_no else "initial_baseline",
             origin=origin, destination=transfer, departure_date=departure_date,
             cabin=cabin, journey_type="1", transport_no=transport_no,
             timeout_seconds=_CANDIDATE_TIMEOUT_SECONDS,
@@ -149,6 +175,7 @@ class FeizhuTailDiscoveryRunner:
             )
             self._baseline_catalog = catalog or {"market": None, "same_flights": {}}
             self._baseline_attempted.clear()
+            self._baseline_queries = 0
             return self._baseline_catalog
         return catalog
 
@@ -168,6 +195,7 @@ class FeizhuTailDiscoveryRunner:
         await self._cancellable_wait(_MIN_CANDIDATE_DELAY_SECONDS, cancel_checker=cancel_checker)
         if cancel_checker and cancel_checker():
             return False
+        self._baseline_queries += 1
         try:
             catalog = await self.query_baseline(
                 **self._baseline_request, transport_no=missing["flight_details"][0]["flight_no"],
@@ -178,16 +206,20 @@ class FeizhuTailDiscoveryRunner:
                 same[key] = item
         except Exception as exc:
             attempt["baseline_warning"] = str(exc)
+            if isinstance(exc, ProviderCallBudgetExceeded):
+                attempt.update(phase="provider_call_budget", stop_reason="provider_call_budget", error=str(exc))
+                return True
             if looks_like_rate_limit(exc):
-                attempt.update(phase="rate_limited", error=str(exc))
+                attempt.update(phase="rate_limited", stop_reason="rate_limited", error=str(exc))
                 return True
         return False
 
     async def _query_candidates(self, *, origin, transfer, destination, departure_date, cabin,
-                                preferred_airlines=None):
-        offers = await asyncio.wait_for(feizhu_flyai_adapter.search_flights(
+                                preferred_airlines=None, filter_scope="first_leg", transport_no=None):
+        offers = await asyncio.wait_for(self._search_flights("open_search" if destination is None else "targeted_search",
             origin=origin, destination=destination, departure_date=departure_date,
-            cabin=cabin, journey_type="2", transfer_city=transfer,
+            cabin="any" if filter_scope == "first_leg" else cabin,
+            journey_type="2", transfer_city=transfer, transport_no=transport_no,
             timeout_seconds=_CANDIDATE_TIMEOUT_SECONDS,
         ), timeout=_CANDIDATE_TIMEOUT_SECONDS + 5)
         self._last_search_metadata = dict(getattr(offers, "search_metadata", {}))
@@ -202,10 +234,11 @@ class FeizhuTailDiscoveryRunner:
                 continue
             if details_match_tail_route(legs, origin, transfer, target):
                 via.append({**offer, "actual_destination": target})
+        # User airline/cabin filters belong to the service. Keeping structurally
+        # returned routes here lets the history learn even when the quote is filtered.
         matches = [{**offer, "review_url": offer.get("final_url"), "detail_source": "flyai_mcp_api",
-                    "detail_quality": "complete"} for offer in via
-                   if details_match_airlines(offer.get("flight_details") or [], preferred_airlines)]
-        return matches, "airline_filtered" if via and not matches else "search_incomplete"
+                    "detail_quality": "complete"} for offer in via]
+        return matches, "search_incomplete"
 
     async def _query_candidate_outcome(self, **kwargs):
         matches, phase = await self._query_candidates(**kwargs)

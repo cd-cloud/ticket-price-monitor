@@ -128,7 +128,7 @@ class FeizhuTailRunnerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["attempts"][0]["status"], "matched")
         self.assertEqual(result["attempts"][0]["price"], 1448.0)
 
-    async def test_run_filters_by_preferred_airlines(self) -> None:
+    async def test_runner_retains_routes_for_history_before_service_airline_filter(self) -> None:
         runner = FeizhuTailDiscoveryRunner(FakeAutomation())
 
         import providers.feizhu_flyai_adapter as adapter
@@ -173,15 +173,15 @@ class FeizhuTailRunnerTests(unittest.IsolatedAsyncioTestCase):
                 cabin="economy",
                 passengers=1,
                 candidates=["SIN"],
-                preferred_airlines=["CA"],  # Only Air China — should not match Hainan
+                preferred_airlines=["CA"],  # Service will filter it; runner preserves route evidence.
             )
         finally:
             adapter.search_flights = original_search
 
-        self.assertEqual(len(result["results"]), 0)
+        self.assertEqual(len(result["results"]), 1)
         self.assertEqual(len(result["attempts"]), 1)
-        self.assertEqual(result["attempts"][0]["status"], "no_match")
-        self.assertEqual(result["attempts"][0]["phase"], "airline_filtered")
+        self.assertEqual(result["attempts"][0]["status"], "matched")
+        self.assertEqual(result["attempts"][0]["phase"], "matched")
 
     async def test_run_excludes_origin_and_transfer_from_candidates(self) -> None:
         runner = FeizhuTailDiscoveryRunner(FakeAutomation())

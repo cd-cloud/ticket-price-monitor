@@ -1612,6 +1612,13 @@ function ensureTailDiscoveryPanel() {
         </select>
         <input id="tailAirlineInput" placeholder="可选 ZH 或 深圳航空，多个用逗号分隔" autocomplete="off" />
       </label>
+      <label>舱位／航司筛选范围
+        <select id="tailFilterScopeInput">
+          <option value="first_leg">仅实际乘坐首段 A→B（默认）</option>
+          <option value="all_legs">全行程每个航段都符合</option>
+        </select>
+      </label>
+      <p class="muted">首段模式不限制尾段舱位和航司，但仍校验完整行程。飞猪不向上游限制整程舱位；携程按舱位组检索，跨组混舱覆盖仍不保证。</p>
       <label>查询模式
         <select id="tailModeInput"><option value="explore">重新探索候选城市</option><option value="refresh">刷新已发现报价</option></select>
       </label>
@@ -1619,13 +1626,19 @@ function ensureTailDiscoveryPanel() {
         <select id="tailSearchScopeInput">
           <option value="candidates">按候选城市逐个查询</option>
           <option value="open">开放目的地发现（仅飞猪，非全量）</option>
+          <option value="hybrid">历史引导：开放发现＋定向补查（仅飞猪）</option>
         </select>
       </label>
       <p id="tailOpenScopeNotice" class="muted" hidden>不指定最终目的地，一次发现多个尾段城市，结果不是全量。本模式不使用候选城市列表、城市数或首段数量预算；运行时间上限仍生效。成功响应整体保存，继续任务不是翻页；再次查询请点重新探索。刷新已发现报价会定向查询已发现城市。</p>
+      <p id="tailHybridScopeNotice" class="muted" hidden>先开放取样，再从已选城市、近期历史航线和本次发现中按优先级定向补查；每批重新排序。路线存在不代表当前联程可售，未返回的城市不计为失败。补查城市上限按原任务累计，调用预算按本轮计算。</p>
+      <label>混合模式最多定向补查城市（0 不补查）<input id="tailFollowupBudgetInput" type="number" min="0" max="50" value="5" /></label>
+      <label>飞猪本轮总调用上限（0 不限，含基准补查）<input id="tailCallBudgetInput" type="number" min="0" max="500" value="20" /></label>
       <label>人数（库存须复核）<input id="tailPassengersInput" type="number" min="1" max="9" value="1" /></label>
       <label>最多查询城市（0 不限）<input id="tailBudgetCitiesInput" type="number" min="0" max="500" value="0" /></label>
       <label>最多运行分钟（0 不限）<input id="tailBudgetMinutesInput" type="number" min="0" max="1440" value="0" /></label>
       <label>找到几个已校验首段后停止（0 不限）<input id="tailTargetInput" type="number" min="0" max="100" value="0" /></label>
+      <label>飞猪补查同航班基准次数（每轮，0 关闭）<input id="tailBaselineBudgetInput" type="number" min="0" max="20" value="3" /></label>
+      <p class="muted">基准补查仅用于筛选后保留的首段；该预算不含初始基准和中转搜索。已校验首段数量不等于已确认省钱数量。</p>
       <div class="tail-run-actions">
         <button id="tailRunBtn" class="primary" type="submit">开始发现</button>
         <button id="tailCancelBtn" class="ghost danger" type="button" hidden disabled>中止任务</button>
@@ -1837,13 +1850,20 @@ function updateTailSearchScope() {
   scope.disabled = !allowed;
   if (!allowed) scope.value = "candidates";
   const open = allowed && scope.value === "open";
+  const hybrid = allowed && scope.value === "hybrid";
   const notice = document.getElementById("tailOpenScopeNotice");
   if (notice) notice.hidden = !open;
+  const hybridNotice = document.getElementById("tailHybridScopeNotice");
+  if (hybridNotice) hybridNotice.hidden = !hybrid;
+  const followup = document.getElementById("tailFollowupBudgetInput");
+  if (followup) followup.disabled = !hybrid;
+  const calls = document.getElementById("tailCallBudgetInput");
+  if (calls) calls.disabled = document.getElementById("tailProviderSelect")?.value !== "feizhu";
   const candidates = document.querySelector("#tailDiscoveryForm .tail-candidates");
   if (candidates) candidates.hidden = open;
   for (const id of ["tailBudgetCitiesInput", "tailTargetInput"]) {
     const element = document.getElementById(id);
-    if (element) element.disabled = open;
+    if (element) element.disabled = open || hybrid;
   }
 }
 
@@ -1876,9 +1896,16 @@ async function runTailDiscovery() {
     target_results: Number(document.getElementById("tailTargetInput")?.value || 0),
     candidates: selectedCandidates,
     search_scope: document.getElementById("tailSearchScopeInput")?.value || "candidates",
+    filter_scope: document.getElementById("tailFilterScopeInput")?.value || "first_leg",
+    max_baseline_queries: Number(document.getElementById("tailBaselineBudgetInput")?.value ?? 3),
+    max_followup_candidates: Number(document.getElementById("tailFollowupBudgetInput")?.value ?? 5),
+    max_provider_calls: document.getElementById("tailProviderSelect")?.value === "feizhu"
+      ? Number(document.getElementById("tailCallBudgetInput")?.value ?? 20) : 0,
   };
   if (payload.search_scope === "open") {
     payload.candidates = [];
+  }
+  if (["open", "hybrid"].includes(payload.search_scope)) {
     payload.max_candidates = 0;
     payload.target_results = 0;
   }
@@ -2000,6 +2027,7 @@ function renderTailJobProgress(job) {
   const pending = progress.pending ?? progress.queue?.pending ?? 0;
   const policy = job.result?.candidate_policy || progress.candidate_policy || {};
   const open = job.payload?.search_scope === "open" || policy.search_scope === "open";
+  const hybrid = job.payload?.search_scope === "hybrid" || policy.search_scope === "hybrid";
   const rows = mergedItems.slice(0, 36).map(renderTailJobCandidate).join("");
   const overflow = mergedItems.length > 36 ? `<p class="muted">还有 ${mergedItems.length - 36} 个候选未展开显示。</p>` : "";
   container.hidden = false;
@@ -2010,18 +2038,20 @@ function renderTailJobProgress(job) {
         <span>${escapeHtml(tailJobStatusLabel(job.status))}</span>
       </div>
       <div class="tail-job-counts">
-        <span>${open ? "查询批次" : "总数"} ${escapeHtml(String(total || 0))}</span>
+        <span>${hybrid ? "查询单元（开放＋定向）" : open ? "查询批次" : "总数"} ${escapeHtml(String(total || 0))}</span>
         <span>已查 ${escapeHtml(String(attempted || 0))}</span>
         <span>命中 ${escapeHtml(String(saved || 0))}</span>
         <span>未命中 ${escapeHtml(String(noMatch || 0))}</span>
         <span>失败 ${escapeHtml(String(failed || 0))}</span>
         <span>等待 ${escapeHtml(String(pending || 0))}</span>
-        <span>已知航线边 ${escapeHtml(String(policy.known_route_edges || 0))}</span>
+        <span>历史航线线索 ${escapeHtml(String(policy.known_route_edges || 0))}</span>
         <span>缓存跳过 ${escapeHtml(String(policy.cache_skipped || 0))}</span>
       </div>
     </div>
     <p>${escapeHtml(progress.message || job.error || "")}</p>
     ${open ? '<p class="muted">开放目的地：部分结果，不代表全量。一个批次可保存多个实际目的地；继续已完成任务不会翻页，重新探索才会再次查询。</p>' : ""}
+    ${hybrid ? '<p class="muted">历史引导混合发现：一个开放批次＋有限定向补查；成功开放批次恢复时不重复请求。候选池不是平台全量航线。</p>' : ""}
+    ${renderTailPriorities(policy)}
     <div class="tail-job-actions">
       ${job.status === "needs_verification" ? `<button type="button" class="ghost compact" data-tail-action="continue" data-job-id="${escapeHtml(job.job_id)}">已完成人工验证，继续</button>` : ""}
       ${![...ACTIVE_TAIL_JOB_STATUSES, "cancelling"].includes(job.status) ? `
@@ -2034,6 +2064,22 @@ function renderTailJobProgress(job) {
     ${overflow}
   `;
   cleanVisibleText(container);
+}
+
+function renderTailPriorities(policy) {
+  if (policy.ranking !== "contextual_history_v1") return "";
+  const pending = policy.next_candidates || [];
+  const rows = (pending.length ? pending : (policy.priority_trace || []).slice(-10)).slice(0, 10);
+  const calls = policy.provider_calls || {};
+  return `<details class="tail-priority-details">
+    <summary>历史优先级与调用预算（规则估计，非可售保证）</summary>
+    <p class="muted">${policy.provider_calls_supported === false
+      ? "携程浏览器调用数未计量，请使用城市数和运行时间预算。"
+      : `本轮平台调用尝试 ${escapeHtml(String(calls.used || 0))} / ${calls.limit ? escapeHtml(String(calls.limit)) : "不限"}，含初始基准、开放/定向搜索及同航班补查；不代表平台扣费次数。`}每批更新排序，保留新城市探索机会。</p>
+    <strong>${pending.length ? "待查城市的优先顺序" : "最近已查询城市的决策依据"}</strong>
+    <ol>${rows.map(row => `<li><strong>${escapeHtml(airportCodeDisplayText(row.destination))}</strong>：${escapeHtml((row.reasons || []).join("；"))}</li>`).join("")}</ol>
+    ${!rows.length ? '<p class="muted">暂无定向候选；开放查询未返回不代表无航线。</p>' : ""}
+  </details>`;
 }
 
 function renderTailJobCandidate(item) {
@@ -2073,6 +2119,8 @@ function tailAttemptStatusLabel(status) {
     failed: "失败",
     retryable_failed: "可重试",
     validation_failed: "校验失败",
+    recheck_inconclusive: "复核无法确认（可重试）",
+    provider_call_budget: "达到平台调用预算",
     cache_skipped: "缓存跳过",
     running: "查询中",
     pending: "等待中",
@@ -2357,6 +2405,7 @@ function renderTailResultCard(item, index) {
     item.departure_date,
     `平台 ${providerLabel(item.provider)}`,
     item.search_scope === "open" ? "开放目的地发现（非全量）" : "",
+    item.filter_scope === "first_leg" ? "舱位／航司仅约束首段" : item.filter_scope === "all_legs" ? "舱位／航司约束全行程" : "",
     cabinLabel(item.cabin),
     item.detail_quality || item.raw_payload?.detail_quality || "partial",
     confidence.label,
@@ -2378,7 +2427,7 @@ function renderTailResultCard(item, index) {
       <div class="tail-review-actions">
         <span class="tail-confidence level-${escapeHtml(confidence.level)}">${escapeHtml(confidence.label)}</span>
         <span>${tailQuoteFresh(item) ? "未过期" : "已过期／采集时间未知"}</span>
-        ${item.recheck_outcome?.status === "not_found" ? "<span>最近复核未找到原行程，旧价已失效</span>" : ""}
+        ${["inconclusive", "not_found"].includes(item.recheck_outcome?.status) ? "<span>最近复核无法确认原行程，旧价待确认，可重试；不代表已下架</span>" : ""}
         ${item.recheck_outcome?.status === "failed" ? "<span>最近复核失败，旧价待确认</span>" : ""}
         ${item.rechecked_at ? `<span>复核采集 ${escapeHtml(formatQueryDate(item.rechecked_at))}</span>` : ""}
         ${item.id ? `<button type="button" class="ghost compact" data-tail-action="recheck" data-result-id="${escapeHtml(String(item.id))}">重新查询此行程</button>` : ""}

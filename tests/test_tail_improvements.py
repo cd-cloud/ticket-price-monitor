@@ -30,9 +30,11 @@ def quote(destination="CAN", price=700, time="09:00", flight="CA1001", provider=
         "flight_details": [
             {"origin": "BJS", "destination": "SHA", "departure_airport": "PEK", "arrival_airport": "SHA",
              "departure_date": DATE, "departure_time": time, "arrival_time": "11:00", "flight_no": flight,
+             "arrival_date": DATE,
              "airline": "CA", "cabin": "economy"},
             {"origin": "SHA", "destination": destination, "departure_airport": "SHA", "arrival_airport": destination,
              "departure_date": DATE, "departure_time": "13:00", "arrival_time": "15:00", "flight_no": "CA2002",
+             "arrival_date": DATE,
              "airline": "CA", "cabin": "economy"},
         ], "raw_payload": {"detail_source": "flyai_mcp_api", "detail_quality": "complete"},
     }
@@ -238,7 +240,8 @@ class TailImprovementTests(unittest.TestCase):
                     "status": "failed" if code == "CAN" else "no_match", "phase": phase})
         order = self.service._prioritize_candidates_with_history(["SZX", "CAN"], origin="BJS", transfer="SHA",
                          preferred_airlines=[], provider="feizhu", cabin="economy")
-        self.assertEqual("CAN", order[0])
+        # Legacy partial searches cannot establish route absence either.
+        self.assertEqual(["SZX", "CAN"], order)
 
     def test_unknown_candidates_get_exploration_slot(self):
         for code in ["CAN", "SZX"]:
@@ -469,7 +472,7 @@ class ExtraQuoteRegressionTests(unittest.TestCase):
             matches = extract_tail_matches_from_network(None, response, origin="BJS", transfer="SHA", destination="CAN")
         self.assertEqual([600,700], [m["total_price"] for m in matches])
 
-    def test_recheck_not_found_expires_original_atomically(self):
+    def test_unconfirmed_recheck_expires_original_atomically_without_claiming_absence(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = PriceRepository(Path(tmp)/"test.db"); repo.initialize()
             original = annotate_quote(quote())
@@ -479,7 +482,7 @@ class ExtraQuoteRegressionTests(unittest.TestCase):
             repo.checkpoint_tail_candidate(root_job_id="j", fingerprint="q", attempt=record, results=[], recheck_result_id=result_id)
             row = repo.fetch_tail_result(result_id)
             self.assertEqual("stale", public_quote_metadata(row)["freshness"])
-            self.assertEqual("not_found", row["raw_payload"]["recheck_outcome"]["status"])
+            self.assertEqual("inconclusive", row["raw_payload"]["recheck_outcome"]["status"])
 
 
 class CliCancellationTests(unittest.IsolatedAsyncioTestCase):
