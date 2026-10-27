@@ -70,6 +70,7 @@ CTRIP_DOMESTIC_CITY_CODES = {
     "KRL",
     "KRY",
     "JHG",
+    "TCZ",
     "LJG",
     "DYG",
     "ZHA",

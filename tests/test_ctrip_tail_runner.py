@@ -1,6 +1,7 @@
 import unittest
 from types import SimpleNamespace
 
+from providers.ctrip_tail_discovery import classify_tail_no_match
 from providers.ctrip_tail_runner import CtripTailDiscoveryRunner
 
 
@@ -41,6 +42,15 @@ class CtripTailRunnerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("chrome", metadata.browser_backend)
         self.assertEqual([], response_store)
         self.assertIn("response", page.handlers)
+
+    def test_no_match_classification_distinguishes_route_and_parser_gaps(self) -> None:
+        self.assertEqual("route_absent", classify_tail_no_match({}, has_no_results_notice=True))
+        self.assertEqual("parse_incomplete", classify_tail_no_match({}))
+        self.assertEqual("no_via_transfer", classify_tail_no_match({"same_route": 1}))
+        self.assertEqual(
+            "airline_filtered",
+            classify_tail_no_match({"same_route": 1, "via_transfer": 1, "airline_filtered": 1}),
+        )
 
 
 if __name__ == "__main__":

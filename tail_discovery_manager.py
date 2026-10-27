@@ -150,6 +150,11 @@ class TailDiscoveryManager:
                 item["review_url"] = raw_payload.get("search_url") or raw_payload.get("url")
                 item["date_evidence"] = raw_payload.get("date_evidence") or {}
                 item["validation"] = raw_payload.get("validation") or {}
+                for key in (
+                    "baseline_price", "baseline_observed_at", "baseline_review_url",
+                    "savings_amount", "savings_percent",
+                ):
+                    item[key] = raw_payload.get(key)
             details = item.get("flight_details")
             if isinstance(details, list) and details and self._tail_details_need_rebuild(details):
                 source_text = next(

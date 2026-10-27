@@ -1,4 +1,4 @@
-﻿import asyncio
+import asyncio
 import json
 import logging
 import random
@@ -291,6 +291,24 @@ class BrowserAutomation:
             title=title,
             departure_time=offer.departure_time,
             row_text=offer.row_text,
+        )
+
+    async def query_tail_baseline(
+        self,
+        provider_name: str,
+        *,
+        origin: str,
+        transfer: str,
+        departure_date: str,
+        cabin: str,
+        passengers: int,
+    ) -> dict[str, object] | None:
+        return await create_tail_runner(provider_name, self).query_baseline(
+            origin=origin,
+            transfer=transfer,
+            departure_date=departure_date,
+            cabin=cabin,
+            passengers=passengers,
         )
 
     async def discover_tail_routes(

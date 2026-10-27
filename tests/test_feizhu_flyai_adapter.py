@@ -153,6 +153,8 @@ class CityNameResolutionTests(unittest.TestCase):
         self.assertEqual(adapter._resolve_city_name("CTU"), "成都")
         self.assertEqual(adapter._resolve_city_name("SIN"), "新加坡")
         self.assertEqual(adapter._resolve_city_name("PEK"), "北京")
+        self.assertEqual(adapter._resolve_city_name("JHG"), "西双版纳")
+        self.assertEqual(adapter._resolve_city_name("TCZ"), "腾冲")
 
     def test_unknown_code_passthrough(self) -> None:
         self.assertEqual(adapter._resolve_city_name("XYZ"), "XYZ")

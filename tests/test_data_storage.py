@@ -154,6 +154,67 @@ class DataStorageTests(unittest.TestCase):
             self.assertEqual("BJS", results[0]["raw_payload"]["structured_itinerary"]["origin"])
             self.assertEqual("CTU", results[0]["raw_payload"]["structured_itinerary"]["legs"][0]["destination"])
 
+    def test_tail_result_is_idempotent_and_learns_route_edges(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo = PriceRepository(Path(tmp_dir) / "storage.db")
+            repo.initialize()
+            result = TailDiscoveryResult(
+                provider="ctrip",
+                origin="BJS",
+                transfer="CTU",
+                destination="TCZ",
+                departure_date="2026-06-01",
+                cabin="economy",
+                price=680,
+                observed_at="2026-05-13T00:00:00Z",
+                scraped_at="2026-05-13T00:01:00Z",
+                flight_details=[
+                    {"origin": "BJS", "destination": "CTU", "airline": "CA"},
+                    {"origin": "CTU", "destination": "TCZ", "airline": "CA"},
+                ],
+            )
+
+            first_id = repo.insert_tail_discovery_result(result)
+            second_id = repo.insert_tail_discovery_result(result)
+            repo.record_tail_route_edges(result)
+            known = repo.fetch_tail_route_edge_codes(
+                provider="ctrip", transfer="CTU", candidates=["TCZ", "CSX"], preferred_airlines=["CA"]
+            )
+
+            self.assertEqual(first_id, second_id)
+            self.assertEqual(1, len(repo.fetch_tail_discovery_results()))
+            self.assertEqual({"TCZ"}, known)
+
+    def test_negative_cache_respects_signature_and_expiry(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo = PriceRepository(Path(tmp_dir) / "storage.db")
+            repo.initialize()
+            entry = {
+                "signature": "same-query",
+                "provider": "feizhu",
+                "origin": "BJS",
+                "transfer": "CTU",
+                "destination": "TCZ",
+                "departure_date": "2026-06-01",
+                "cabin": "economy",
+                "passengers": 1,
+                "preferred_airlines": ["CA"],
+                "phase": "no_via_transfer",
+                "observed_at": "2026-05-13T00:00:00+00:00",
+                "expires_at": "2026-05-13T06:00:00+00:00",
+            }
+            repo.cache_tail_negative(entry)
+
+            active = repo.active_negative_cache_codes(
+                {"TCZ": "same-query", "CSX": "different-query"}, now="2026-05-13T05:00:00+00:00"
+            )
+            expired = repo.active_negative_cache_codes(
+                {"TCZ": "same-query"}, now="2026-05-13T06:00:00+00:00"
+            )
+
+            self.assertEqual({"TCZ"}, active)
+            self.assertEqual(set(), expired)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,4 +1,4 @@
-﻿const AIRPORT_SUGGESTIONS = window.AIRPORT_SUGGESTIONS || [];
+const AIRPORT_SUGGESTIONS = window.AIRPORT_SUGGESTIONS || [];
 
 let dashboardData = {
   tasks: [],
@@ -1614,6 +1614,10 @@ function ensureTailDiscoveryPanel() {
       <div class="tail-run-actions">
         <button id="tailRunBtn" class="primary" type="submit">开始发现</button>
         <button id="tailCancelBtn" class="ghost danger" type="button" hidden disabled>中止任务</button>
+        <label class="tail-toggle">
+          <input id="tailIgnoreCacheInput" type="checkbox" />
+          忽略 6 小时无结果缓存
+        </label>
       </div>
       <div class="tail-candidates">
         <div class="tail-candidate-head">
@@ -1639,6 +1643,7 @@ function ensureTailDiscoveryPanel() {
         排序
         <select id="tailSortSelect">
           <option value="price">价格从低到高</option>
+          <option value="savings">节省金额优先</option>
           <option value="time">查询时间从新到旧</option>
           <option value="confidence">可信度优先</option>
         </select>
@@ -1803,6 +1808,7 @@ async function runTailDiscovery() {
     departure_time_end: document.getElementById("tailDepartureTimeEndInput")?.value || "",
     preferred_airlines: document.getElementById("tailAirlineInput")?.value || "",
     candidate_profile: tailCandidateProfileOverride,
+    ignore_cache: Boolean(document.getElementById("tailIgnoreCacheInput")?.checked),
     passengers: 1,
     candidates: selectedCandidates,
   };
@@ -1923,6 +1929,7 @@ function renderTailJobProgress(job) {
   const noMatch = progress.no_match ?? 0;
   const failed = progress.failed ?? 0;
   const pending = progress.pending ?? progress.queue?.pending ?? 0;
+  const policy = job.result?.candidate_policy || {};
   const rows = mergedItems.slice(0, 36).map(renderTailJobCandidate).join("");
   const overflow = mergedItems.length > 36 ? `<p class="muted">还有 ${mergedItems.length - 36} 个候选未展开显示。</p>` : "";
   container.hidden = false;
@@ -1939,6 +1946,8 @@ function renderTailJobProgress(job) {
         <span>未命中 ${escapeHtml(String(noMatch || 0))}</span>
         <span>失败 ${escapeHtml(String(failed || 0))}</span>
         <span>等待 ${escapeHtml(String(pending || 0))}</span>
+        <span>已知航线边 ${escapeHtml(String(policy.known_route_edges || 0))}</span>
+        <span>缓存跳过 ${escapeHtml(String(policy.cache_skipped || 0))}</span>
       </div>
     </div>
     <div class="tail-job-candidates">${rows || '<span class="muted">任务已创建，等待候选进入队列。</span>'}</div>
@@ -1982,6 +1991,7 @@ function tailAttemptStatusLabel(status) {
     failed: "失败",
     retryable_failed: "可重试",
     validation_failed: "校验失败",
+    cache_skipped: "缓存跳过",
     running: "查询中",
     pending: "等待中",
     started: "已开始",
@@ -1991,6 +2001,13 @@ function tailAttemptStatusLabel(status) {
 function tailAttemptPhaseLabel(phase) {
   return {
     no_transfer_match: "未找到指定中转",
+    no_via_transfer: "有航班但不经过中转点",
+    route_absent: "确认无航班",
+    airline_filtered: "航司筛选不匹配",
+    parse_incomplete: "结果加载或解析不完整",
+    negative_cache: "近期无结果缓存",
+    price_filtered: "超出价格上限",
+    departure_time_filtered: "不在起飞时间范围",
     query_failed: "查询失败",
     opening_results: "打开结果页",
     parsing_network: "解析航班",
@@ -2061,6 +2078,22 @@ function updateTailDateFilter(results) {
   select.value = dates.includes(previous) ? previous : "";
 }
 
+function compareTailResults(left, right) {
+  const sortMode = document.getElementById("tailSortSelect")?.value || "price";
+  if (sortMode === "time") {
+    return String(right.observed_at || "").localeCompare(String(left.observed_at || ""));
+  }
+  if (sortMode === "confidence") {
+    return tailResultConfidenceScore(right) - tailResultConfidenceScore(left)
+      || Number(left.price || 0) - Number(right.price || 0);
+  }
+  if (sortMode === "savings") {
+    return Number(right.savings_amount ?? -Infinity) - Number(left.savings_amount ?? -Infinity)
+      || Number(left.price || 0) - Number(right.price || 0);
+  }
+  return Number(left.price || 0) - Number(right.price || 0);
+}
+
 function prepareTailResults(results) {
   let prepared = [...(results || [])];
   const dateFilter = document.getElementById("tailDateFilter")?.value || "";
@@ -2074,7 +2107,7 @@ function prepareTailResults(results) {
   if (document.getElementById("tailLatestOnlyInput")?.checked) {
     const latestByKey = new Map();
     for (const item of prepared) {
-      const key = [item.origin, item.transfer, item.destination, item.departure_date, item.cabin].join("|");
+      const key = [item.provider, item.origin, item.transfer, item.destination, item.departure_date, item.cabin, item.passengers || 1].join("|");
       const current = latestByKey.get(key);
       if (!current || String(item.observed_at || "") > String(current.observed_at || "")) {
         latestByKey.set(key, item);
@@ -2082,17 +2115,7 @@ function prepareTailResults(results) {
     }
     prepared = Array.from(latestByKey.values());
   }
-  const sortMode = document.getElementById("tailSortSelect")?.value || "price";
-  prepared.sort((left, right) => {
-    if (sortMode === "time") {
-      return String(right.observed_at || "").localeCompare(String(left.observed_at || ""));
-    }
-    if (sortMode === "confidence") {
-      return tailResultConfidenceScore(right) - tailResultConfidenceScore(left)
-        || Number(left.price || 0) - Number(right.price || 0);
-    }
-    return Number(left.price || 0) - Number(right.price || 0);
-  });
+  prepared.sort(compareTailResults);
   return prepared;
 }
 
@@ -2136,17 +2159,14 @@ function groupTailResultsByRoute(results) {
     const dateGroups = Array.from(byDate.entries())
       .map(([date, items]) => ({
         date,
-        items: items.sort((left, right) => Number(left.price || 0) - Number(right.price || 0)),
+        items: items.sort(compareTailResults),
       }))
       .sort((left, right) => String(left.date).localeCompare(String(right.date)));
-    const best = group.results.reduce((winner, item) => (
-      !winner || Number(item.price || Infinity) < Number(winner.price || Infinity) ? item : winner
-    ), null);
+    const best = [...group.results].sort(compareTailResults)[0] || null;
     return { ...group, dateGroups, best };
   }).sort((left, right) => {
-    const leftBest = Number(left.best?.price || Infinity);
-    const rightBest = Number(right.best?.price || Infinity);
-    if (leftBest !== rightBest) return leftBest - rightBest;
+    const comparison = compareTailResults(left.best, right.best);
+    if (comparison !== 0) return comparison;
     return `${left.origin || ""}${left.transfer || ""}`.localeCompare(`${right.origin || ""}${right.transfer || ""}`);
   });
 }
@@ -2174,6 +2194,12 @@ function renderTailResultCard(item, index) {
   const routeTitle = `${airportCodeDisplayText(item.origin)} -> ${airportCodeDisplayText(item.transfer)} -> ${airportCodeDisplayText(item.destination)}`;
   const confidence = tailResultConfidence(item);
   const reviewUrl = item.review_url || item.search_url || "";
+  const hasSavings = item.savings_amount !== null && item.savings_amount !== undefined;
+  const savings = Number(item.savings_amount || 0);
+  const savingsLabel = savings >= 0 ? "节省" : "贵";
+  const savingsText = hasSavings
+    ? `${savingsLabel} ¥${Math.abs(savings).toFixed(0)}${item.savings_percent !== null && item.savings_percent !== undefined ? ` (${Math.abs(Number(item.savings_percent)).toFixed(1)}%)` : ""}`
+    : "暂无直飞基准价";
   const metaItems = [
     item.departure_date,
     `平台 ${providerLabel(item.provider)}`,
@@ -2190,12 +2216,14 @@ function renderTailResultCard(item, index) {
         <div class="tail-route-meta">${metaItems.map((meta) => `<span>${escapeHtml(meta)}</span>`).join("")}</div>
       </div>
       <div class="tail-price">
-        <small>最低价</small>
+        <small>甩尾最低价</small>
         <strong>¥${Number(item.price || 0).toFixed(0)}</strong>
+        ${item.baseline_price ? `<small>正常直飞 ¥${Number(item.baseline_price).toFixed(0)}</small>` : ""}
+        <small>${escapeHtml(savingsText)}</small>
       </div>
       <div class="tail-review-actions">
         <span class="tail-confidence level-${escapeHtml(confidence.level)}">${escapeHtml(confidence.label)}</span>
-        ${reviewUrl ? `<a class="ghost compact tail-review-link" href="${escapeHtml(reviewUrl)}" target="_blank" rel="noreferrer">打开携程复核</a>` : ""}
+        ${reviewUrl ? `<a class="ghost compact tail-review-link" href="${escapeHtml(reviewUrl)}" target="_blank" rel="noreferrer">打开${escapeHtml(providerLabel(item.provider))}复核</a>` : ""}
       </div>
       <details class="tail-details">
         <summary>航段详情</summary>

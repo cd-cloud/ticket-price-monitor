@@ -5,6 +5,7 @@ config.json
 runtime/
 output/
 .tmp/
+.venv/
 __pycache__/
 *.pyc
 *.pyo

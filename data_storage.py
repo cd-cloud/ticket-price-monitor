@@ -99,6 +99,37 @@ ON tail_discovery_attempts(job_id, observed_at);
 
 CREATE INDEX IF NOT EXISTS idx_tail_attempts_route
 ON tail_discovery_attempts(origin, transfer, departure_date, destination, observed_at);
+
+CREATE TABLE IF NOT EXISTS tail_route_edges (
+    provider TEXT NOT NULL,
+    origin TEXT NOT NULL,
+    destination TEXT NOT NULL,
+    airline TEXT,
+    first_observed_at TEXT NOT NULL,
+    last_observed_at TEXT NOT NULL,
+    PRIMARY KEY (provider, origin, destination, airline)
+);
+
+CREATE INDEX IF NOT EXISTS idx_tail_route_edges_lookup
+ON tail_route_edges(provider, origin, destination, last_observed_at);
+
+CREATE TABLE IF NOT EXISTS tail_negative_cache (
+    signature TEXT PRIMARY KEY,
+    provider TEXT NOT NULL,
+    origin TEXT NOT NULL,
+    transfer TEXT NOT NULL,
+    destination TEXT NOT NULL,
+    departure_date TEXT NOT NULL,
+    cabin TEXT NOT NULL,
+    passengers INTEGER NOT NULL,
+    preferred_airlines TEXT,
+    phase TEXT NOT NULL,
+    observed_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_tail_negative_cache_expiry
+ON tail_negative_cache(expires_at);
 """
 
 
@@ -285,7 +316,41 @@ class PriceRepository:
 
     def insert_tail_discovery_result(self, result: TailDiscoveryResult | dict[str, Any]) -> int:
         result = coerce_tail_result(result).to_record()
+        values = (
+            result["provider"],
+            result["origin"],
+            result["transfer"],
+            result["destination"],
+            result["departure_date"],
+            result["cabin"],
+            int(result.get("passengers", 1)),
+            result.get("currency", "CNY"),
+            float(result["price"]),
+            result["observed_at"],
+            result["scraped_at"],
+            json.dumps(result.get("flight_details") or [], ensure_ascii=False),
+            json.dumps(result.get("raw_payload") or {}, ensure_ascii=False),
+        )
+        identity = values[:7] + (result["observed_at"],)
         with self.connect() as conn:
+            existing = conn.execute(
+                """
+                SELECT id FROM tail_discovery_results
+                WHERE provider = ? AND origin = ? AND transfer = ? AND destination = ?
+                  AND departure_date = ? AND cabin = ? AND passengers = ? AND observed_at = ?
+                """,
+                identity,
+            ).fetchone()
+            if existing:
+                conn.execute(
+                    """
+                    UPDATE tail_discovery_results
+                    SET currency = ?, price = ?, scraped_at = ?, flight_details = ?, raw_payload = ?
+                    WHERE id = ?
+                    """,
+                    (values[7], values[8], values[10], values[11], values[12], existing["id"]),
+                )
+                return int(existing["id"])
             cursor = conn.execute(
                 """
                 INSERT INTO tail_discovery_results (
@@ -293,23 +358,95 @@ class PriceRepository:
                     currency, price, observed_at, scraped_at, flight_details, raw_payload
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (
-                    result["provider"],
-                    result["origin"],
-                    result["transfer"],
-                    result["destination"],
-                    result["departure_date"],
-                    result["cabin"],
-                    int(result.get("passengers", 1)),
-                    result.get("currency", "CNY"),
-                    float(result["price"]),
-                    result["observed_at"],
-                    result["scraped_at"],
-                    json.dumps(result.get("flight_details") or [], ensure_ascii=False),
-                    json.dumps(result.get("raw_payload") or {}, ensure_ascii=False),
-                ),
+                values,
             )
             return int(cursor.lastrowid)
+
+    def record_tail_route_edges(self, result: TailDiscoveryResult | dict[str, Any]) -> None:
+        result = coerce_tail_result(result).to_record()
+        details = result.get("flight_details") or []
+        observed_at = result["observed_at"]
+        with self.connect() as conn:
+            for detail in details:
+                origin = str(detail.get("origin") or detail.get("departure_airport") or "").upper()
+                destination = str(detail.get("destination") or detail.get("arrival_airport") or "").upper()
+                if not origin or not destination or origin == destination:
+                    continue
+                airline = str(detail.get("airline") or "").strip().upper()
+                conn.execute(
+                    """
+                    INSERT INTO tail_route_edges (
+                        provider, origin, destination, airline, first_observed_at, last_observed_at
+                    ) VALUES (?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(provider, origin, destination, airline) DO UPDATE SET
+                        last_observed_at = excluded.last_observed_at
+                    """,
+                    (result["provider"], origin, destination, airline, observed_at, observed_at),
+                )
+
+    def fetch_tail_route_edge_codes(
+        self,
+        *,
+        provider: str,
+        transfer: str,
+        candidates: list[str],
+        preferred_airlines: list[str],
+    ) -> set[str]:
+        codes = [str(code or "").upper() for code in candidates if code]
+        if not codes:
+            return set()
+        placeholders = ",".join("?" for _ in codes)
+        with self.connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT destination, airline FROM tail_route_edges
+                WHERE provider = ? AND origin = ? AND destination IN ({placeholders})
+                """,
+                [provider, transfer.upper(), *codes],
+            ).fetchall()
+        requested = [code.upper() for code in preferred_airlines]
+        return {
+            str(row["destination"]).upper()
+            for row in rows
+            if not requested or not row["airline"] or any(code in str(row["airline"]).upper() for code in requested)
+        }
+
+    def cache_tail_negative(self, entry: dict[str, Any]) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO tail_negative_cache (
+                    signature, provider, origin, transfer, destination, departure_date,
+                    cabin, passengers, preferred_airlines, phase, observed_at, expires_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(signature) DO UPDATE SET
+                    phase = excluded.phase,
+                    observed_at = excluded.observed_at,
+                    expires_at = excluded.expires_at
+                """,
+                (
+                    entry["signature"], entry["provider"], entry["origin"], entry["transfer"],
+                    entry["destination"], entry["departure_date"], entry["cabin"],
+                    int(entry.get("passengers", 1)), ",".join(entry.get("preferred_airlines") or []),
+                    entry["phase"], entry["observed_at"], entry["expires_at"],
+                ),
+            )
+
+    def active_negative_cache_codes(self, signatures: dict[str, str], *, now: str) -> set[str]:
+        if not signatures:
+            return set()
+        by_signature = {signature: code for code, signature in signatures.items()}
+        placeholders = ",".join("?" for _ in by_signature)
+        with self.connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT signature FROM tail_negative_cache
+                WHERE signature IN ({placeholders}) AND expires_at > ?
+                  AND phase IN ('route_absent', 'no_via_transfer')
+                """,
+                [*by_signature, now],
+            ).fetchall()
+        return {by_signature[str(row["signature"])] for row in rows}
 
     def fetch_tail_discovery_results(
         self,
@@ -427,11 +564,21 @@ class PriceRepository:
         origin: str,
         transfer: str,
         candidates: list[str],
+        provider: str | None = None,
+        cabin: str | None = None,
     ) -> dict[str, dict[str, Any]]:
         codes = [str(code or "").upper() for code in dict.fromkeys(candidates) if code]
         if not codes:
             return {}
         placeholders = ",".join("?" for _ in codes)
+        scope = ""
+        scope_params: list[Any] = []
+        if provider:
+            scope += " AND provider = ?"
+            scope_params.append(provider)
+        if cabin:
+            scope += " AND cabin = ?"
+            scope_params.append(cabin)
         stats: dict[str, dict[str, Any]] = {
             code: {
                 "attempts": 0,
@@ -452,13 +599,13 @@ class PriceRepository:
                        SUM(CASE WHEN status = 'matched' THEN 1 ELSE 0 END) AS matched,
                        SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed,
                        SUM(CASE WHEN status = 'no_match' THEN 1 ELSE 0 END) AS no_match,
-                       SUM(CASE WHEN phase = 'filtered' THEN 1 ELSE 0 END) AS filtered,
+                       SUM(CASE WHEN phase IN ('filtered', 'price_filtered', 'departure_time_filtered') THEN 1 ELSE 0 END) AS filtered,
                        MAX(observed_at) AS last_observed_at
                 FROM tail_discovery_attempts
-                WHERE origin = ? AND transfer = ? AND destination IN ({placeholders})
+                WHERE origin = ? AND transfer = ? AND destination IN ({placeholders}){scope}
                 GROUP BY destination
                 """,
-                [origin, transfer, *codes],
+                [origin, transfer, *codes, *scope_params],
             ).fetchall()
             result_rows = conn.execute(
                 f"""
@@ -466,10 +613,10 @@ class PriceRepository:
                        MIN(price) AS best_price,
                        MAX(observed_at) AS last_result_at
                 FROM tail_discovery_results
-                WHERE origin = ? AND transfer = ? AND destination IN ({placeholders})
+                WHERE origin = ? AND transfer = ? AND destination IN ({placeholders}){scope}
                 GROUP BY destination
                 """,
-                [origin, transfer, *codes],
+                [origin, transfer, *codes, *scope_params],
             ).fetchall()
         for row in attempt_rows:
             code = str(row["destination"] or "").upper()

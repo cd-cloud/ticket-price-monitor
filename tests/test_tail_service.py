@@ -1,6 +1,13 @@
 import unittest
 
-from tail_discovery import AIRLINE_TAIL_DEFAULTS, DEFAULT_TAIL_TEST_CODES, TAIL_DESTINATIONS, default_tail_codes_for_airlines
+from providers.ctrip_tail_parser import tail_text_tokens
+from tail_discovery import (
+    AIRLINE_TAIL_DEFAULTS,
+    ALL_DOMESTIC_TAIL_CODES,
+    DEFAULT_TAIL_TEST_CODES,
+    TAIL_DESTINATIONS,
+    default_tail_codes_for_airlines,
+)
 from tail_models import TailQueueItem
 from tail_service import build_tail_request_queue, normalize_tail_discovery_request, tail_queue_report, validate_tail_result
 
@@ -14,6 +21,7 @@ class TailServiceTests(unittest.TestCase):
                 "departure_date": "2026-06-01",
                 "preferred_airlines": "CA, ZH",
                 "candidates": ["BJS", "CTU", "CAN", "SHA"],
+                "ignore_cache": True,
             }
         )
 
@@ -24,6 +32,7 @@ class TailServiceTests(unittest.TestCase):
         self.assertNotIn("CTU", request.candidates)
         self.assertIn("CAN", request.candidates)
         self.assertIn("SHA", request.candidates)
+        self.assertTrue(request.ignore_cache)
 
     def test_all_domestic_profile_uses_broad_candidate_list(self) -> None:
         request = normalize_tail_discovery_request(
@@ -52,13 +61,20 @@ class TailServiceTests(unittest.TestCase):
 
     def test_air_china_defaults_include_expanded_domestic_points(self) -> None:
         codes = {item.code for item in TAIL_DESTINATIONS}
-        for code in ["CGQ", "BAV", "JZH", "MIG", "YBP", "WMT", "WEH"]:
+        for code in ["CGQ", "BAV", "JZH", "MIG", "YBP", "WMT", "WEH", "JHG", "TCZ", "CSX"]:
             self.assertIn(code, codes)
             self.assertIn(code, AIRLINE_TAIL_DEFAULTS["AIR_CHINA_GROUP"])
 
         ca_defaults = default_tail_codes_for_airlines(["CA"])
-        for code in ["CGQ", "BAV", "JZH", "MIG", "YBP", "WMT"]:
-            self.assertIn(code, ca_defaults)
+        self.assertEqual(set(ALL_DOMESTIC_TAIL_CODES), set(ca_defaults))
+        self.assertEqual(set(ALL_DOMESTIC_TAIL_CODES), set(AIRLINE_TAIL_DEFAULTS["AIR_CHINA_GROUP"]))
+
+    def test_tengchong_tail_text_tokens_include_city_and_airport(self) -> None:
+        tokens = tail_text_tokens("TCZ")
+
+        self.assertIn("腾冲", tokens)
+        self.assertIn("驼峰", tokens)
+        self.assertIn("TCZ", tokens)
 
     def test_explicit_international_tail_candidate_is_allowed_when_known(self) -> None:
         request = normalize_tail_discovery_request(

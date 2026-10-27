@@ -8,7 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from data_storage import PriceRepository
-from tail_discovery_service import TailDiscoveryService
+from tail_discovery_service import TailDiscoveryService, apply_tail_baseline, negative_cache_signature
 from tail_service import tail_queue_key
 
 
@@ -196,6 +196,108 @@ class TailDiscoveryServiceTests(unittest.TestCase):
             self.assertEqual(1, len(result["results"]))
             self.assertEqual("CAN", result["results"][0]["destination"])
             self.assertEqual(1, len(repository.fetch_tail_discovery_attempts(limit=10)))
+
+    def test_baseline_enriches_results_with_savings(self) -> None:
+        results = [{"price": 600, "raw_payload": {}}]
+
+        apply_tail_baseline(
+            results,
+            {"price": 1000, "observed_at": "2026-05-13T00:00:00Z", "review_url": "https://example.test"},
+        )
+
+        self.assertEqual(1000, results[0]["baseline_price"])
+        self.assertEqual(400, results[0]["savings_amount"])
+        self.assertEqual(40, results[0]["savings_percent"])
+        self.assertEqual(400, results[0]["raw_payload"]["savings_amount"])
+
+    def test_recent_negative_cache_skips_provider_query(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repository = PriceRepository(Path(tmp_dir) / "tail.db")
+            repository.initialize()
+            service = TailDiscoveryService(
+                config=SimpleNamespace(
+                    providers={"feizhu": SimpleNamespace(enabled=True)}, default_currency="CNY"
+                ),
+                config_manager=SimpleNamespace(load_credentials=lambda allow_missing=True: {}),
+                repository=repository,
+                run_lock=threading.Lock(),
+                queue_file=Path(tmp_dir) / "queue.json",
+                safe_batch_size=3,
+            )
+            signature = negative_cache_signature(
+                provider="feizhu", origin="BJS", transfer="CTU", destination="TCZ",
+                departure_date="2026-06-20", cabin="economy", passengers=1, preferred_airlines=["CA"],
+            )
+            repository.cache_tail_negative(
+                {
+                    "signature": signature, "provider": "feizhu", "origin": "BJS", "transfer": "CTU",
+                    "destination": "TCZ", "departure_date": "2026-06-20", "cabin": "economy",
+                    "passengers": 1, "preferred_airlines": ["CA"], "phase": "no_via_transfer",
+                    "observed_at": "2026-05-13T00:00:00+00:00", "expires_at": "2099-01-01T00:00:00+00:00",
+                }
+            )
+
+            result = asyncio.run(
+                service.run(
+                    {
+                        "provider": "feizhu", "origin": "BJS", "transfer": "CTU",
+                        "departure_date": "2026-06-20", "cabin": "economy",
+                        "preferred_airlines": "CA", "candidates": ["TCZ"],
+                    }
+                )
+            )
+
+            self.assertEqual(1, result["candidate_policy"]["cache_skipped"])
+            self.assertEqual("negative_cache", result["report"]["attempts"][0]["phase"])
+            self.assertEqual([], repository.fetch_tail_discovery_attempts(limit=10))
+
+    def test_completed_batch_is_saved_when_later_batch_is_cancelled(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repository = PriceRepository(Path(tmp_dir) / "tail.db")
+            repository.initialize()
+            service = TailDiscoveryService(
+                config=SimpleNamespace(
+                    providers={"feizhu": SimpleNamespace(enabled=True)}, default_currency="CNY"
+                ),
+                config_manager=SimpleNamespace(load_credentials=lambda allow_missing=True: {}),
+                repository=repository,
+                run_lock=threading.Lock(),
+                queue_file=Path(tmp_dir) / "queue.json",
+                safe_batch_size=1,
+            )
+
+            async def fake_search(*, origin, destination, departure_date, cabin, **kwargs):
+                if destination == "SHA":
+                    return [{"price": 1000, "flight_details": [{"origin": "BJS", "destination": "SHA"}]}]
+                return [{
+                    "price": 600,
+                    "flight_details": [
+                        {"origin": "BJS", "destination": "SHA", "departure_airport": "PEK", "arrival_airport": "SHA", "departure_date": departure_date, "airline": "CA"},
+                        {"origin": "SHA", "destination": destination, "departure_airport": "SHA", "arrival_airport": destination, "departure_date": departure_date, "airline": "CA"},
+                    ],
+                }]
+
+            cancel_calls = 0
+            def cancel_checker():
+                nonlocal cancel_calls
+                cancel_calls += 1
+                return cancel_calls >= 3
+
+            with patch("providers.feizhu_flyai_adapter.search_flights", fake_search):
+                result = asyncio.run(
+                    service.run(
+                        {
+                            "provider": "feizhu", "origin": "BJS", "transfer": "SHA",
+                            "departure_date": "2026-06-20", "cabin": "economy",
+                            "candidates": ["CAN", "SZX"],
+                        },
+                        cancel_checker=cancel_checker,
+                    )
+                )
+
+            self.assertEqual(1, result["saved"])
+            self.assertEqual(1, len(repository.fetch_tail_discovery_results()))
+            self.assertEqual(400, result["results"][0]["savings_amount"])
 
     def test_reset_running_queue_items_after_cancel(self) -> None:
         queue_items = [

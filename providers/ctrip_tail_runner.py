@@ -10,7 +10,8 @@ from pathlib import Path
 from typing import Any, Callable
 
 from config_manager import RouteQuery
-from providers import ctrip
+from providers import ctrip, ctrip_page
+from providers.ctrip_tail_discovery import classify_tail_no_match, tail_network_route_stats
 from providers.response_capture import attach_response_listeners
 
 
@@ -147,6 +148,44 @@ class CtripTailDiscoveryRunner:
                 attempt["phase"] = "form_search_failed"
         return last_error, page, context, response_store, session_metadata, trace_started, False
 
+    async def query_baseline(
+        self,
+        *,
+        origin: str,
+        transfer: str,
+        departure_date: str,
+        cabin: str,
+        passengers: int,
+    ) -> dict[str, object] | None:
+        provider = self.app_config.providers["ctrip"]
+        page, context, _metadata, response_store = await self._open_tail_context(provider)
+        try:
+            route = RouteQuery(
+                origin=origin,
+                destination=transfer,
+                departure_date=departure_date,
+                route_type="one_way",
+                cabin=cabin,
+                transfer_policy="direct_only",
+                passengers=passengers,
+                providers=["ctrip"],
+            )
+            offer, final_url, _title = await ctrip.query_single_route_offer(
+                self.runtime, provider, route, page, response_store
+            )
+            if not offer or float(offer.price or 0) <= 0:
+                return None
+            return {
+                "provider": "ctrip",
+                "origin": origin,
+                "destination": transfer,
+                "price": float(offer.price),
+                "observed_at": datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
+                "review_url": final_url,
+            }
+        finally:
+            await self._close_context_quietly(context)
+
     async def run(
         self,
         *,
@@ -176,7 +215,6 @@ class CtripTailDiscoveryRunner:
                 if code and code.upper() not in {normalized_origin, normalized_transfer}
             ]
             unique_candidates = list(dict.fromkeys(normalized_candidates))
-            random.shuffle(unique_candidates)
             origin_form_ready = False
             context_had_error = False
             for index, destination in enumerate(unique_candidates):
@@ -460,7 +498,16 @@ class CtripTailDiscoveryRunner:
                             preferred_airlines=preferred_airlines,
                         )
                         attempt["status"] = "no_match"
-                        attempt["phase"] = "no_transfer_match"
+                        attempt["phase"] = classify_tail_no_match(
+                            tail_network_route_stats(
+                                response_store,
+                                origin=normalized_origin,
+                                transfer=normalized_transfer,
+                                destination=destination,
+                                preferred_airlines=preferred_airlines,
+                            ),
+                            has_no_results_notice=await ctrip_page.has_no_results_notice(page),
+                        )
                         attempt["error"] = (
                             f"{diagnostics} Diagnostic artifact: {artifact.get('json_path')}"
                             if artifact

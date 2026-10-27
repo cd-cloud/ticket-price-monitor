@@ -4,7 +4,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $projectDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$python = "C:\Users\x1462\AppData\Local\Programs\Python\Python312\python.exe"
+$python = Join-Path $projectDir ".venv\Scripts\python.exe"
 $url = "http://127.0.0.1:$Port/"
 $healthUrl = "${url}api/health"
 $launcherLog = Join-Path $projectDir "runtime\launcher.log"

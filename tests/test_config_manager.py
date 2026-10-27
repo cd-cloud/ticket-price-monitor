@@ -18,6 +18,14 @@ class ConfigManagerTests(unittest.TestCase):
         self.assertEqual("PVG", normalize_airport_code("浦东机场"))
         self.assertEqual("CTU", normalize_airport_code("成都双机场"))
 
+    def test_normalize_airport_code_supports_new_domestic_destinations(self) -> None:
+        self.assertEqual("JHG", normalize_airport_code("西双版纳"))
+        self.assertEqual("JHG", normalize_airport_code("嘎洒国际机场"))
+        self.assertEqual("TCZ", normalize_airport_code("腾冲"))
+        self.assertEqual("TCZ", normalize_airport_code("驼峰机场"))
+        self.assertEqual("CSX", normalize_airport_code("长沙"))
+        self.assertEqual("CSX", normalize_airport_code("黄花国际机场"))
+
     def test_explicit_config_uses_sibling_env_by_default(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             config_path = Path(tmp_dir) / "config.json"

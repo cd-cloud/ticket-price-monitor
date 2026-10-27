@@ -174,6 +174,57 @@ def summarize_tail_details(details: list[dict[str, object]]) -> str:
     return f"{route}({airlines})" if airlines else route
 
 
+def tail_network_route_stats(
+    response_store: list[dict],
+    *,
+    origin: str,
+    transfer: str,
+    destination: str,
+    preferred_airlines: list[str] | None = None,
+) -> dict[str, int]:
+    stats = {"itineraries": 0, "same_route": 0, "via_transfer": 0, "airline_filtered": 0}
+    for item in response_store:
+        payload = item.get("payload")
+        if not isinstance(payload, dict):
+            continue
+        for data_node in ctrip_itinerary.walk_data_nodes(payload):
+            itineraries = data_node.get("flightItineraryList")
+            if not isinstance(itineraries, list):
+                continue
+            for itinerary in itineraries:
+                if not isinstance(itinerary, dict):
+                    continue
+                for price in itinerary.get("priceList") or []:
+                    if not isinstance(price, dict) or ctrip_itinerary.total_price(price) is None:
+                        continue
+                    stats["itineraries"] += 1
+                    details = ctrip_itinerary.build_itinerary_details(itinerary, price)
+                    if not details:
+                        continue
+                    same_route = code_matches_target(
+                        details[0].get("origin") or details[0].get("departure_airport"), origin
+                    ) and code_matches_target(
+                        details[-1].get("destination") or details[-1].get("arrival_airport"), destination
+                    )
+                    if same_route:
+                        stats["same_route"] += 1
+                    if details_match_tail_route(details, origin, transfer, destination):
+                        stats["via_transfer"] += 1
+                        if not ctrip_tail_parser.details_match_airlines(details, preferred_airlines):
+                            stats["airline_filtered"] += 1
+    return stats
+
+
+def classify_tail_no_match(stats: dict[str, int], *, has_no_results_notice: bool = False) -> str:
+    if stats.get("airline_filtered"):
+        return "airline_filtered"
+    if stats.get("same_route"):
+        return "no_via_transfer"
+    if has_no_results_notice:
+        return "route_absent"
+    return "parse_incomplete"
+
+
 def details_match_tail_route(
     details: list[dict[str, object]],
     origin: str,

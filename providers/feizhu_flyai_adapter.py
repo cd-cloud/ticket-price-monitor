@@ -60,6 +60,8 @@ _CITY_CODE_TO_NAME: dict[str, str] = {
     "XMN": "厦门",
     "CSX": "长沙",
     "KMG": "昆明",
+    "JHG": "西双版纳",
+    "TCZ": "腾冲",
     "DLC": "大连",
     "TSN": "天津",
     "CGO": "郑州",

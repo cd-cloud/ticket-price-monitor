@@ -52,6 +52,7 @@ class FeizhuTailRunnerTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(result["attempts"]), 1)
         self.assertEqual(result["attempts"][0]["status"], "no_match")
+        self.assertEqual(result["attempts"][0]["phase"], "route_absent")
         self.assertIn("No Feizhu itinerary", result["attempts"][0]["error"])
 
     async def test_run_matches_transfer_route(self) -> None:
@@ -180,6 +181,7 @@ class FeizhuTailRunnerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(result["results"]), 0)
         self.assertEqual(len(result["attempts"]), 1)
         self.assertEqual(result["attempts"][0]["status"], "no_match")
+        self.assertEqual(result["attempts"][0]["phase"], "airline_filtered")
 
     async def test_run_excludes_origin_and_transfer_from_candidates(self) -> None:
         runner = FeizhuTailDiscoveryRunner(FakeAutomation())

@@ -3,6 +3,7 @@ import logging
 import random
 import threading
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, AsyncIterator, Callable
 
@@ -67,11 +68,20 @@ class TailDiscoveryService:
         passengers = request.passengers
         preferred_airlines = request.preferred_airlines
         candidate_profile = request.candidate_profile
+        known_edge_codes = self.repository.fetch_tail_route_edge_codes(
+            provider=provider_name,
+            transfer=transfer,
+            candidates=request.candidates,
+            preferred_airlines=preferred_airlines,
+        )
         candidates = self._prioritize_candidates_with_history(
             request.candidates,
             origin=origin,
             transfer=transfer,
             preferred_airlines=preferred_airlines,
+            provider=provider_name,
+            cabin=cabin,
+            known_edge_codes=known_edge_codes,
         )
         max_price = request.max_price
         departure_time_start = request.departure_time_start
@@ -111,8 +121,40 @@ class TailDiscoveryService:
         }
         failed = set(queue_state.get("failed", [])) | failed_attempt_codes
         completed = (set(queue_state.get("completed", [])) & matched_codes) - failed
-        candidates_to_run = [item["destination"] for item in queue_items if item["destination"] not in completed]
+        signatures = {
+            code: negative_cache_signature(
+                provider=provider_name, origin=origin, transfer=transfer, destination=code,
+                departure_date=departure_date, cabin=cabin, passengers=passengers,
+                preferred_airlines=preferred_airlines,
+            )
+            for code in candidates
+        }
+        cached_codes = set()
+        if not request.ignore_cache:
+            cached_codes = self.repository.active_negative_cache_codes(
+                signatures, now=datetime.now(timezone.utc).isoformat()
+            )
+        cached_codes -= completed
+        cached_attempts = [
+            {
+                "destination": code, "status": "no_match", "phase": "negative_cache",
+                "method": "negative_cache", "error": "相同条件的近期无结果仍在缓存有效期内。",
+            }
+            for code in candidates if code in cached_codes
+        ]
+        for attempt in cached_attempts:
+            self._apply_queue_attempt(queue_items, attempt["destination"], attempt)
+        candidates_to_run = [
+            item["destination"] for item in queue_items
+            if item["destination"] not in completed and item["destination"] not in cached_codes
+        ]
 
+        candidate_policy = {
+            "known_route_edges": len(known_edge_codes),
+            "cache_skipped": len(cached_codes),
+            "negative_cache_ttl_hours": 6,
+            "ignore_cache": request.ignore_cache,
+        }
         warnings: list[str] = []
         errors: list[str] = []
         if len(candidates_to_run) > self.safe_batch_size:
@@ -131,7 +173,7 @@ class TailDiscoveryService:
             return {"running": False, "saved": 0, "results": [], "errors": errors}
 
         if not candidates_to_run:
-            attempts = list(queue_state.get("attempts", []))
+            attempts = cached_attempts or list(queue_state.get("attempts", []))
             report = tail_batch_report(candidates, attempts, 0)
             if progress_callback:
                 progress_callback(
@@ -162,13 +204,14 @@ class TailDiscoveryService:
                     "report": tail_queue_report(queue_items),
                 },
                 "preferred_airlines": preferred_airlines,
+                "candidate_policy": candidate_policy,
             }
 
         try:
             credentials = self.config_manager.load_credentials(allow_missing=True)
             all_results: list[dict[str, Any]] = []
             all_errors: list[str] = []
-            attempts: list[dict[str, Any]] = []
+            attempts: list[dict[str, Any]] = list(cached_attempts)
             batches = [
                 candidates_to_run[index : index + self.safe_batch_size]
                 for index in range(0, len(candidates_to_run), self.safe_batch_size)
@@ -188,6 +231,22 @@ class TailDiscoveryService:
                 )
 
             async with self._tail_discovery_client(provider_name, credentials) as automation:
+                baseline = None
+                baseline_query = getattr(automation, "query_tail_baseline", None)
+                if baseline_query is not None:
+                    try:
+                        baseline = await baseline_query(
+                            provider_name,
+                            origin=origin,
+                            transfer=transfer,
+                            departure_date=departure_date,
+                            cabin=cabin,
+                            passengers=passengers,
+                        )
+                        if baseline is None:
+                            warnings.append("未获取到 A→B 直飞基准价，将只展示甩尾票价。")
+                    except Exception as exc:
+                        warnings.append(f"基准票价查询失败：{exc}")
                 for batch_index, batch in enumerate(batches, start=1):
                     if cancel_checker and cancel_checker():
                         all_errors.append("Tail discovery was cancelled before the next batch.")
@@ -267,8 +326,9 @@ class TailDiscoveryService:
                         "verification_continue_checker": verification_continue_checker,
                     }
                     discovery = await automation.discover_tail_routes(provider_name, **discovery_kwargs)
+                    batch_results = apply_tail_baseline(list(discovery.get("results") or []), baseline)
                     filtered_results, filtered_attempts = filter_tail_results(
-                        list(discovery.get("results") or []),
+                        batch_results,
                         max_price=max_price,
                         departure_time_start=departure_time_start,
                         departure_time_end=departure_time_end,
@@ -325,6 +385,25 @@ class TailDiscoveryService:
                                 raw_payload=attempt,
                             )
                         )
+                        phase = str(attempt.get("phase") or "")
+                        if attempt.get("status") == "no_match" and phase in {"route_absent", "no_via_transfer"}:
+                            now = datetime.now(timezone.utc).replace(microsecond=0)
+                            self.repository.cache_tail_negative(
+                                {
+                                    "signature": signatures[code],
+                                    "provider": provider_name,
+                                    "origin": origin,
+                                    "transfer": transfer,
+                                    "destination": code,
+                                    "departure_date": departure_date,
+                                    "cabin": cabin,
+                                    "passengers": passengers,
+                                    "preferred_airlines": preferred_airlines,
+                                    "phase": phase,
+                                    "observed_at": now.isoformat(),
+                                    "expires_at": (now + timedelta(hours=6)).isoformat(),
+                                }
+                            )
                         if attempt.get("status") == "matched":
                             completed.add(code)
                             failed.discard(code)
@@ -357,6 +436,11 @@ class TailDiscoveryService:
                             "queue_report": tail_queue_report(queue_items),
                         },
                     )
+                    for result in filtered_results:
+                        result["scraped_at"] = self.repository.now_iso()
+                        model = TailDiscoveryResult.from_mapping(result)
+                        self.repository.record_tail_route_edges(model)
+                        self.repository.insert_tail_discovery_result(model)
                     all_results.extend(filtered_results)
                     all_errors.extend(
                         f"batch {batch_index}/{len(batches)}: {error}"
@@ -418,13 +502,9 @@ class TailDiscoveryService:
                         if cancel_checker and cancel_checker():
                             break
 
-            saved = 0
+            saved = len(all_results)
             results = all_results
             results.sort(key=lambda item: float(item.get("price", 0) or 0))
-            for result in results:
-                result["scraped_at"] = self.repository.now_iso()
-                self.repository.insert_tail_discovery_result(TailDiscoveryResult.from_mapping(result))
-                saved += 1
             cancelled = bool(cancel_checker and cancel_checker())
             if cancelled:
                 self._reset_running_queue_items(queue_items)
@@ -447,6 +527,8 @@ class TailDiscoveryService:
                     "report": tail_queue_report(queue_items),
                 },
                 "preferred_airlines": preferred_airlines,
+                "candidate_policy": candidate_policy,
+                "baseline": baseline,
             }
             summary["progress"] = tail_progress_payload(
                 "finished",
@@ -480,6 +562,11 @@ class TailDiscoveryService:
                     if requested_provider != provider_name:
                         raise RuntimeError(f"Unexpected provider {requested_provider!r}.")
                     return await self._runner.run(**kwargs)
+
+                async def query_tail_baseline(self, requested_provider: str, **kwargs: Any) -> dict[str, object] | None:
+                    if requested_provider != provider_name:
+                        raise RuntimeError(f"Unexpected provider {requested_provider!r}.")
+                    return await self._runner.query_baseline(**kwargs)
 
             yield DirectTailDiscoveryClient(self.config)
             return
@@ -522,14 +609,19 @@ class TailDiscoveryService:
         origin: str,
         transfer: str,
         preferred_airlines: list[str],
+        provider: str | None = None,
+        cabin: str | None = None,
+        known_edge_codes: set[str] | None = None,
     ) -> list[str]:
         stats = self.repository.fetch_tail_destination_history(
             origin=origin,
             transfer=transfer,
             candidates=candidates,
+            provider=provider,
+            cabin=cabin,
         )
         original_order = {code: index for index, code in enumerate(candidates)}
-        preferred_bonus = 0.25 if preferred_airlines else 0.0
+        known_edges = known_edge_codes or set()
 
         def score(code: str) -> tuple[float, int, str]:
             history = stats.get(code, {})
@@ -543,9 +635,41 @@ class TailDiscoveryService:
             reliability = hit_rate * 8 - failed * 1.5 - no_match * 0.35 - filtered * 0.2
             price_bonus = max(0, (3000 - float(best_price or 3000)) / 1000) if best_price else 0
             freshness_penalty = min(attempts, 6) * 0.05 if matched == 0 else 0
-            return (-(reliability + price_bonus + preferred_bonus - freshness_penalty), original_order.get(code, 999), code)
+            route_edge_bonus = 5.0 if code in known_edges else 0.0
+            return (-(reliability + price_bonus + route_edge_bonus - freshness_penalty), original_order.get(code, 999), code)
 
         return sorted(candidates, key=score)
+
+
+def negative_cache_signature(**payload: Any) -> str:
+    return tail_queue_key(**payload)
+
+
+def apply_tail_baseline(
+    results: list[dict[str, Any]], baseline: dict[str, Any] | None
+) -> list[dict[str, Any]]:
+    if not baseline:
+        return results
+    baseline_price = float(baseline.get("price") or 0)
+    if baseline_price <= 0:
+        return results
+    for result in results:
+        raw_payload = result.get("raw_payload")
+        if not isinstance(raw_payload, dict):
+            raw_payload = {}
+            result["raw_payload"] = raw_payload
+        raw_payload["baseline"] = dict(baseline)
+        savings = baseline_price - float(result.get("price") or 0)
+        values = {
+            "baseline_price": baseline_price,
+            "baseline_observed_at": baseline.get("observed_at"),
+            "baseline_review_url": baseline.get("review_url"),
+            "savings_amount": round(savings, 2),
+            "savings_percent": round(savings / baseline_price * 100, 2),
+        }
+        raw_payload.update(values)
+        result.update(values)
+    return results
 
 
 def filter_tail_results(
@@ -567,11 +691,12 @@ def filter_tail_results(
         if not reason:
             kept.append(result)
             continue
+        phase = "price_filtered" if reason.startswith("price ") else "departure_time_filtered"
         filtered_attempts.append(
             {
                 "destination": result.get("destination"),
                 "status": "no_match",
-                "phase": "filtered",
+                "phase": phase,
                 "method": "post_query_filter",
                 "price": result.get("price"),
                 "error": reason,

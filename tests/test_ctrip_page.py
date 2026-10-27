@@ -8,6 +8,7 @@ from providers.ctrip_page import (
     extract_page_departure_dates,
     extract_url_date_values,
 )
+from providers.ctrip_support import is_ctrip_domestic_code
 
 
 class CtripPageTests(unittest.TestCase):
@@ -45,6 +46,11 @@ class CtripPageTests(unittest.TestCase):
         self.assertIn("巴塞罗那", city_search_terms("BCN", "BCN"))
         self.assertIn("米兰", city_search_terms("MIL", "MIL"))
         self.assertIn("雅典", city_search_terms("ATH", "ATH"))
+
+    def test_new_tail_destinations_use_domestic_ctrip_search(self) -> None:
+        self.assertTrue(is_ctrip_domestic_code("JHG"))
+        self.assertTrue(is_ctrip_domestic_code("TCZ"))
+        self.assertTrue(is_ctrip_domestic_code("CSX"))
 
     def test_city_candidate_match_rejects_atlanta_for_athens(self) -> None:
         self.assertTrue(city_candidate_matches("\u96c5\u5178 (ATH)", "", "ATH", "ATH"))

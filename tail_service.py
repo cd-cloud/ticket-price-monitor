@@ -29,6 +29,7 @@ class TailDiscoveryRequest:
     max_price: float | None
     departure_time_start: str
     departure_time_end: str
+    ignore_cache: bool
 
 
 def normalize_tail_discovery_request(payload: dict[str, Any]) -> TailDiscoveryRequest:
@@ -86,6 +87,7 @@ def normalize_tail_discovery_request(payload: dict[str, Any]) -> TailDiscoveryRe
         max_price=max_price,
         departure_time_start=departure_time_start,
         departure_time_end=departure_time_end,
+        ignore_cache=str(payload.get("ignore_cache") or "").lower() in {"1", "true", "yes", "on"},
     )
 
 
@@ -299,7 +301,9 @@ def tail_queue_item_update_from_attempt(attempt: dict[str, Any]) -> dict[str, An
         queue_status = "saved"
     elif phase == "validation_failed":
         queue_status = "validation_failed"
-    elif phase == "filtered":
+    elif phase == "negative_cache":
+        queue_status = "cache_skipped"
+    elif phase in {"filtered", "price_filtered", "departure_time_filtered"}:
         queue_status = "filtered"
     elif status == "needs_verification":
         queue_status = "needs_verification"
@@ -406,6 +410,18 @@ def tail_attempt_diagnostic(attempt: dict[str, Any]) -> dict[str, str]:
         return {"code": "date_mismatch", "label": "日期未切换成功", "severity": "high"}
     if "validation_failed" in haystack or "硬校验" in error:
         return {"code": "validation_failed", "label": "航段硬校验失败", "severity": "high"}
+    if phase == "negative_cache":
+        return {"code": "negative_cache", "label": "近期无结果缓存", "severity": "low"}
+    if phase == "route_absent":
+        return {"code": "route_absent", "label": "确认无航班", "severity": "medium"}
+    if phase == "no_via_transfer":
+        return {"code": "no_via_transfer", "label": "有航班但不经过中转点", "severity": "medium"}
+    if phase == "parse_incomplete":
+        return {"code": "parse_incomplete", "label": "结果加载或解析不完整", "severity": "high"}
+    if phase == "price_filtered":
+        return {"code": "price_filtered", "label": "被价格筛选排除", "severity": "low"}
+    if phase == "departure_time_filtered":
+        return {"code": "departure_time_filtered", "label": "被起飞时间筛选排除", "severity": "low"}
     if phase == "filtered":
         return {"code": "filtered", "label": "被价格/时间筛选排除", "severity": "low"}
     if "not reach" in haystack or "direct result url" in haystack or "timed out" in haystack:
