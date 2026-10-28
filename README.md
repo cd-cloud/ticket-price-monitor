@@ -92,6 +92,18 @@ runtime/                   # 本地运行数据，不应提交
 output/                    # 导出报告，不应提交
 ```
 
+## 自动测试
+
+每次推送、创建或更新 PR 都会运行 GitHub Actions 的 `Automated tests`：
+
+- `Python regression`：Python 3.12 全量回归，并保存 7 天的 JUnit 测试报告。
+- `Frontend regression`：Node.js 24 的 JavaScript 语法检查和前端回归。
+
+不需要配置飞猪 API key 或其他平台账号，也不安装 FlyAI CLI。
+测试使用模拟平台响应；Python 测试只允许连接本机回环地址。
+在仓库 **Actions → Automated tests** 查看结果，或通过 **Run workflow** 手动重跑。
+详细范围和本地复现命令见 [docs/TESTING.md](docs/TESTING.md)。
+
 ## 注意事项
 
 - 只查询自己的账号和个人使用场景。
