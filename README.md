@@ -73,7 +73,11 @@ GET /api/browser-session/diagnostics
 - `detail_quality`: `complete`、`partial` 或 `price_only`。
 - `detail_source`: 例如 `network_exact`、`network_low_price_calendar`、`visible_row`。
 
-多程查询会优先打开携程多程结果页，例如 `multi-bjs-ctu-ctu-sin`，并优先使用 network itinerary。拿不到多程 itinerary 时，不再误用单程低价日历价格。
+携程普通查询（单程、往返、多程）现在只保存符合实际航线、日期、舱位和航司条件的结构化行程报价。
+价格与航班详情绑定为同一个快照，页面后续响应不会替换已选报价的航班。
+低价日历和纯页面文字不再兜底为已确认报价；缺少证据时会报告无法确认，而不是按查询条件补全事实。
+旧数据中的 `visible_row`、`network_low_price_calendar` 等来源标签仍保留，不自动升级。
+查询批次隔离与迁移说明见 [docs/CTRIP_QUERY_INTEGRITY.md](docs/CTRIP_QUERY_INTEGRITY.md)。
 
 ## 目录结构
 

@@ -215,13 +215,9 @@ def tail_network_route_stats(
 
 
 def classify_tail_no_match(stats: dict[str, int], *, has_no_results_notice: bool = False) -> str:
-    if stats.get("airline_filtered"):
-        return "airline_filtered"
-    if stats.get("same_route"):
-        return "no_via_transfer"
-    if has_no_results_notice:
-        return "route_absent"
-    return "parse_incomplete"
+    # A loaded page, no-results banner or one partial response is not a
+    # coverage certificate. Keep this retryable rather than caching absence.
+    return "search_inconclusive" if stats.get("same_route") or has_no_results_notice else "parse_incomplete"
 
 
 def details_match_tail_route(

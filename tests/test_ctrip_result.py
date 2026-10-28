@@ -6,7 +6,7 @@ from providers import ctrip_result
 
 
 class CtripResultTests(unittest.TestCase):
-    def test_round_trip_visible_single_leg_is_marked_partial(self) -> None:
+    def test_round_trip_visible_single_leg_cannot_be_saved_as_confirmed(self) -> None:
         route = RouteQuery(
             origin="SEL",
             destination="PAR",
@@ -23,14 +23,10 @@ class CtripResultTests(unittest.TestCase):
             ),
         )
 
-        outcome = ctrip_result.build_single_route_outcome(route, offer, "https://example.test", "title", [])
+        with self.assertRaisesRegex(RuntimeError, "unverified"):
+            ctrip_result.build_single_route_outcome(route, offer, "https://example.test", "title", [])
 
-        self.assertEqual("partial", outcome.extra_payload["detail_quality"])
-        self.assertEqual("visible_row", outcome.extra_payload["detail_source"])
-        self.assertEqual("ctrip_single_visible", outcome.extra_payload["parser"])
-        self.assertEqual("medium", outcome.extra_payload["parser_confidence"])
-
-    def test_low_price_calendar_match_is_price_only(self) -> None:
+    def test_unbound_low_price_calendar_cannot_be_saved_as_confirmed(self) -> None:
         route = RouteQuery(
             origin="PUS",
             destination="BCN",
@@ -53,18 +49,8 @@ class CtripResultTests(unittest.TestCase):
             }
         ]
 
-        outcome = ctrip_result.build_single_route_outcome(
-            route,
-            offer,
-            "https://example.test",
-            "title",
-            response_store,
-        )
-
-        self.assertEqual("price_only", outcome.extra_payload["detail_quality"])
-        self.assertEqual("network_low_price_calendar", outcome.extra_payload["detail_source"])
-        self.assertEqual("low_price_calendar", outcome.extra_payload["network_match_source"])
-        self.assertEqual("low", outcome.extra_payload["parser_confidence"])
+        with self.assertRaisesRegex(RuntimeError, "unverified"):
+            ctrip_result.build_single_route_outcome(route, offer, "https://example.test", "title", response_store)
 
 
 if __name__ == "__main__":

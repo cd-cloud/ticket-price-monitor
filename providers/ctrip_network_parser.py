@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 
 from config_manager import RouteQuery
@@ -42,10 +43,11 @@ def extract_single_route_price_from_network(response_store: list[dict], route: R
 
 
 def extract_single_route_match_from_network(response_store: list[dict], route: RouteQuery) -> dict[str, object] | None:
-    exact_low_price_matches: list[float] = []
-    itinerary_matches: list[tuple[float, list[dict[str, object]]]] = []
+    itinerary_matches = []
 
     for item in response_store:
+        if item.get("status", 200) != 200:
+            continue
         payload = item.get("payload")
         if not isinstance(payload, dict):
             continue
@@ -63,36 +65,17 @@ def extract_single_route_match_from_network(response_store: list[dict], route: R
                     if total is None:
                         continue
                     details = ctrip_itinerary.build_itinerary_details(itinerary, price)
-                    if details_match_single_route(details, route):
-                        itinerary_matches.append((total, details))
-
-        for price_item in walk_price_list_items(payload):
-            total = total_from_low_price_item(price_item)
-            if total is None:
-                continue
-            depart_date = ctrip_date_to_iso(price_item.get("departDate"))
-            return_date = ctrip_date_to_iso(price_item.get("returnDate"))
-            if depart_date != route.departure_date:
-                continue
-            if route.return_date:
-                if return_date == route.return_date:
-                    exact_low_price_matches.append(total)
-            elif not return_date:
-                exact_low_price_matches.append(total)
+                    if (details_match_single_route(details, route)
+                            and ctrip_itinerary.details_match_preferences(details, route)):
+                        itinerary_matches.append({
+                            "total_price": total, "details": details, "source": "flight_itinerary_list",
+                            "response_url": item.get("url"), "query_generation": item.get("query_generation"),
+                        })
 
     if itinerary_matches:
-        total, details = min(itinerary_matches, key=lambda item: item[0])
-        return {
-            "total_price": total,
-            "details": details,
-            "source": "flight_itinerary_list",
-        }
-    if exact_low_price_matches:
-        return {
-            "total_price": min(exact_low_price_matches),
-            "details": [],
-            "source": "low_price_calendar",
-        }
+        return deepcopy(min(itinerary_matches, key=lambda item: item["total_price"]))
+    # Calendar dates alone cannot establish route/cabin/airline attribution.
+    # Keep raw responses for diagnostics, never promote them to a matched fare.
     return None
 
 
@@ -102,9 +85,12 @@ def extract_multi_city_match_from_network(
     *,
     preferred_total: float | None = None,
 ) -> dict[str, object] | None:
-    best_match: tuple[int, int, dict, dict] | None = None
+    best_match = None
+    source_item = None
 
     for item in response_store:
+        if item.get("status", 200) != 200:
+            continue
         payload = item.get("payload")
         if not isinstance(payload, dict):
             continue
@@ -118,9 +104,13 @@ def extract_multi_city_match_from_network(
                 for price in itinerary.get("priceList") or []:
                     if not isinstance(price, dict):
                         continue
-                    total = _total_from_price_fields(price)
+                    total = ctrip_itinerary.total_price(price)
+                    if total is None:
+                        continue
                     details = ctrip_itinerary.build_itinerary_details(itinerary, price)
                     if not ctrip_itinerary.multi_city_details_match_route(details, route):
+                        continue
+                    if not ctrip_itinerary.details_match_preferences(details, route):
                         continue
                     if route.transfer_policy == "direct_only":
                         if not ctrip_itinerary.multi_city_details_are_direct(details, route):
@@ -141,15 +131,19 @@ def extract_multi_city_match_from_network(
                         continue
                     if best_match is None or score > best_match[:2]:
                         best_match = (score[0], score[1], itinerary, price)
+                        source_item = item
 
     if best_match is None:
         return None
 
     _, _, itinerary, price = best_match
-    return {
+    return deepcopy({
         "total_price": _total_from_price_fields(price),
         "details": ctrip_itinerary.build_itinerary_details(itinerary, price),
-    }
+        "source": "flight_itinerary_list",
+        "response_url": source_item.get("url"),
+        "query_generation": source_item.get("query_generation"),
+    })
 
 
 def summarize_response_for_diagnostics(item: dict) -> dict[str, object]:
@@ -218,14 +212,14 @@ def details_match_single_route(details: list[dict[str, object]], route: RouteQue
         return False
     if route.return_date:
         return details_match_round_trip(details, route)
+    if not ctrip_itinerary.logical_legs_connected(details):
+        return False
 
     first = details[0]
     last = details[-1]
     if str(first.get("departure_date") or "")[:10] != route.departure_date:
         return False
-    origin = str(first.get("origin") or first.get("departure_airport") or "").upper()
-    destination = str(last.get("destination") or last.get("arrival_airport") or "").upper()
-    if origin != route.origin.upper() or destination != route.destination.upper():
+    if not ctrip_itinerary.endpoint_matches(first, route.origin) or not ctrip_itinerary.endpoint_matches(last, route.destination, arrival=True):
         return False
     if route.transfer_policy == "direct_only" and len(details) != 1:
         return False
@@ -236,6 +230,8 @@ def details_match_round_trip(details: list[dict[str, object]], route: RouteQuery
     outbound = details_for_logical_segment(details, 1, route.departure_date)
     inbound = details_for_logical_segment(details, 2, route.return_date or "")
     if not outbound or not inbound:
+        return False
+    if len(outbound) + len(inbound) != len(details) or {id(leg) for leg in outbound} & {id(leg) for leg in inbound}:
         return False
 
     if not details_match_direction(outbound, route.origin, route.destination, route.departure_date):
@@ -274,13 +270,14 @@ def details_match_direction(
 ) -> bool:
     if not details:
         return False
+    if not ctrip_itinerary.logical_legs_connected(details):
+        return False
     first = details[0]
     last = details[-1]
     if str(first.get("departure_date") or "")[:10] != departure_date:
         return False
-    origin = str(first.get("origin") or first.get("departure_airport") or "").upper()
-    destination = str(last.get("destination") or last.get("arrival_airport") or "").upper()
-    return origin == origin_code.upper() and destination == destination_code.upper()
+    return (ctrip_itinerary.endpoint_matches(first, origin_code)
+            and ctrip_itinerary.endpoint_matches(last, destination_code, arrival=True))
 
 
 def payload_shape(payload: dict) -> str:

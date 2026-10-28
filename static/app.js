@@ -1642,10 +1642,7 @@ function ensureTailDiscoveryPanel() {
       <div class="tail-run-actions">
         <button id="tailRunBtn" class="primary" type="submit">开始发现</button>
         <button id="tailCancelBtn" class="ghost danger" type="button" hidden disabled>中止任务</button>
-        <label class="tail-toggle">
-          <input id="tailIgnoreCacheInput" type="checkbox" />
-          忽略 6 小时无结果缓存
-        </label>
+        <span class="muted">有限搜索未命中仍可重试；不使用无航线缓存。</span>
       </div>
       <div class="tail-candidates">
         <div class="tail-candidate-head">
@@ -1888,7 +1885,7 @@ async function runTailDiscovery() {
     departure_time_end: document.getElementById("tailDepartureTimeEndInput")?.value || "",
     preferred_airlines: document.getElementById("tailAirlineInput")?.value || "",
     candidate_profile: tailCandidateProfileOverride,
-    ignore_cache: Boolean(document.getElementById("tailIgnoreCacheInput")?.checked),
+    ignore_cache: false, // Retained API field; unsupported absence caches are disabled.
     passengers: Number(document.getElementById("tailPassengersInput")?.value || 1),
     mode: document.getElementById("tailModeInput")?.value || "explore",
     max_candidates: Number(document.getElementById("tailBudgetCitiesInput")?.value || 0),
@@ -2136,6 +2133,7 @@ function tailAttemptPhaseLabel(phase) {
     airline_filtered: "航司筛选不匹配",
     parse_incomplete: "结果加载或解析不完整",
     search_incomplete: "搜索覆盖不完整，可重试；不代表无航线",
+    search_inconclusive: "本次未发现，覆盖未确认，可重试",
     negative_cache: "近期无结果缓存",
     price_filtered: "超出价格上限",
     departure_time_filtered: "不在起飞时间范围",

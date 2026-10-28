@@ -1,100 +1,57 @@
-"""Ctrip result assembly helpers.
-
-The browser flow finds a visible offer and captures network responses. This
-module turns those raw pieces into the common ProviderQueryOutcome shape.
-"""
-
+"""Assemble only a frozen, validated Ctrip quote; never reselect its details."""
+from copy import deepcopy
 from typing import Any
 
 from config_manager import RouteQuery
-from providers import ctrip_network_parser
-from providers import ctrip_parser
+from providers import ctrip_network_parser, ctrip_itinerary
 from providers.base import ParsedProviderResult, ProviderQueryOutcome
 
 
-def _single_route_detail_quality(route: RouteQuery, details: list[dict[str, object]]) -> str:
-    if not details:
-        return "price_only"
-    if route.return_date and len(details) < 2:
-        return "partial"
-    return "complete"
+def selected_quote(route, offer):
+    match = deepcopy(getattr(offer, "matched_quote", None))
+    if not match or match.get("source") != "flight_itinerary_list":
+        raise RuntimeError("Ctrip quote unverified: calendar/visible-only prices cannot confirm the requested itinerary.")
+    details = match.get("details") or []
+    if route.is_multi_city:
+        valid = ctrip_itinerary.multi_city_details_match_route(
+            details, route, direct_only=route.transfer_policy == "direct_only")
+    else:
+        valid = ctrip_network_parser.details_match_single_route(details, route)
+    if not valid or not ctrip_itinerary.details_match_preferences(details, route):
+        raise RuntimeError("Ctrip selected quote no longer matches the requested conditions.")
+    if match["total_price"] != offer.price:
+        raise RuntimeError("Ctrip selected quote price and itinerary were changed independently.")
+    return match
 
 
-def build_multi_city_outcome(
-    runtime: Any,
-    route: RouteQuery,
-    offer: Any,
-    final_url: str,
-    title: str,
-    response_store: list[dict],
-) -> ProviderQueryOutcome:
-    network_match = runtime.extract_ctrip_multi_city_match_from_network(
-        response_store,
-        route,
-        preferred_total=offer.price,
-    )
-    if route.transfer_policy == "direct_only":
-        if network_match is None:
-            raise RuntimeError("No direct-only itinerary found for this route.")
-        offer = runtime.offer_details_type(
-            price=network_match["total_price"],
-            departure_time=offer.departure_time,
-            row_text=offer.row_text,
-        )
-
+def _outcome(route, offer, final_url, title, *, extra=None):
+    match = selected_quote(route, offer)
+    details = match["details"]
     return ParsedProviderResult(
-        provider="ctrip",
-        price=offer.price,
-        final_url=final_url,
-        title=title,
-        departure_time=offer.departure_time,
-        row_text=offer.row_text,
-        flight_details=(network_match or {}).get("details", []),
-        extra_payload={
-            "segment_count": len(route.segments or []),
-            "segments": [segment.to_dict() for segment in route.segments or []],
-            "itinerary_summary": runtime.build_itinerary_summary(route),
-            "detail_quality": "complete" if network_match else "partial",
-            "detail_source": "network_exact" if network_match else "visible_row",
-        },
-        parser="ctrip_multi_city_network" if network_match else "ctrip_multi_city_visible",
-        confidence="high" if network_match else "medium",
-    ).to_outcome()
-
-
-def build_single_route_outcome(
-    route: RouteQuery,
-    offer: Any,
-    final_url: str,
-    title: str,
-    response_store: list[dict] | None = None,
-) -> ProviderQueryOutcome:
-    network_match = ctrip_network_parser.extract_single_route_match_from_network(response_store or [], route)
-    network_details = (network_match or {}).get("details", [])
-    visible_details = ctrip_parser.parse_single_flight_details(offer.row_text, route)
-    details = network_details or visible_details
-    parser = "ctrip_single_network" if network_match else "ctrip_single_visible"
-    confidence = "high" if network_details else ("medium" if visible_details else "low")
-    detail_source = "visible_row" if visible_details else "price_only"
-    if network_details:
-        detail_source = "network_exact"
-    elif network_match:
-        detail_source = "network_low_price_calendar"
-    extra_payload = {
-        "detail_quality": _single_route_detail_quality(route, details),
-        "detail_source": detail_source,
-    }
-    if network_match:
-        extra_payload["network_match_source"] = network_match.get("source")
-    return ParsedProviderResult(
-        provider="ctrip",
-        price=offer.price,
-        final_url=final_url,
-        title=title,
-        departure_time=offer.departure_time,
-        row_text=offer.row_text,
+        provider="ctrip", price=match["total_price"], final_url=final_url, title=title,
+        departure_time=details[0].get("departure_time"), row_text=offer.row_text,
         flight_details=details,
-        extra_payload=extra_payload,
-        parser=parser,
-        confidence=confidence,
+        parser="ctrip_multi_city_network" if route.is_multi_city else "ctrip_single_network",
+        confidence="high",
+        extra_payload={
+            **(extra or {}), "detail_quality": "complete", "detail_source": "network_exact",
+            "network_match_source": match["source"],
+            "selected_quote": match,
+            "validation": {"status": "valid", "scope": "route_date_cabin_airline",
+                           "version": 1},
+        },
     ).to_outcome()
+
+
+def build_multi_city_outcome(runtime: Any, route: RouteQuery, offer: Any, final_url: str,
+                             title: str, response_store: list[dict]) -> ProviderQueryOutcome:
+    return _outcome(route, offer, final_url, title, extra={
+        "segment_count": len(route.segments or []),
+        "segments": [segment.to_dict() for segment in route.segments or []],
+        "itinerary_summary": runtime.build_itinerary_summary(route),
+    })
+
+
+def build_single_route_outcome(route: RouteQuery, offer: Any, final_url: str, title: str,
+                              response_store: list[dict] | None = None) -> ProviderQueryOutcome:
+    return _outcome(route, offer, final_url, title)

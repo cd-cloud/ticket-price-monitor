@@ -7,6 +7,7 @@ from playwright.async_api import Page
 from config_manager import ProviderConfig, RouteQuery
 from providers import ctrip_page
 from providers import ctrip_result
+from providers.response_capture import begin_response_batch
 from providers.base import ProviderQueryOutcome
 from providers.ctrip_support import ctrip_city_code, route_prefers_international_entry
 from providers.human_actions import hover_then_click, random_scroll_and_pause
@@ -98,9 +99,10 @@ async def query_native_single_route_offer(
     await runtime.activate_ctrip_one_way(page, provider.timeout_ms)
     await runtime.prepare_ctrip_one_way_form(page, route, provider.timeout_ms)
     try:
+        begin_response_batch(response_store)
         await submit_search(page, provider.timeout_ms)
         await ensure_results_page(page, provider.timeout_ms, route)
-        await ensure_results_cabin_url(page, route, provider.timeout_ms)
+        await ensure_results_cabin_url(page, route, provider.timeout_ms, response_store)
     except Exception as exc:
         await runtime.assist_page(
             page,
@@ -143,9 +145,10 @@ async def query_native_round_trip_offer(
     await runtime.prepare_ctrip_round_trip_form(page, route, provider.timeout_ms)
     try:
         await runtime.dismiss_ctrip_login_overlays(page, provider.timeout_ms)
+        begin_response_batch(response_store)
         await submit_search(page, provider.timeout_ms)
         await ensure_results_page(page, provider.timeout_ms, route)
-        await ensure_results_cabin_url(page, route, provider.timeout_ms)
+        await ensure_results_cabin_url(page, route, provider.timeout_ms, response_store)
     except Exception as exc:
         await runtime.assist_page(
             page,
@@ -178,32 +181,28 @@ async def open_direct_results_page(page: Page, route: RouteQuery, timeout_ms: in
 
 
 async def load_direct_route_offer(
-    runtime,
-    provider: ProviderConfig,
-    route: RouteQuery,
-    page: Page,
-    response_store: list[dict],
+    runtime, provider: ProviderConfig, route: RouteQuery, page: Page,
+    response_store: list[dict], *, results_only: bool = False,
 ):
+    begin_response_batch(response_store)
     if not await open_direct_results_page(page, route, provider.timeout_ms):
         return None
-    await runtime.wait_for_results(provider, page)
-    await runtime.dismiss_ctrip_login_overlays(page, provider.timeout_ms)
-    await runtime.warm_ctrip_result_data(page, response_store)
     try:
+        await runtime.wait_for_results(provider, page)
+        await runtime.dismiss_ctrip_login_overlays(page, provider.timeout_ms)
+        await runtime.warm_ctrip_result_data(page, response_store)
+        if results_only:
+            if await ctrip_page.has_login_overlay(page):
+                return None
+            return None, page.url, await page.title()
         offer = await runtime.extract_offer(provider, route, page, response_store)
-    except Exception:
-        if await ctrip_page.has_login_overlay(page):
-            LOGGER.info("Ctrip direct results page is blocked by login overlay; retrying through search form route=%s", route.route_key)
-            return None
-        if await ctrip_page.has_no_results_notice(page):
-            LOGGER.info(
-                "Ctrip direct results page returned no flights; retrying through search form route=%s url=%s",
-                route.route_key,
-                page.url,
-            )
-            return None
+        return offer, page.url, await page.title()
+    except Exception as exc:
+        from browser_retry_policy import looks_like_rate_limit
+        if looks_like_rate_limit(exc):
+            raise
+        LOGGER.info("Ctrip direct query inconclusive; trying form route=%s error=%s", route.route_key, exc)
         return None
-    return offer, page.url, await page.title()
 
 
 def build_online_results_url(route: RouteQuery) -> str:
@@ -246,7 +245,7 @@ async def query_tail_candidate_offer(
     origin_already_set: bool = False,
 ):
     await runtime.throttle(provider)
-    direct_result = await load_direct_route_offer(runtime, provider, route, page, response_store)
+    direct_result = await load_direct_route_offer(runtime, provider, route, page, response_store, results_only=True)
     if direct_result is not None:
         return direct_result
 
@@ -264,9 +263,10 @@ async def query_tail_candidate_offer(
         skip_origin=origin_already_set,
     )
     try:
+        begin_response_batch(response_store)
         await submit_search(page, provider.timeout_ms)
         await ensure_results_page(page, provider.timeout_ms, route)
-        await ensure_results_cabin_url(page, route, provider.timeout_ms)
+        await ensure_results_cabin_url(page, route, provider.timeout_ms, response_store)
     except Exception as exc:
         await runtime.assist_page(
             page,
@@ -277,8 +277,7 @@ async def query_tail_candidate_offer(
         raise
     await runtime.wait_for_results(provider, page)
     await runtime.warm_ctrip_result_data(page, response_store)
-    offer = await runtime.extract_offer(provider, route, page, response_store)
-    return offer, page.url, await page.title()
+    return None, page.url, await page.title()
 
 
 async def ensure_single_route_search_form(
@@ -358,9 +357,10 @@ async def query_multi_city_offer(
     await runtime.prepare_ctrip_multi_city_form(page, route.segments, provider.timeout_ms)
     try:
         await runtime.dismiss_ctrip_login_overlays(page, provider.timeout_ms)
+        begin_response_batch(response_store)
         await submit_search(page, provider.timeout_ms)
         await ensure_results_page(page, provider.timeout_ms, route)
-        await ensure_results_cabin_url(page, route, provider.timeout_ms)
+        await ensure_results_cabin_url(page, route, provider.timeout_ms, response_store)
     except Exception as exc:
         await runtime.assist_page(
             page,
@@ -374,7 +374,7 @@ async def query_multi_city_offer(
     await runtime.warm_ctrip_result_data(page, response_store)
     network_match = runtime.extract_ctrip_multi_city_match_from_network(response_store, route)
     if network_match is not None:
-        offer = runtime.offer_details_type(price=network_match["total_price"])
+        offer = runtime.offer_details_type(price=network_match["total_price"], matched_quote=network_match)
     else:
         try:
             offer = await runtime.extract_offer(provider, route, page, response_store)
@@ -415,6 +415,7 @@ async def load_direct_multi_city_offer(
     page: Page,
     response_store: list[dict],
 ):
+    begin_response_batch(response_store)
     try:
         await page.goto(build_multi_city_results_url(route), wait_until="domcontentloaded", timeout=provider.timeout_ms)
         await page.wait_for_timeout(3500)
@@ -425,7 +426,7 @@ async def load_direct_multi_city_offer(
         await runtime.warm_ctrip_result_data(page, response_store)
         network_match = runtime.extract_ctrip_multi_city_match_from_network(response_store, route)
         if network_match is not None:
-            offer = runtime.offer_details_type(price=network_match["total_price"])
+            offer = runtime.offer_details_type(price=network_match["total_price"], matched_quote=network_match)
         else:
             try:
                 offer = await runtime.extract_offer(provider, route, page, response_store)
@@ -526,7 +527,7 @@ async def ensure_results_page(page: Page, timeout_ms: int, route: RouteQuery) ->
     raise RuntimeError(f"Ctrip search did not reach a results page for route {route.route_key}. Current URL: {page.url}")
 
 
-async def ensure_results_cabin_url(page: Page, route: RouteQuery, timeout_ms: int) -> None:
+async def ensure_results_cabin_url(page: Page, route: RouteQuery, timeout_ms: int, response_store=None) -> None:
     expected_cabin = CTRIP_ONLINE_CABIN_PARAMS.get((route.cabin or "").lower(), "y")
     parts = urlsplit(page.url)
     query = dict(parse_qsl(parts.query, keep_blank_values=True))
@@ -541,6 +542,8 @@ async def ensure_results_cabin_url(page: Page, route: RouteQuery, timeout_ms: in
         page.url,
         corrected_url,
     )
+    if response_store is not None:
+        begin_response_batch(response_store)
     await page.goto(corrected_url, wait_until="domcontentloaded", timeout=timeout_ms)
 
 

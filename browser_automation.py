@@ -30,7 +30,7 @@ from config_manager import AppConfig, ProviderConfig, RouteQuery, RouteSegment
 from providers.base import ProviderQueryOutcome
 from provider_runtime import ProviderRuntime
 from providers.ctrip_support import provider_cabin_value
-from providers.response_capture import attach_response_listeners
+from providers.response_capture import attach_response_listeners, ResponseStore
 from providers.tail_registry import create_tail_runner
 from providers import ctrip_page
 from providers import ctrip_parser
@@ -184,7 +184,7 @@ class BrowserAutomation:
                 page, context = await self._new_page(provider, backend_name=backend_name)
                 LOGGER.info("query provider=%s route=%s backend=%s", provider_name, route.route_key, backend_name)
                 session_metadata = self._session_metadata_for_context(context)
-                response_store: list[dict] = []
+                response_store: list[dict] = ResponseStore()
                 await attach_response_listeners(page, response_store)
                 await self.login(provider_name, page=page, context=context)
                 outcome = await self._query_provider_with_handler(provider, route, page, response_store)
@@ -252,7 +252,7 @@ class BrowserAutomation:
         page, context = await self._new_page(provider)
         try:
             session_metadata = self._session_metadata_for_context(context)
-            response_store: list[dict] = []
+            response_store: list[dict] = ResponseStore()
             await attach_response_listeners(page, response_store)
             await self.login(provider_name, page=page, context=context)
             outcome = await self._query_provider_with_handler(provider, route, page, response_store)
@@ -865,26 +865,14 @@ class BrowserAutomation:
         response_store: list[dict] | None = None,
     ) -> OfferDetails:
         if provider.name == "ctrip":
-            if route.is_multi_city:
-                ctrip_offer = await self._extract_ctrip_offer(page, route)
-                if ctrip_offer is not None and ctrip_offer.row_text:
-                    return ctrip_offer
-                raise RuntimeError(
-                    "Could not extract a reliable Ctrip multi-city fare matched to this route. "
-                    "Network responses did not contain a matching multi-city itinerary and the visible result row was incomplete."
-                )
-
-            network_price = ctrip_network_parser.extract_single_route_price_from_network(response_store or [], route)
-            if network_price is not None:
-                return OfferDetails(price=network_price)
-
-            ctrip_offer = await self._extract_ctrip_offer(page, route)
-            if ctrip_offer is not None and ctrip_offer.row_text:
-                return ctrip_offer
-
+            match = (ctrip_network_parser.extract_multi_city_match_from_network(response_store or [], route)
+                     if route.is_multi_city else
+                     ctrip_network_parser.extract_single_route_match_from_network(response_store or [], route))
+            if match is not None:
+                return OfferDetails(price=match["total_price"], matched_quote=match)
             raise RuntimeError(
-                "Could not extract a reliable Ctrip fare matched to this route/date. "
-                "Network responses did not contain a matching itinerary or low-price calendar item."
+                "Ctrip quote unverified: no exact itinerary matches route/date/cabin/airlines. "
+                "Calendar and visible-only fares are diagnostic evidence, not reliable saved quotes."
             )
 
         network_price = self._extract_price_from_network(response_store or [])

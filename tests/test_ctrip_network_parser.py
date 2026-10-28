@@ -225,7 +225,7 @@ class CtripNetworkParserTests(unittest.TestCase):
 
         self.assertEqual(860, ctrip_network_parser.extract_price_from_network(response_store))
 
-    def test_extracts_single_route_low_price_by_departure_and_return_date(self) -> None:
+    def test_calendar_dates_alone_do_not_establish_matching_quote(self) -> None:
         route = RouteQuery(
             origin="PUS",
             destination="BCN",
@@ -256,7 +256,7 @@ class CtripNetworkParserTests(unittest.TestCase):
             }
         ]
 
-        self.assertEqual(4181, ctrip_network_parser.extract_single_route_price_from_network(response_store, route))
+        self.assertIsNone(ctrip_network_parser.extract_single_route_price_from_network(response_store, route))
 
     def test_extracts_single_route_exact_itinerary_details_from_network(self) -> None:
         route = RouteQuery(
@@ -389,7 +389,10 @@ class CtripNetworkParserTests(unittest.TestCase):
         price = {
             "adultPrice": 1000,
             "adultTax": 120,
-            "priceUnitList": [{"flightSeatList": []}],
+            "priceUnitList": [{"flightSeatList": [
+                {"segmentNo": 1, "sequenceNo": 1, "cabinClass": "Y"},
+                {"segmentNo": 2, "sequenceNo": 1, "cabinClass": "Y"},
+            ]}],
             "luggageVisaKey": (
                 '{"criteria":{"FlightInfoList":['
                 '{"SegmentNo":1,"SequenceNo":1,"MarketingCarrierCode":"CA","MarketingFlightNo":"123",'

@@ -75,6 +75,7 @@ class TailDiscoveryService:
         root_job_id = job_id
         execution_mode = request.mode
         provider = request.provider
+        validation_version = 3 if provider == "ctrip" else 2
         if provider not in self.config.providers or not self.config.providers[provider].enabled:
             raise ValueError(f"{provider} provider is not enabled.")
         cooldown = self.repository.tail_cooldown(provider)
@@ -97,7 +98,7 @@ class TailDiscoveryService:
             preferred_airlines=request.preferred_airlines, candidates=candidates, max_price=request.max_price,
             departure_time_start=request.departure_time_start, departure_time_end=request.departure_time_end,
             alternatives_per_flight=request.alternatives_per_flight,
-            filter_scope=request.filter_scope, validation_version=2,
+            filter_scope=request.filter_scope, validation_version=validation_version,
             **({"search_scope": request.search_scope} if request.search_scope != "candidates" else {}),
             **({"max_followup_candidates": request.max_followup_candidates} if hybrid else {}),
         )
@@ -148,13 +149,11 @@ class TailDiscoveryService:
             provider=provider, origin=request.origin, transfer=request.transfer, destination=code,
             departure_date=request.departure_date, cabin=request.cabin, passengers=request.passengers,
             preferred_airlines=request.preferred_airlines,
-            filter_scope=request.filter_scope, validation_version=2,
+            filter_scope=request.filter_scope, validation_version=validation_version,
         ) for code in candidates}
         cached = set()
-        # CLI search coverage is not guaranteed. Old Feizhu "no route" entries
-        # must not suppress the new server-side transfer-city queries either.
-        if provider != "feizhu" and execution_mode not in {"refresh", "recheck"} and not request.ignore_cache:
-            cached = self.repository.active_negative_cache_codes(signatures, now=datetime.now(timezone.utc).isoformat()) - done
+        # Neither supported provider proves complete inventory coverage. Legacy
+        # negatives are retained for audit, but must not suppress new searches.
         attempts = [{"destination": code, "status": "no_match", "phase": "negative_cache", "method": "negative_cache"}
                     for code in ordered if code in cached]
         attempts.extend(item["attempt"] for item in restored if item["destination"] in done)
@@ -173,7 +172,8 @@ class TailDiscoveryService:
         if hybrid and OPEN_DESTINATION in done and len(done - {OPEN_DESTINATION}) >= request.max_followup_candidates:
             stop_reason = "followup_budget" if pending else ""
         policy = {"known_route_edges": len(edges), "cache_skipped": len(cached),
-                  "negative_cache_ttl_hours": 6, "ignore_cache": request.ignore_cache,
+                  "negative_cache_ttl_hours": 0, "ignore_cache": request.ignore_cache,
+                  "negative_cache_enabled": False,
                   "ranking": "contextual_history_v1", "exploration_fraction": .2}
         policy.update(search_scope=request.search_scope,
                       provider_calls_supported=provider == "feizhu",
@@ -271,7 +271,10 @@ class TailDiscoveryService:
             elif candidate_results:
                 attempt.update(status="no_match", phase="validation_failed" if invalid else "filtered",
                                error="; ".join(str(a.get("error") or "") for a in rejected + invalid) or "未找到符合条件的原报价")
-            if attempt.get("phase") == "parse_incomplete":
+            if provider == "ctrip" and not candidate_results and attempt.get("phase") in {"route_absent", "no_via_transfer", "airline_filtered"}:
+                attempt.update(phase="search_inconclusive",
+                               error="本次未发现目标联程，无法证明结果覆盖完整，可重试。")
+            if attempt.get("phase") in {"parse_incomplete", "search_inconclusive"}:
                 attempt["status"] = "failed"  # Unknown is retryable, never a negative cache hit.
             if execution_mode == "recheck" and not kept and not termination:
                 if attempt.get("phase") not in {"query_failed", "cancelled_before_query"}:
@@ -286,13 +289,6 @@ class TailDiscoveryService:
             savings = [r.get("savings_amount") for r in kept if r.get("savings_amount") is not None]
             attempt["savings_amount"] = max(savings) if savings else None
             entry = None
-            if provider != "feizhu" and attempt.get("status") == "no_match" and attempt.get("phase") in {"route_absent", "no_via_transfer"}:
-                now = datetime.now(timezone.utc)
-                entry = {"signature": signatures[code], "provider": provider, "origin": request.origin,
-                         "transfer": request.transfer, "destination": code, "departure_date": request.departure_date,
-                         "cabin": request.cabin, "passengers": request.passengers,
-                         "preferred_airlines": request.preferred_airlines, "phase": attempt["phase"],
-                         "observed_at": now.isoformat(), "expires_at": (now + timedelta(hours=6)).isoformat()}
             attempt["learning_version"] = 1
             record = {**attempt, "job_id": job_id, "queue_key": fingerprint, "provider": provider,
                       "origin": request.origin, "transfer": request.transfer, "departure_date": request.departure_date,
@@ -565,7 +561,8 @@ class TailDiscoveryService:
 
 
 def negative_cache_signature(**payload: Any) -> str:
-    return tail_queue_key(**{"filter_scope": "first_leg", "validation_version": 2, **payload})
+    version = 3 if payload.get("provider") == "ctrip" else 2
+    return tail_queue_key(**{"filter_scope": "first_leg", "validation_version": version, **payload})
 
 
 def apply_tail_baseline(results: list[dict[str, Any]], baseline: dict[str, Any] | None) -> list[dict[str, Any]]:

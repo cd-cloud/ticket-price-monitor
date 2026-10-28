@@ -3,6 +3,7 @@ import threading
 import unittest
 import asyncio
 import json
+from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -211,7 +212,7 @@ class TailDiscoveryServiceTests(unittest.TestCase):
         self.assertEqual(40, results[0]["savings_percent"])
         self.assertEqual(400, results[0]["raw_payload"]["savings_amount"])
 
-    def test_recent_negative_cache_skips_provider_query(self) -> None:
+    def test_recent_negative_cache_does_not_suppress_ctrip_query(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             repository = PriceRepository(Path(tmp_dir) / "tail.db")
             repository.initialize()
@@ -238,6 +239,17 @@ class TailDiscoveryServiceTests(unittest.TestCase):
                 }
             )
 
+            calls = []
+            class Client:
+                async def discover_tail_routes(self, provider, **kwargs):
+                    calls.extend(kwargs["candidates"])
+                    return {"results": [], "errors": [], "attempts": [
+                        {"destination": "TCZ", "status": "no_match", "phase": "no_via_transfer"},
+                    ]}
+            @asynccontextmanager
+            async def fake_client(*args):
+                yield Client()
+            service._tail_discovery_client = fake_client
             result = asyncio.run(
                 service.run(
                     {
@@ -248,9 +260,11 @@ class TailDiscoveryServiceTests(unittest.TestCase):
                 )
             )
 
-            self.assertEqual(1, result["candidate_policy"]["cache_skipped"])
-            self.assertEqual("negative_cache", result["report"]["attempts"][0]["phase"])
-            self.assertEqual([], repository.fetch_tail_discovery_attempts(limit=10))
+            self.assertEqual(["TCZ"], calls)
+            self.assertEqual(0, result["candidate_policy"]["cache_skipped"])
+            self.assertEqual("search_inconclusive", result["report"]["attempts"][0]["phase"])
+            self.assertEqual("failed", result["report"]["attempts"][0]["status"])
+            self.assertEqual(1, len(repository.fetch_tail_discovery_attempts(limit=10)))
 
     def test_completed_batch_is_saved_when_later_batch_is_cancelled(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

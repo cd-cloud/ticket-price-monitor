@@ -77,18 +77,22 @@ It returns the effective backend order, Chrome profile path, profile health, and
 
 ## Ctrip Result Policy
 
-Single one-way and round-trip queries may use exact network itinerary data, low-price calendar
-data, or visible result rows. The saved `raw_payload` records:
+New ordinary Ctrip queries (one-way, round-trip and multi-city) require structured itinerary
+evidence matching route, dates, cabin and airline conditions. Price and details are selected
+together and retained in `OfferDetails.matched_quote`; outcome assembly never reparses the
+mutable response list. Legacy saved `raw_payload` records may still contain:
 
 - `parser`: which parser produced the result.
 - `parser_confidence`: `high`, `medium`, or `low`.
 - `detail_quality`: `complete`, `partial`, or `price_only`.
 - `detail_source`: `network_exact`, `network_low_price_calendar`, `visible_row`, or `price_only`.
 
-Multi-city queries are stricter. They first open the Ctrip multi-city result URL directly,
-for example `multi-bjs-ctu-ctu-sin`, and prefer exact network itinerary data. If exact multi-city
-network data is unavailable, the code only accepts a visible result row with usable text; it no
-longer reuses single-route low-price calendar extraction for multi-city routes.
+Calendar and visible-only prices are no longer accepted as confirmed ordinary quotes.
+`ResponseStore` tracks request generations and rejects both late responses and late body parsing
+from previous searches. Direct navigation, form submission and cabin-correction navigation reset
+the generation. Ctrip tail discovery loads results independently of ordinary fare selection and
+keeps its service-level validation; empty partial searches remain retryable and are not negative cached.
+See [CTRIP_QUERY_INTEGRITY.md](CTRIP_QUERY_INTEGRITY.md) for compatibility details and limitations.
 
 ## Local Runtime Data
 

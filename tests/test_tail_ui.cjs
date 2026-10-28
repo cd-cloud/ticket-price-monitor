@@ -21,7 +21,8 @@ function ui() {
   });
   for (const name of ['compareTailResults','tailQuoteFresh','tailQuoteVerified','prepareTailResults',
     'groupTailResultsByRoute','safeTailReviewUrl','tailQuoteTermsLabel','renderTailBaselines','renderTailFlightGroups',
-    'renderTailResultCard','renderTailRouteGroup','renderTailResults','updateTailSearchScope','renderTailPriorities']) {
+    'renderTailResultCard','renderTailRouteGroup','renderTailResults','updateTailSearchScope','renderTailPriorities',
+    'tailAttemptPhaseLabel']) {
     const start = source.indexOf(`function ${name}(`);
     assert.ok(start>=0,name);
     const rest=source.slice(start+1);
@@ -139,4 +140,10 @@ test('priority explanations escape source data and do not promise bookability',(
   assert.match(html,/近期有效联程证据/);
   assert.doesNotMatch(html,/<img/);
   assert.equal(ctx.renderTailPriorities({}),'');
+});
+test('inconclusive search stays retryable and UI no longer offers absence cache bypass',()=>{
+  const {ctx}=ui();
+  assert.match(ctx.tailAttemptPhaseLabel('search_inconclusive'),/覆盖未确认，可重试/);
+  assert.doesNotMatch(ctx.tailAttemptPhaseLabel('search_inconclusive'),/确认无航班/);
+  assert.doesNotMatch(source,/忽略 6 小时无结果缓存/);
 });

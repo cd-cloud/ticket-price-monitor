@@ -7,7 +7,7 @@ import re
 from typing import Any, Iterator
 
 from config_manager import RouteQuery
-from providers.ctrip_support import ctrip_city_code
+from providers.ctrip_support import ctrip_city_code, CTRIP_CITY_CODE_MAP
 
 
 def total_price(price: dict[str, Any]) -> float | None:
@@ -20,6 +20,45 @@ def total_price(price: dict[str, Any]) -> float | None:
     if 200 <= total <= 100000:
         return total
     return None
+
+
+def endpoint_matches(detail: dict, target: str, *, arrival: bool = False) -> bool:
+    """Distinct airport aliases are strict; city codes allow their airports."""
+    target = target.upper()
+    airport = str(detail.get("arrival_airport" if arrival else "departure_airport") or "").upper()
+    city = str(detail.get("destination" if arrival else "origin") or "").upper()
+    if target in CTRIP_CITY_CODE_MAP and CTRIP_CITY_CODE_MAP[target] != target:
+        return airport == target or (not airport and city == target)
+    return any(ctrip_city_code(value) == ctrip_city_code(target) for value in (city, airport) if value)
+
+
+def details_match_preferences(details: list[dict], route: RouteQuery) -> bool:
+    from providers.ctrip_tail_parser import details_match_airlines
+
+    cabins = {
+        "economy_plus": {"economy", "premium_economy"},
+        "business_first": {"business", "first"},
+    }.get(route.cabin, {route.cabin})
+    groups = {}
+    for leg in details:
+        groups.setdefault(leg.get("segment_index", 1), []).append(leg)
+    return bool(details) and all(logical_legs_connected(group) for group in groups.values()) and all(
+        leg.get("cabin") in cabins
+        and details_match_airlines([leg], route.preferred_airlines)
+        for leg in details
+    )
+
+
+def logical_legs_connected(details: list[dict]) -> bool:
+    """Do not accept a partial/broken chain merely because its endpoints match."""
+    if not details or any(not leg.get("departure_date") or not leg.get("flight_no") for leg in details):
+        return False
+    for left, right in zip(details, details[1:]):
+        arrival = left.get("destination") or left.get("arrival_airport")
+        departure = right.get("origin") or right.get("departure_airport")
+        if not arrival or not departure or ctrip_city_code(str(arrival)) != ctrip_city_code(str(departure)):
+            return False
+    return True
 
 
 def multi_city_details_are_direct(details: list[dict[str, object]], route: RouteQuery) -> bool:
@@ -47,12 +86,10 @@ def multi_city_details_match_route(
             return False
         first = flights[0]
         last = flights[-1]
-        origin = str(first.get("origin") or first.get("departure_airport") or "")
-        destination = str(last.get("destination") or last.get("arrival_airport") or "")
         departure_date = str(first.get("departure_date") or "")[:10]
-        if ctrip_city_code(origin) != ctrip_city_code(segment.origin):
+        if not endpoint_matches(first, segment.origin):
             return False
-        if ctrip_city_code(destination) != ctrip_city_code(segment.destination):
+        if not endpoint_matches(last, segment.destination, arrival=True):
             return False
         if departure_date != segment.departure_date:
             return False
@@ -106,7 +143,7 @@ def build_multi_city_details(itinerary: dict[str, Any], price: dict[str, Any]) -
                 "arrival_airport": flight_info.get("ArrivalAirportCode"),
                 "origin": flight_info.get("DepartureCityCode"),
                 "destination": flight_info.get("ArrivalCityCode"),
-                "departure_date": str(flight_info.get("TakeOffDateTime", "")).split(" ")[0] or None,
+                "departure_date": str(flight_info.get("TakeOffDateTime", ""))[:10] or None,
                 "arrival_date": str(flight_info.get("ArrivalDateTime") or "")[:10] or None,
             }
         )
@@ -153,7 +190,7 @@ def build_domestic_online_details(itinerary: dict[str, Any], price: dict[str, An
                     "arrival_airport": flight.get("arrivalAirportCode"),
                     "origin": flight.get("departureCityCode") or flight.get("departureAirportCode"),
                     "destination": flight.get("arrivalCityCode") or flight.get("arrivalAirportCode"),
-                    "departure_date": str(departure_time or "").split(" ")[0] or None,
+                    "departure_date": str(departure_time or "")[:10] or None,
                     "arrival_date": str(arrival_time or "")[:10] or None,
                 }
             )
@@ -190,22 +227,15 @@ def normalize_cabin_from_seat(seat: dict[str, object]) -> str | None:
 
 def normalize_cabin_code(value: object) -> str | None:
     text = str(value or "").upper()
-    if "F" in text:
-        return "first"
-    if "C" in text or "J" in text:
-        return "business"
-    if "W" in text or "S" in text:
-        return "premium_economy"
-    if "Y" in text:
-        return "economy"
-    return None
+    return {"F": "first", "C": "business", "J": "business",
+            "W": "premium_economy", "S": "premium_economy", "Y": "economy"}.get(text)
 
 
 def format_ctrip_dt(value: object) -> str | None:
     text = str(value or "").strip()
     if not text:
         return None
-    parts = text.split(" ")
+    parts = text.replace("T", " ").split(" ")
     if len(parts) == 2:
         return parts[1][:5]
     return text[:5] or None

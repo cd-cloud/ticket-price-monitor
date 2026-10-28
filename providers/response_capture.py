@@ -7,11 +7,35 @@ import json
 
 from playwright.async_api import Page
 
-from providers import feizhu_parser
+
+class ResponseStore(list):
+    """A search generation fences requests AND async response-body decoding."""
+
+    def __init__(self):
+        super().__init__()
+        self.generation = 0
+        self.requests = {}
+
+    def clear(self):
+        self.generation += 1
+        self.requests.clear()
+        super().clear()
+
+
+def begin_response_batch(store):
+    store.clear()
 
 
 async def attach_response_listeners(page: Page, response_store: list[dict]) -> None:
-    async def handle_response(response) -> None:
+    scoped = isinstance(response_store, ResponseStore)
+
+    def on_request(request):
+        if scoped:
+            response_store.requests[request] = response_store.generation
+
+    async def handle_response(response, generation) -> None:
+        if scoped and generation != response_store.generation:
+            return
         url = response.url
         content_type = response.headers.get("content-type", "")
         lowered = url.lower()
@@ -29,6 +53,7 @@ async def attach_response_listeners(page: Page, response_store: list[dict]) -> N
             payload = await response.json()
         except Exception:
             try:
+                from providers import feizhu_parser
                 text = await response.text()
                 if (
                     "flightItineraryList" not in text
@@ -39,15 +64,26 @@ async def attach_response_listeners(page: Page, response_store: list[dict]) -> N
                 payload = feizhu_parser.parse_json_or_jsonp(text) or json.loads(text)
             except Exception:
                 return
+        if scoped and generation != response_store.generation:
+            return
         response_store.append(
             {
                 "url": url,
                 "status": response.status,
                 "payload": payload,
+                "query_generation": generation,
             }
         )
 
-    page.on("response", lambda response: asyncio.create_task(handle_response(response)))
+    def on_response(response):
+        generation = response_store.requests.pop(response.request, None) if scoped else None
+        if scoped and generation != response_store.generation:
+            return
+        return asyncio.create_task(handle_response(response, generation))
+
+    page.on("request", on_request)
+    page.on("requestfailed", lambda request: response_store.requests.pop(request, None) if scoped else None)
+    page.on("response", on_response)
 
 
 def feizhu_response_text_looks_useful(text: str) -> bool:

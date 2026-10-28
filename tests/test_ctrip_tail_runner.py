@@ -44,11 +44,11 @@ class CtripTailRunnerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("response", page.handlers)
 
     def test_no_match_classification_distinguishes_route_and_parser_gaps(self) -> None:
-        self.assertEqual("route_absent", classify_tail_no_match({}, has_no_results_notice=True))
+        self.assertEqual("search_inconclusive", classify_tail_no_match({}, has_no_results_notice=True))
         self.assertEqual("parse_incomplete", classify_tail_no_match({}))
-        self.assertEqual("no_via_transfer", classify_tail_no_match({"same_route": 1}))
+        self.assertEqual("search_inconclusive", classify_tail_no_match({"same_route": 1}))
         self.assertEqual(
-            "airline_filtered",
+            "search_inconclusive",
             classify_tail_no_match({"same_route": 1, "via_transfer": 1, "airline_filtered": 1}),
         )
 

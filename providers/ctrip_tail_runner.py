@@ -16,7 +16,7 @@ from providers.ctrip_tail_discovery import extract_tail_matches_from_network, ex
 from browser_retry_policy import looks_like_rate_limit
 from tail_quotes import build_baseline_catalog, quote_terms
 from providers.ctrip_tail_discovery import classify_tail_no_match, tail_network_route_stats
-from providers.response_capture import attach_response_listeners
+from providers.response_capture import attach_response_listeners, ResponseStore
 
 
 LOGGER = logging.getLogger(__name__)
@@ -42,7 +42,7 @@ class CtripTailDiscoveryRunner:
     ) -> tuple[Any, Any, Any, list[dict]]:
         page, context = await self._new_page(provider, backend_name=backend_name)
         session_metadata = self._session_metadata_for_context(context)
-        response_store: list[dict] = []
+        response_store: list[dict] = ResponseStore()
         await attach_response_listeners(page, response_store)
         return page, context, session_metadata, response_store
 

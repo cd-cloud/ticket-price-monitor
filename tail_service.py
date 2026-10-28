@@ -509,6 +509,8 @@ def tail_attempt_diagnostic(attempt: dict[str, Any]) -> dict[str, str]:
         return {"code": "no_via_transfer", "label": "有航班但不经过中转点", "severity": "medium"}
     if phase == "parse_incomplete":
         return {"code": "parse_incomplete", "label": "结果加载或解析不完整", "severity": "high"}
+    if phase == "search_inconclusive":
+        return {"code": "search_inconclusive", "label": "本次未发现，覆盖未确认，可重试", "severity": "medium"}
     if phase == "price_filtered":
         return {"code": "price_filtered", "label": "被价格筛选排除", "severity": "low"}
     if phase == "departure_time_filtered":

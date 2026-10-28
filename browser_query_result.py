@@ -25,6 +25,8 @@ class OfferDetails:
     price: float
     departure_time: str | None = None
     row_text: str | None = None
+    # Selected as one unit; never reselect details from a changing response list.
+    matched_quote: dict[str, Any] | None = None
 
 
 def build_query_result(
