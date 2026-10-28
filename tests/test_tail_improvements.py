@@ -403,7 +403,8 @@ class CtripRunnerLifecycleTests(unittest.IsolatedAsyncioTestCase):
             _save_storage_state_if_allowed=AsyncMock(), _start_ctrip_tail_trace=AsyncMock(return_value=False),
             _stop_ctrip_tail_trace=AsyncMock(return_value=None), _close_context_quietly=AsyncMock(),
             _ensure_ctrip_results_date=AsyncMock(), _warm_ctrip_tail_result_data=AsyncMock(),
-            _ctrip_results_date_evidence=AsyncMock(return_value={"matched_source": "url"}),
+            _ctrip_results_date_evidence=AsyncMock(return_value={
+                "matched": True, "status": "confirmed", "matched_source": "visible_control", "overlay_visible": False}),
             _dump_ctrip_tail_diagnostics=AsyncMock(return_value={}), _tail_cancellable_wait=AsyncMock(),
         )
         return CtripTailDiscoveryRunner(automation), automation, page, context
@@ -427,7 +428,8 @@ class CtripRunnerLifecycleTests(unittest.IsolatedAsyncioTestCase):
         matches = [{"total_price": p, "details": quote(price=p)["flight_details"], "detail_source": "network_exact"}
                    for p in (600, 700)]
         with patch("providers.ctrip.query_tail_candidate_offer", AsyncMock()), \
-             patch("providers.ctrip_tail_runner.extract_tail_matches_from_network", return_value=matches):
+             patch("providers.ctrip_tail_runner.extract_tail_matches_from_network", return_value=matches), \
+             patch("providers.ctrip_tail_runner.extract_tail_matches_from_page", AsyncMock(return_value=[])):
             result = await runner.run(origin="BJS", transfer="SHA", departure_date=DATE, cabin="economy", passengers=1,
                                       candidates=["CAN"])
         self.assertEqual([600, 700], [r["price"] for r in result["results"]])

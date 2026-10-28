@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+from copy import deepcopy
 from datetime import datetime
 from typing import Any
 
@@ -45,6 +46,11 @@ def extract_tail_matches_from_network(
 ) -> list[dict[str, object]]:
     matches = []
     for item in response_store:
+        if item.get("status", 200) != 200:
+            continue
+        generation = getattr(response_store, "generation", None)
+        if generation is not None and item.get("query_generation") != generation:
+            continue
         payload = item.get("payload")
         if not isinstance(payload, dict):
             continue
@@ -66,10 +72,12 @@ def extract_tail_matches_from_network(
                         continue
                     if not ctrip_tail_parser.details_match_airlines(details, preferred_airlines):
                         continue
-                    matches.append({
+                    matches.append(deepcopy({
                         "total_price": total, "details": details,
                         "detail_source": "network_exact", "detail_quality": "complete",
-                    })
+                        "response_url": item.get("url"),
+                        "query_generation": item.get("query_generation"),
+                    }))
     return sorted(matches, key=lambda item: float(item["total_price"]))
 
 

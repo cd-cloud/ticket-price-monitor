@@ -17,6 +17,7 @@ from browser_retry_policy import looks_like_rate_limit
 from tail_quotes import build_baseline_catalog, quote_terms
 from providers.ctrip_tail_discovery import classify_tail_no_match, tail_network_route_stats
 from providers.response_capture import attach_response_listeners, ResponseStore
+from providers.ctrip_tail_candidates import prepare_network_candidates, merge_tail_candidates
 
 
 LOGGER = logging.getLogger(__name__)
@@ -132,7 +133,8 @@ class CtripTailDiscoveryRunner:
                     ),
                     timeout=self.TAIL_DISCOVERY_CANDIDATE_TIMEOUT_SECONDS,
                 )
-                await self._ensure_ctrip_results_date(page, route, provider.timeout_ms)
+                # The common collection stage validates dates after loading,
+                # including exact network evidence when date controls are unknown.
                 attempt["phase"] = "results_loaded"
                 if isinstance(backend_attempts, list):
                     backend_attempts.append(f"{session_metadata.browser_backend}: ok")
@@ -206,6 +208,40 @@ class CtripTailDiscoveryRunner:
             progress_callback({"stage": "verification_continued", "destination": attempt["destination"]})
         return True
 
+    async def _collect_candidate_matches(self, page, route, transfer, responses, attempt, cabin):
+        network = extract_tail_matches_from_network(
+            self.automation, responses, origin=route.origin, transfer=transfer,
+            destination=route.destination, preferred_airlines=None,
+        )
+        ui_evidence = await self._ctrip_results_date_evidence(page, route)
+        attempt["date_evidence"] = ui_evidence
+        try:
+            network, evidence = prepare_network_candidates(ui_evidence, network, route, transfer)
+        except RuntimeError:
+            await ctrip_page.dump_datepicker_debug(page, route.departure_date, "tail-results-date-check")
+            raise
+        attempt["date_evidence"] = evidence
+        page_matches = []
+        sources = {"network": len(network), "page": 0, "page_status": "skipped_unknown_date"}
+        attempt["candidate_sources"] = sources
+        # DOM parsers infer travel dates from the selected page date. A valid
+        # network quote cannot lend its date proof to unrelated DOM cards.
+        if evidence.get("ui_status") != "unknown":
+            try:
+                page_matches = await extract_tail_matches_from_page(
+                    page, origin=route.origin, transfer=transfer, destination=route.destination,
+                    departure_date=route.departure_date, cabin=cabin, preferred_airlines=None,
+                )
+                for match in page_matches:
+                    match["date_evidence"] = dict(ui_evidence)
+                sources.update(page=len(page_matches), page_status="parsed")
+            except Exception as exc:
+                if looks_like_rate_limit(exc) or not network:
+                    raise
+                # Optional DOM extraction must not discard valid network quotes.
+                sources.update(page_status="failed", page_error=str(exc))
+        return merge_tail_candidates(network, page_matches)
+
     async def run(
         self, *, origin: str, transfer: str, departure_date: str, cabin: str, passengers: int,
         candidates: list[str], preferred_airlines: list[str] | None = None,
@@ -273,19 +309,14 @@ class CtripTailDiscoveryRunner:
                                 else:
                                     raise error
                     await self._verification_gate(page, context, attempt, progress_callback, cancel_checker, verification_continue_checker)
-                    await self._ensure_ctrip_results_date(page, route, provider.timeout_ms)
                     await self._warm_ctrip_tail_result_data(page, responses)
                     if await self._verification_gate(page, context, attempt, progress_callback, cancel_checker, verification_continue_checker):
                         responses.clear()
                         await self._warm_ctrip_tail_result_data(page, responses)
-                    attempt["date_evidence"] = await self._ctrip_results_date_evidence(page, route)
                     attempt["loading_evidence"] = getattr(responses, "loading_evidence", None)
-                    matches = extract_tail_matches_from_network(self.automation, responses, origin=origin, transfer=transfer,
-                                                               destination=destination, preferred_airlines=None)
-                    if not matches:
-                        matches = await extract_tail_matches_from_page(page, origin=origin, transfer=transfer,
-                                                                       destination=destination, departure_date=departure_date,
-                                                                       cabin=cabin, preferred_airlines=None)
+                    matches = await self._collect_candidate_matches(
+                        page, route, transfer, responses, attempt, cabin,
+                    )
                     if not matches:
                         attempt.update(status="no_match", phase=classify_tail_no_match(
                             tail_network_route_stats(responses, origin=origin, transfer=transfer, destination=destination,
@@ -308,7 +339,10 @@ class CtripTailDiscoveryRunner:
                                 "raw_payload": {**metadata.to_payload(), "search_url": page.url,
                                     "preferred_airlines": preferred_airlines or [], "dom_card": match.get("card"),
                                     "detail_source": match.get("detail_source"), "detail_quality": match.get("detail_quality"),
-                                    "date_evidence": attempt.get("date_evidence"),
+                                    "date_evidence": match.get("date_evidence"),
+                                    "response_url": match.get("response_url"),
+                                    "query_generation": match.get("query_generation"),
+                                    "candidate_sources": attempt.get("candidate_sources"),
                                     "loading_evidence": attempt.get("loading_evidence"),
                                     "quote_terms": quote_terms("ctrip", passengers, self.app_config.default_currency),
                                     "backend_attempts": attempt.get("backend_attempts", [f"{metadata.browser_backend}: ok"])},

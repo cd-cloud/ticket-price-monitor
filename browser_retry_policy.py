@@ -6,6 +6,7 @@ from config_manager import RouteQuery
 def looks_like_rate_limit(exc: Exception) -> bool:
     text = str(exc).lower()
     markers = [
+        "ctrip navigation blocked",
         "access denied",
         "forbidden",
         "429",

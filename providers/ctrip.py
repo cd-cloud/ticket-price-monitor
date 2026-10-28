@@ -11,6 +11,7 @@ from providers.response_capture import begin_response_batch
 from providers.base import ProviderQueryOutcome
 from providers.ctrip_support import ctrip_city_code, route_prefers_international_entry
 from providers.human_actions import hover_then_click, random_scroll_and_pause
+from browser_retry_policy import looks_like_rate_limit
 
 
 name = "ctrip"
@@ -180,11 +181,23 @@ async def query_native_round_trip_offer(
 
 async def open_direct_results_page(page: Page, route: RouteQuery, timeout_ms: int) -> bool:
     try:
-        await page.goto(build_online_results_url(route), wait_until="domcontentloaded", timeout=timeout_ms)
+        response = await page.goto(build_online_results_url(route), wait_until="domcontentloaded", timeout=timeout_ms)
+        raise_if_navigation_limited(response)
         await page.wait_for_timeout(3500)
         return is_ctrip_results_url(page.url)
-    except Exception:
+    except Exception as exc:
+        if looks_like_rate_limit(exc):
+            raise
         return False
+
+
+def raise_if_navigation_limited(response) -> None:
+    # Playwright navigation can return HTTP errors without raising an exception.
+    status = getattr(response, "status", None)
+    # 432 was observed on an anonymous result-page check with no flight data.
+    # Its precise platform meaning is unknown; stop rather than try more entry points.
+    if status in (403, 429, 432):
+        raise RuntimeError(f"Ctrip navigation blocked: HTTP {status}; automatic retries stopped.")
 
 
 async def load_direct_route_offer(
@@ -205,7 +218,6 @@ async def load_direct_route_offer(
         offer = await runtime.extract_offer(provider, route, page, response_store)
         return offer, page.url, await page.title()
     except Exception as exc:
-        from browser_retry_policy import looks_like_rate_limit
         if looks_like_rate_limit(exc):
             raise
         LOGGER.info("Ctrip direct query inconclusive; trying form route=%s error=%s", route.route_key, exc)
@@ -424,7 +436,8 @@ async def load_direct_multi_city_offer(
 ):
     begin_response_batch(response_store)
     try:
-        await page.goto(build_multi_city_results_url(route), wait_until="domcontentloaded", timeout=provider.timeout_ms)
+        response = await page.goto(build_multi_city_results_url(route), wait_until="domcontentloaded", timeout=provider.timeout_ms)
+        raise_if_navigation_limited(response)
         await page.wait_for_timeout(3500)
         if not is_ctrip_results_url(page.url):
             return None
@@ -435,12 +448,12 @@ async def load_direct_multi_city_offer(
         if network_match is not None:
             offer = runtime.offer_details_type(price=network_match["total_price"], matched_quote=network_match)
         else:
-            try:
-                offer = await runtime.extract_offer(provider, route, page, response_store)
-            except Exception:
-                return None
+            offer = await runtime.extract_offer(provider, route, page, response_store)
         return offer, page.url, await page.title()
-    except Exception:
+    except Exception as exc:
+        if looks_like_rate_limit(exc):
+            raise
+        LOGGER.info("Ctrip direct multi-city query inconclusive; trying form route=%s error=%s", route.route_key, exc)
         return None
 
 

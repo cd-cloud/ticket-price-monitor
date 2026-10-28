@@ -128,13 +128,19 @@ def public_quote_metadata(result: dict[str, Any], *, now: datetime | None = None
 
 def select_tail_alternatives(results: list[dict[str, Any]], *, per_first_leg: int = 3) -> list[dict[str, Any]]:
     """Call only after all route/date/cabin/time checks; deduplicate exact offers."""
+    def verified(item):
+        validation = item.get("validation") or (item.get("raw_payload") or {}).get("validation") or {}
+        return validation.get("status") == "valid"
+
     unique: dict[str, dict[str, Any]] = {}
     for result in results:
         price = float(result.get("price") or 0)
         if not math.isfinite(price) or price <= 0:
             continue
         key = itinerary_key(result)
-        if key not in unique or price < float(unique[key]["price"]):
+        # Network and DOM candidates may now coexist. A cheaper, unconfirmed
+        # copy must not replace a validated quote for the same itinerary.
+        if key not in unique or (verified(result), -price) > (verified(unique[key]), -float(unique[key]["price"])):
             unique[key] = result
     counts: dict[str, int] = {}
     selected = []
