@@ -147,3 +147,9 @@ test('inconclusive search stays retryable and UI no longer offers absence cache 
   assert.doesNotMatch(ctx.tailAttemptPhaseLabel('search_inconclusive'),/确认无航班/);
   assert.doesNotMatch(source,/忽略 6 小时无结果缓存/);
 });
+test('unknown date evidence is distinguished from a conflicting date',()=>{
+  const {ctx}=ui();
+  assert.match(ctx.tailAttemptPhaseLabel('date_unconfirmed'),/证据不足，可重试/);
+  assert.match(ctx.tailAttemptPhaseLabel('date_mismatch'),/不一致/);
+  assert.doesNotMatch(ctx.tailAttemptPhaseLabel('date_unconfirmed'),/无航班/);
+});

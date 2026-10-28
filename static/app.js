@@ -2134,6 +2134,8 @@ function tailAttemptPhaseLabel(phase) {
     parse_incomplete: "结果加载或解析不完整",
     search_incomplete: "搜索覆盖不完整，可重试；不代表无航线",
     search_inconclusive: "本次未发现，覆盖未确认，可重试",
+    date_mismatch: "结果日期与请求不一致",
+    date_unconfirmed: "结果日期证据不足，可重试",
     negative_cache: "近期无结果缓存",
     price_filtered: "超出价格上限",
     departure_time_filtered: "不在起飞时间范围",

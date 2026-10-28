@@ -70,6 +70,7 @@ def extract_single_route_match_from_network(response_store: list[dict], route: R
                         itinerary_matches.append({
                             "total_price": total, "details": details, "source": "flight_itinerary_list",
                             "response_url": item.get("url"), "query_generation": item.get("query_generation"),
+                            "loading_evidence": getattr(response_store, "loading_evidence", None),
                         })
 
     if itinerary_matches:
@@ -143,6 +144,7 @@ def extract_multi_city_match_from_network(
         "source": "flight_itinerary_list",
         "response_url": source_item.get("url"),
         "query_generation": source_item.get("query_generation"),
+        "loading_evidence": getattr(response_store, "loading_evidence", None),
     })
 
 

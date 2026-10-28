@@ -499,6 +499,8 @@ def tail_attempt_diagnostic(attempt: dict[str, Any]) -> dict[str, str]:
         return {"code": "verification", "label": "验证码/拒绝访问", "severity": "high"}
     if "date_mismatch" in haystack or "different date" in haystack or "did not switch" in haystack:
         return {"code": "date_mismatch", "label": "日期未切换成功", "severity": "high"}
+    if "date_unconfirmed" in haystack or "result date unconfirmed" in haystack:
+        return {"code": "date_unconfirmed", "label": "结果日期证据不足，可重试", "severity": "medium"}
     if "validation_failed" in haystack or "硬校验" in error:
         return {"code": "validation_failed", "label": "航段硬校验失败", "severity": "high"}
     if phase == "negative_cache":

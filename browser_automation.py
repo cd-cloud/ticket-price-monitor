@@ -539,7 +539,7 @@ class BrowserAutomation:
     ) -> tuple[OfferDetails, str, str]:
         if provider.name == "ctrip":
             result = await ctrip.query_single_route_offer(self, provider, route, page, response_store)
-            await self._ensure_ctrip_results_date(page, route, provider.timeout_ms)
+            await self._ensure_ctrip_results_date(page, route, provider.timeout_ms, offer=result[0])
             return result
         if provider.name == "priceline":
             return await priceline.query_single_route_offer(self, provider, route, page, response_store)
@@ -737,8 +737,8 @@ class BrowserAutomation:
     async def _prepare_ctrip_results_page(self, page: Page, route: RouteQuery, timeout_ms: int) -> None:
         await ctrip_page.prepare_results_page(self, page, route, timeout_ms)
 
-    async def _ensure_ctrip_results_date(self, page: Page, route: RouteQuery, timeout_ms: int) -> None:
-        await ctrip_page.ensure_results_departure_date(page, route, timeout_ms)
+    async def _ensure_ctrip_results_date(self, page: Page, route: RouteQuery, timeout_ms: int, *, offer=None) -> dict:
+        return await ctrip_page.ensure_results_departure_date(page, route, timeout_ms, offer=offer)
 
     async def _activate_ctrip_multi_city(self, page: Page, timeout_ms: int) -> None:
         await ctrip_page.activate_multi_city(page, timeout_ms)

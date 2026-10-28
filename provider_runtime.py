@@ -55,8 +55,8 @@ class ProviderRuntime:
     ) -> Any:
         return await self._automation._extract_offer(provider, route, page, response_store)
 
-    async def ensure_ctrip_results_date(self, page: Page, route: RouteQuery, timeout_ms: int) -> None:
-        await self._automation._ensure_ctrip_results_date(page, route, timeout_ms)
+    async def ensure_ctrip_results_date(self, page: Page, route: RouteQuery, timeout_ms: int, *, offer=None) -> dict:
+        return await self._automation._ensure_ctrip_results_date(page, route, timeout_ms, offer=offer)
 
     async def activate_ctrip_one_way(self, page: Page, timeout_ms: int) -> None:
         await self._automation._activate_ctrip_one_way(page, timeout_ms)

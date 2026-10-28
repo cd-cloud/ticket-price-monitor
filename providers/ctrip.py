@@ -46,6 +46,7 @@ async def query(
 ) -> ProviderQueryOutcome:
     if route.is_multi_city:
         offer, final_url, title = await query_multi_city_offer(runtime, provider, route, page, response_store)
+        await _confirm_selected_date(runtime, provider, route, page, offer)
         return ctrip_result.build_multi_city_outcome(
             runtime,
             route,
@@ -56,8 +57,14 @@ async def query(
         )
 
     offer, final_url, title = await query_single_route_offer(runtime, provider, route, page, response_store)
-    await runtime.ensure_ctrip_results_date(page, route, provider.timeout_ms)
+    await _confirm_selected_date(runtime, provider, route, page, offer)
     return ctrip_result.build_single_route_outcome(route, offer, final_url, title, response_store)
+
+
+async def _confirm_selected_date(runtime, provider, route, page, offer):
+    evidence = await runtime.ensure_ctrip_results_date(page, route, provider.timeout_ms, offer=offer)
+    if isinstance(evidence, dict) and getattr(offer, "matched_quote", None) is not None:
+        offer.matched_quote["date_evidence"] = evidence
 
 
 async def query_single_route_offer(

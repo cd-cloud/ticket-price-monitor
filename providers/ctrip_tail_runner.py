@@ -279,6 +279,7 @@ class CtripTailDiscoveryRunner:
                         responses.clear()
                         await self._warm_ctrip_tail_result_data(page, responses)
                     attempt["date_evidence"] = await self._ctrip_results_date_evidence(page, route)
+                    attempt["loading_evidence"] = getattr(responses, "loading_evidence", None)
                     matches = extract_tail_matches_from_network(self.automation, responses, origin=origin, transfer=transfer,
                                                                destination=destination, preferred_airlines=None)
                     if not matches:
@@ -308,6 +309,7 @@ class CtripTailDiscoveryRunner:
                                     "preferred_airlines": preferred_airlines or [], "dom_card": match.get("card"),
                                     "detail_source": match.get("detail_source"), "detail_quality": match.get("detail_quality"),
                                     "date_evidence": attempt.get("date_evidence"),
+                                    "loading_evidence": attempt.get("loading_evidence"),
                                     "quote_terms": quote_terms("ctrip", passengers, self.app_config.default_currency),
                                     "backend_attempts": attempt.get("backend_attempts", [f"{metadata.browser_backend}: ok"])},
                             })
@@ -319,8 +321,10 @@ class CtripTailDiscoveryRunner:
                     context_error = True
                     limited = looks_like_rate_limit(exc)
                     verification = "verification" in str(exc).lower()
+                    date_issue = ("date_mismatch" if "result date mismatch" in str(exc).lower()
+                                  else "date_unconfirmed" if "result date unconfirmed" in str(exc).lower() else None)
                     stop = limited or verification
-                    attempt.update(status="failed", phase="rate_limited" if limited else "verification_timeout" if verification else "query_failed",
+                    attempt.update(status="failed", phase="rate_limited" if limited else "verification_timeout" if verification else date_issue or "query_failed",
                                    error=str(exc) or type(exc).__name__)
                     if stop:
                         attempt["stop_reason"] = attempt["phase"]

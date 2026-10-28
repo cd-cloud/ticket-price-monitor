@@ -306,56 +306,9 @@ async def goto_tail_results(automation: Any, provider: Any, route: Any, page: An
     await automation._wait_for_results(provider, page)
 
 
-async def warm_tail_result_data(automation: Any, page: Any, response_store: list[dict]) -> None:
-    if automation._response_store_has_flight_itineraries(response_store):
-        return
-    for _ in range(3):
-        await page.wait_for_timeout(900)
-        if automation._response_store_has_flight_itineraries(response_store):
-            return
-
-    previous_scroll = -1
-    stalled_rounds = 0
-    for _index in range(10):
-        try:
-            state = await page.evaluate(
-                """() => ({
-                    y: Math.round(window.scrollY || 0),
-                    height: Math.round(document.documentElement.scrollHeight || document.body.scrollHeight || 0),
-                    viewport: Math.round(window.innerHeight || 0),
-                    cards: document.querySelectorAll('.list-content-item-transit, .search-result-item, .box-row').length,
-                    loading: /加载|loading|查询中|搜索中/i.test(document.body?.innerText || '')
-                })"""
-            )
-        except Exception:
-            state = {}
-        if automation._response_store_has_flight_itineraries(response_store):
-            return
-        if int(state.get("cards") or 0) > 0 and not bool(state.get("loading")):
-            await page.wait_for_timeout(1200)
-            if automation._response_store_has_flight_itineraries(response_store):
-                return
-        scroll_y = int(state.get("y") or 0)
-        scroll_height = int(state.get("height") or 0)
-        viewport = int(state.get("viewport") or 0)
-        can_scroll = scroll_height > viewport + scroll_y + 80
-        if not can_scroll:
-            await page.wait_for_timeout(1200)
-            continue
-        if scroll_y == previous_scroll:
-            stalled_rounds += 1
-        else:
-            stalled_rounds = 0
-        if stalled_rounds >= 2:
-            return
-        previous_scroll = scroll_y
-        try:
-            await page.evaluate("window.scrollBy(0, Math.max(300, Math.floor(window.innerHeight * 0.65)))")
-        except Exception:
-            pass
-        await page.wait_for_timeout(1000)
-        if automation._response_store_has_flight_itineraries(response_store):
-            return
+async def warm_tail_result_data(automation: Any, page: Any, response_store: list[dict]) -> dict:
+    from providers.ctrip_result_wait import wait_for_progressive_results
+    return await wait_for_progressive_results(page, response_store)
 
 
 async def extract_tail_matches_from_page(page: Any, **kwargs) -> list[dict[str, object]]:

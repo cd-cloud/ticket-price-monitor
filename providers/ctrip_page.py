@@ -8,6 +8,7 @@ from urllib.parse import parse_qs, urlparse
 from playwright.async_api import Page
 
 from config_manager import RouteQuery, RouteSegment
+from providers.ctrip_date_evidence import collect_date_evidence, date_value_matches
 from providers.ctrip_support import ctrip_city_code, is_ctrip_international_or_special_region
 from providers.human_actions import human_like_type, hover_then_click, random_scroll_and_pause
 from tail_discovery import TAIL_CODE_TEXT
@@ -25,11 +26,25 @@ async def prepare_results_page(automation, page: Page, route: RouteQuery, timeou
     await apply_cabin_filter(automation, page, route, timeout_ms)
 
 
-async def ensure_results_departure_date(page: Page, route: RouteQuery, timeout_ms: int) -> None:
-    if await page_has_departure_date(page, route.departure_date):
-        return
+async def ensure_results_departure_date(page: Page, route: RouteQuery, timeout_ms: int, *, offer=None) -> dict:
+    evidence = await collect_results_date_evidence(page, route.departure_date, route.return_date)
+    if evidence["matched"]:
+        return evidence
+    if evidence["status"] == "unknown" and not evidence["overlay_visible"] and offer is not None:
+        # An exact validated quote can establish actual travel dates when the
+        # website's selected-date widgets are unrecognizable. Never override a
+        # contradictory visible date or an open date editor.
+        from providers.ctrip_result import selected_quote
+        selected_quote(route, offer)
+        evidence.update(matched=True, status="confirmed", ui_status="unknown",
+                        matched_source="network_itinerary", matched_value=route.departure_date)
+        return evidence
     await dump_datepicker_debug(page, route.departure_date, "results-page-date-check")
-    raise RuntimeError(f"Ctrip result date mismatch: expected {route.departure_date}.")
+    kind = "mismatch" if evidence["status"] == "mismatch" else "unconfirmed"
+    raise RuntimeError(
+        f"Ctrip result date {kind}: expected departure={route.departure_date}, return={route.return_date or '-'}; "
+        "selected date controls/headers must agree; URL or calendar tiles alone are insufficient."
+    )
 
 
 async def try_set_results_departure_date(page: Page, departure_date: str, timeout_ms: int) -> None:
@@ -62,86 +77,12 @@ async def page_has_departure_date(page: Page, departure_date: str) -> bool:
     return bool(evidence.get("matched"))
 
 
-async def collect_results_date_evidence(page: Page, departure_date: str) -> dict[str, object]:
-    expected = departure_date.strip()
-    evidence: dict[str, object] = {
-        "expected": expected,
-        "url": page.url,
-        "url_dates": extract_url_date_values(page.url),
-        "url_date_matched": False,
-        "input_values": [],
-        "page_dates": [],
-        "overlay_visible": False,
-        "matched": False,
-        "matched_source": None,
-        "matched_value": None,
-    }
-    if not expected:
-        return evidence
-    variants = date_text_variants(expected)
-    for key, value in evidence["url_dates"].items():
-        if date_value_matches(str(value), expected):
-            evidence["url_date_matched"] = True
-
-    input_locators = [
-        page.locator("input"),
-        page.locator(".modifyDate input"),
-        page.locator("[u_key='date_picker'] input"),
-    ]
-    input_values: list[str] = []
-    for locator in input_locators:
-        try:
-            count = min(await locator.count(), 10)
-        except Exception:
-            count = 0
-        for index in range(count):
-            try:
-                value = (await locator.nth(index).input_value(timeout=800)).strip()
-            except Exception:
-                continue
-            if not value or value in input_values:
-                continue
-            input_values.append(value)
-            if date_value_matches(value, expected):
-                evidence.update(
-                    {
-                        "input_values": input_values[:12],
-                        "matched": True,
-                        "matched_source": "input",
-                        "matched_value": value,
-                    }
-                )
-                return evidence
-    evidence["input_values"] = input_values[:12]
-
-    overlay_visible = await is_datepicker_overlay_visible(page)
-    evidence["overlay_visible"] = overlay_visible
-    if overlay_visible:
-        return evidence
-
-    try:
-        text = await page.locator("body").inner_text(timeout=2000)
-    except Exception:
-        text = ""
-    normalized = " ".join(text.split())
-    page_dates = extract_page_departure_dates(normalized, reference_year=expected[:4])
-    evidence["page_dates"] = page_dates[:5]
-    if page_dates and not any(date_value_matches(value, expected) for value in page_dates):
-        evidence.update(
-            {
-                "matched": False,
-                "matched_source": "page_date_mismatch",
-                "matched_value": page_dates[0],
-            }
-        )
-        return evidence
-    for variant in variants:
-        if variant and variant in normalized:
-            evidence.update({"matched": True, "matched_source": "body", "matched_value": variant})
-            return evidence
-    if evidence.get("url_date_matched") and not normalized:
-        evidence.update({"matched": True, "matched_source": "url_only_empty_body", "matched_value": expected})
-        return evidence
+async def collect_results_date_evidence(page: Page, departure_date: str, return_date: str | None = None) -> dict[str, object]:
+    evidence = await collect_date_evidence(
+        page, departure_date.strip(), return_date=return_date,
+        overlay_visible=await is_datepicker_overlay_visible(page),
+    )
+    evidence["url_dates"] = extract_url_date_values(page.url)
     return evidence
 
 
@@ -154,13 +95,6 @@ def extract_url_date_values(url: str) -> dict[str, str]:
         if query.get(key):
             values[key] = str(query[key][0])
     return values
-
-
-def date_value_matches(value: str, departure_date: str) -> bool:
-    normalized = (value or "").strip()
-    if not normalized:
-        return False
-    return normalized == departure_date or any(variant and variant in normalized for variant in date_text_variants(departure_date))
 
 
 def extract_page_departure_dates(text: str, reference_year: str | int | None = None) -> list[str]:
@@ -820,13 +754,13 @@ async def trigger_has_date_value(trigger, departure_date: str) -> bool:
             value = (await locator.input_value(timeout=1500)).strip()
         except Exception:
             continue
-        if value == expected or expected.replace("-", "/") in value:
+        if date_value_matches(value, expected):
             return True
     try:
         text = (await trigger.inner_text()).strip()
     except Exception:
         text = ""
-    return expected in text or expected.replace("-", "/") in text
+    return date_value_matches(text, expected)
 
 
 async def try_assign_date_value(trigger, departure_date: str) -> bool:
@@ -862,7 +796,7 @@ async def try_assign_date_value(trigger, departure_date: str) -> bool:
     }"""
     try:
         result = await trigger.evaluate(script, departure_date)
-        return bool(result) and departure_date in str(result)
+        return bool(result) and date_value_matches(str(result), departure_date)
     except Exception:
         return False
 

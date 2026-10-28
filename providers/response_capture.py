@@ -15,11 +15,26 @@ class ResponseStore(list):
         super().__init__()
         self.generation = 0
         self.requests = {}
+        self.decode_tasks = {}
+        self.loading_evidence = None
 
     def clear(self):
         self.generation += 1
         self.requests.clear()
+        self.loading_evidence = None
         super().clear()
+
+    @property
+    def inflight(self):
+        requests = sum(
+            generation == self.generation
+            and getattr(request, "resource_type", "") in {"xhr", "fetch"}
+            and any(word in getattr(request, "url", "").lower() for word in ("flight", "search", "query", "itinerary"))
+            for request, generation in self.requests.items()
+        )
+        decodes = sum(generation == self.generation and not task.done()
+                      for task, generation in self.decode_tasks.items())
+        return requests + decodes
 
 
 def begin_response_batch(store):
@@ -79,7 +94,11 @@ async def attach_response_listeners(page: Page, response_store: list[dict]) -> N
         generation = response_store.requests.pop(response.request, None) if scoped else None
         if scoped and generation != response_store.generation:
             return
-        return asyncio.create_task(handle_response(response, generation))
+        task = asyncio.create_task(handle_response(response, generation))
+        if scoped:
+            response_store.decode_tasks[task] = generation
+            task.add_done_callback(lambda done: response_store.decode_tasks.pop(done, None))
+        return task
 
     page.on("request", on_request)
     page.on("requestfailed", lambda request: response_store.requests.pop(request, None) if scoped else None)

@@ -37,6 +37,8 @@ def _outcome(route, offer, final_url, title, *, extra=None):
             **(extra or {}), "detail_quality": "complete", "detail_source": "network_exact",
             "network_match_source": match["source"],
             "selected_quote": match,
+            "loading_evidence": match.get("loading_evidence"),
+            "date_evidence": match.get("date_evidence"),
             "validation": {"status": "valid", "scope": "route_date_cabin_airline",
                            "version": 1},
         },
