@@ -6,7 +6,7 @@ from time import time
 from contextlib import asynccontextmanager
 from urllib.parse import urlparse
 
-from fastapi import Body, FastAPI, HTTPException
+from fastapi import Body, FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -224,8 +224,15 @@ def create_app(config_path: str | None = None) -> FastAPI:
         return service.tail_discovery_candidates()
 
     @app.get("/api/tail-discovery/results")
-    async def tail_discovery_results(limit: int = 100) -> dict:
-        return {"results": service.tail_discovery_results(limit=limit)}
+    async def tail_discovery_results(limit: int = Query(100, ge=1, le=200),
+                                     offset: int = Query(0, ge=0),
+                                     job_id: str | None = None) -> dict:
+        try:
+            rows = service.tail_discovery_results(limit=limit + 1, job_id=job_id, offset=offset)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="Tail discovery job not found")
+        return {"results": rows[:limit], "has_more": len(rows) > limit,
+                "next_offset": offset + min(len(rows), limit), "job_id": job_id}
 
     @app.post("/api/tail-discovery/run")
     async def run_tail_discovery(payload: dict = Body(...)) -> dict:

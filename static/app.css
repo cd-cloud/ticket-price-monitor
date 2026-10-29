@@ -1636,3 +1636,167 @@ pre {
   .tail-job-actions > button { flex: 1 1 130px; }
   .tail-flight-group .tail-result-card { min-width: 0; }
 }
+
+/* Tail workspace: query -> progress -> compare, rather than one parameter grid. */
+#tailDiscoveryPanel { padding: 24px; }
+#tailDiscoveryPanel .panel-head { margin-bottom: 18px; }
+#tailDiscoveryPanel .panel-head p { margin: 8px 0 0; }
+#tailDiscoveryPanel .panel-head .eyebrow { margin: 0 0 8px; }
+#tailDiscoveryPanel .tail-form { display: block; }
+#tailDiscoveryPanel fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
+#tailDiscoveryPanel fieldset:disabled { opacity: .7; }
+#tailDiscoveryPanel summary { cursor: pointer; padding: 12px 0; line-height: 1.6; }
+#tailDiscoveryPanel .tail-query-editor > summary { display: flex; justify-content: space-between; gap: 12px; }
+#tailDiscoveryPanel .tail-query-editor > summary > span:first-of-type { white-space: nowrap; }
+#tailDiscoveryPanel .tail-query-editor > summary::before { content: "▸"; color: var(--accent); }
+#tailDiscoveryPanel .tail-query-editor[open] > summary::before { content: "▾"; }
+#tailQuerySummary { margin-left: auto; text-align: right; overflow-wrap: anywhere; font-size: 13px; }
+#tailDiscoveryPanel .tail-basic-grid { display: grid; grid-template-columns: 1fr 1fr 1fr .8fr; gap: 16px; padding: 12px 0 20px; }
+#tailDiscoveryPanel label { font-size: 13px; line-height: 1.5; min-width: 0; }
+#tailDiscoveryPanel label > small { color: var(--muted); font-size: 12px; font-weight: 400; }
+#tailDiscoveryPanel input, #tailDiscoveryPanel select { min-height: 42px; max-width: 100%; }
+#tailDiscoveryPanel input[type="checkbox"] { min-height: auto; }
+#tailDiscoveryPanel .tail-options-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; align-items: start; }
+#tailDiscoveryPanel .tail-settings { border: 1px solid var(--border); border-radius: 12px; padding: 0 14px; background: #fffdfa; min-width: 0; }
+#tailDiscoveryPanel .tail-settings > summary { font-size: 14px; }
+#tailDiscoveryPanel .tail-settings > summary span { display: inline; font-size: 12px; margin-left: 6px; font-weight: 400; }
+#tailDiscoveryPanel .tail-settings-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; padding: 8px 0 16px; }
+#tailDiscoveryPanel .tail-wide { grid-column: 1 / -1; }
+#tailDiscoveryPanel .tail-settings p { font-size: 13px; line-height: 1.65; }
+#tailDiscoveryPanel .tail-run-actions { align-items: center; padding: 18px 0; flex-wrap: wrap; }
+#tailRunHint { font-size: 13px; }
+#tailDiscoveryPanel .tail-candidate-head { grid-template-columns: 1fr; padding: 12px 0; border: 0; background: none; }
+#tailDiscoveryPanel .tail-candidate-summary { padding: 10px; border-radius: 8px; }
+#tailDiscoveryPanel .tail-candidate-summary small { font-size: 12px; }
+#tailDiscoveryPanel .tail-candidate-box { margin: 0 0 14px; border-radius: 8px; }
+#tailDiscoveryPanel .tail-candidate-list { grid-template-columns: repeat(2, minmax(0, 1fr)); max-height: 280px; overflow-y: auto; }
+#tailDiscoveryPanel .tail-candidate-chip { padding: 8px; font-size: 12px; }
+#tailDiscoveryPanel .tail-inline-actions { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0; }
+#tailConnectionStatus { padding: 12px; background: #fff2d6; color: #794300; border-radius: 8px; }
+#tailDiscoveryPanel .tail-job-summary { margin: 4px 0 24px; padding: 16px; background: #eef5f3; border-radius: 12px; }
+#tailDiscoveryPanel .tail-job-summary { margin-bottom: 14px; padding: 12px; }
+#tailDiscoveryPanel .tail-job-head { align-items: start; flex-wrap: wrap; }
+#tailDiscoveryPanel .tail-job-head { align-items: center; gap: 8px 14px; }
+#tailDiscoveryPanel .tail-job-head > strong { font-size: 14px; }
+#tailDiscoveryPanel .tail-job-head .tail-job-actions { margin: 0 0 0 auto; }
+#tailDiscoveryPanel .tail-job-head p { font-size: 13px; margin: 6px 0 0; }
+#tailDiscoveryPanel .tail-job-counter { font-size: 13px; color: var(--accent); }
+#tailDiscoveryPanel .tail-job-message { margin: 10px 0; line-height: 1.6; font-size: 13px; }
+#tailDiscoveryPanel .tail-job-candidates { max-height: 320px; overflow-y: auto; }
+#tailDiscoveryPanel .tail-job-summary > details { border-top: 1px solid var(--border); font-size: 13px; }
+#tailDiscoveryPanel .tail-priority-details { padding: 0 8px; }
+#tailDiscoveryPanel .tail-results-workspace { border-top: 1px solid var(--border); padding-top: 14px; }
+#tailResultsHeading { scroll-margin-top: 90px; }
+#tailDiscoveryPanel .tail-results-heading { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+#tailDiscoveryPanel .tail-results-heading h3 { font-size: 18px; }
+#tailRefreshBtn { margin-left: auto; }
+#tailDiscoveryPanel .tail-view-tabs { display: flex; padding: 3px; border: 1px solid var(--border); border-radius: 10px; }
+#tailDiscoveryPanel .tail-view-tabs button { border-radius: 7px; padding: 8px 12px; background: transparent; color: var(--muted); }
+#tailDiscoveryPanel .tail-view-tabs button[aria-pressed="true"] { background: var(--accent); color: white; }
+#tailDiscoveryPanel .tail-result-context { display: grid; gap: 6px; margin-top: 12px; }
+#tailResultIdentity { margin: 0; font-size: 14px; font-weight: 600; line-height: 1.7; overflow-wrap: anywhere; }
+#tailDraftNotice { margin: 0; padding: 8px 10px; border-left: 3px solid #bc8530; background: #fff3dc; color: #754709; font-size: 13px; line-height: 1.6; }
+#tailTaskContextDetails { min-width: 0; font-size: 13px; }
+#tailDiscoveryPanel #tailTaskContextDetails > summary { padding: 5px 0; color: var(--accent); }
+#tailTaskConditions { font-size: 13px; line-height: 1.7; }
+#tailJobPickerLabel { max-width: 440px; flex: 1 1 250px; }
+#tailResultScopeNote { font-size: 12px; flex: 1 1 200px; line-height: 1.6; margin: 0 0 5px; }
+#tailDiscoveryPanel .tail-result-tools { display: grid; grid-template-columns: minmax(0, 220px) minmax(0, 1fr); align-items: end; gap: 6px 16px; }
+#tailResultFilters { min-width: 0; font-size: 13px; }
+#tailResultFilters[open] { grid-column: 1 / -1; background: #f4f4ef; border-radius: 10px; padding: 0 12px; }
+#tailResultFilters > p { line-height: 1.6; }
+#tailDiscoveryPanel #tailResultFilters > summary { color: var(--accent); min-height: 44px; }
+#tailDiscoveryPanel .tail-toolbar { display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); background: none; border: 0; padding: 0; margin-top: 16px; gap: 12px; }
+#tailDiscoveryPanel #tailResultFilters .tail-toolbar { grid-template-columns: repeat(3, minmax(0, 1fr)); margin-top: 4px; }
+#tailDiscoveryPanel .tail-results-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; padding: 12px 0; font-size: 13px; }
+#tailDiscoveryPanel .tail-results-meta .tail-toggle { margin-left: auto; font-size: 12px; }
+#tailDiscoveryPanel .tail-safety-note { color: var(--muted); font-size: 12px; line-height: 1.7; margin: 0 0 16px; }
+#tailDiscoveryPanel .tail-state-section > h3 { font-size: 14px; margin: 8px 0 12px; }
+#tailDiscoveryPanel .tail-state-section > h3 > span { color: var(--muted); font-weight: 400; margin-left: 6px; }
+#tailDiscoveryPanel .tail-route-group { background: none; border: 0; border-radius: 0; padding: 0; gap: 4px; }
+#tailDiscoveryPanel .tail-route-group-head { font-size: 13px; align-items: center; }
+#tailDiscoveryPanel .tail-route-group-head strong { font-size: 14px; }
+#tailDiscoveryPanel .tail-route-group-head span { font-size: 12px; color: var(--muted); }
+#tailDiscoveryPanel .tail-date-group { background: none; border: 0; border-radius: 0; padding: 0; }
+#tailDiscoveryPanel .tail-date-group > h4 { margin: 8px 0; font-size: 13px; font-weight: 400; color: var(--muted); }
+#tailDiscoveryPanel .tail-flight-group { border: 1px solid var(--border); border-radius: 12px; background: #fffdfa; margin: 0 0 16px; padding: 16px; }
+#tailDiscoveryPanel .tail-flight-heading { display: flex; justify-content: space-between; align-items: start; gap: 14px; margin-bottom: 14px; }
+#tailDiscoveryPanel .tail-flight-heading h4 { font-size: 17px; margin: 0 0 6px; }
+#tailDiscoveryPanel .tail-flight-heading h4 span { font-weight: 500; margin-left: 10px; }
+#tailDiscoveryPanel .tail-flight-heading p { font-size: 12px; margin: 0; }
+#tailDiscoveryPanel .tail-flight-heading .tail-first-leg-label { font-size: 13px; color: var(--accent); margin: 0 0 8px; line-height: 1.6; }
+#tailDiscoveryPanel .tail-flight-best { display: grid; gap: 4px; text-align: right; flex-shrink: 0; }
+#tailDiscoveryPanel .tail-flight-best small { font-size: 12px; color: var(--muted); }
+#tailDiscoveryPanel .tail-flight-best strong { font-size: 18px; color: var(--accent); }
+#tailDiscoveryPanel .tail-result-card { grid-template-columns: minmax(140px, 1.3fr) minmax(140px,1fr) minmax(130px,1fr) auto; padding: 12px 0; border: 0; border-top: 1px solid var(--border); border-radius: 0; background: none; gap: 10px 16px; }
+#tailDiscoveryPanel .tail-result-main { display: grid; gap: 6px; align-content: start; font-size: 14px; }
+#tailDiscoveryPanel .tail-result-main > small { color: var(--muted); font-size: 12px; }
+#tailDiscoveryPanel .tail-result-main > strong { line-height: 1.65; overflow-wrap: anywhere; }
+#tailDiscoveryPanel .tail-result-main .muted { font-size: 12px; }
+#tailDiscoveryPanel .tail-price { text-align: left; justify-items: start; align-content: start; white-space: normal; min-width: 0; overflow-wrap: anywhere; }
+#tailDiscoveryPanel .tail-price strong { font-size: 18px; color: var(--accent-2); }
+#tailDiscoveryPanel .tail-price small { font-size: 12px; color: var(--muted); }
+#tailDiscoveryPanel .tail-decision-difference { font-size: 13px; line-height: 1.6; color: var(--text); }
+#tailDiscoveryPanel .tail-card-caveat { grid-column: 1 / -1; margin: 0; font-size: 12px; line-height: 1.7; color: #795629; }
+#tailDiscoveryPanel .tail-quote-state { display: grid; align-content: start; justify-items: start; gap: 6px; }
+#tailDiscoveryPanel .tail-quote-state small { color: var(--muted); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+#tailDiscoveryPanel .tail-status { font-size: 12px; padding: 3px 8px; border-radius: 5px; }
+#tailDiscoveryPanel .tail-status.verified { background: #e4f2ed; color: #165d4e; }
+#tailDiscoveryPanel .tail-status.review, #tailDiscoveryPanel .tail-warning { background: #fff0da; color: #8a4900; font-size: 12px; border-radius: 5px; padding: 3px 8px; }
+#tailDiscoveryPanel .tail-review-actions { grid-column: auto; margin: 0; align-items: start; align-content: start; justify-content: end; flex-direction: column; }
+#tailDiscoveryPanel .tail-review-actions .compact { padding: 8px 10px; font-size: 12px; white-space: nowrap; }
+#tailDiscoveryPanel .tail-details { margin: 0; font-size: 13px; }
+#tailDiscoveryPanel .tail-details > summary { padding: 0; font-weight: 400; }
+#tailDiscoveryPanel .tail-alternatives > summary { color: var(--accent); font-size: 13px; }
+#tailDiscoveryPanel .tail-baselines { display: grid; gap: 4px; padding: 12px; background: #f4f4ef; border-radius: 8px; }
+#tailDiscoveryPanel .tail-empty-state { min-height: 160px; padding: 28px; text-align: left; justify-items: start; }
+#tailDiscoveryPanel .tail-empty-state strong { font-size: 16px; }
+#tailDiscoveryPanel .tail-pagination { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; margin-top: 16px; font-size: 12px; }
+#tailDiscoveryPanel :is(button, a, summary, input, select):focus-visible { outline: 3px solid #238d82; outline-offset: 3px; }
+body[data-workspace="tail"] .hero { padding: 18px 24px; }
+body[data-workspace="tail"] .hero .subcopy { display: none; }
+body[data-workspace="tail"] .hero h1 { font-size: 23px; }
+body[data-workspace="tail"] .hero .actions { display: none; }
+@media (max-width: 960px) {
+  #tailDiscoveryPanel .tail-result-card { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  #tailDiscoveryPanel .tail-price { grid-column: auto; }
+  #tailDiscoveryPanel .tail-review-actions { flex-direction: row; justify-content: start; }
+  #tailDiscoveryPanel .tail-basic-grid { grid-template-columns: repeat(2, minmax(0,1fr)); }
+}
+@media (max-width: 640px) {
+  body[data-workspace="tail"] .shell { width: calc(100% - 20px); margin-top: 10px; }
+  body[data-workspace="tail"] .hero { margin-bottom: 10px; padding: 14px 16px; }
+  body[data-workspace="tail"] .hero .eyebrow { display: none; }
+  body[data-workspace="tail"] .hero h1 { font-size: 18px; }
+  body[data-workspace="tail"] .workspace-tabs { position: static; padding: 5px; gap: 2px; margin-bottom: 10px; backdrop-filter: none; }
+  body[data-workspace="tail"] .workspace-tabs button { padding: 8px 10px; min-height: 44px; font-size: 13px; }
+  #tailDiscoveryPanel { border-radius: 14px; padding: 16px; backdrop-filter: none; }
+  #tailDiscoveryPanel h2 { font-size: 20px; }
+  #tailDiscoveryPanel .panel-head p { font-size: 13px; line-height: 1.6; }
+  #tailDiscoveryPanel .tail-options-grid { grid-template-columns: 1fr; gap: 8px; }
+  #tailDiscoveryPanel .tail-basic-grid { gap: 12px; }
+  #tailDiscoveryPanel .tail-run-actions { position: sticky; bottom: 0; background: #fffaf3; z-index: 15; border-top: 1px solid var(--border); padding: 12px 0 max(12px, env(safe-area-inset-bottom)); }
+  #tailRunHint { display: none; }
+  #tailDiscoveryPanel .tail-run-actions button { flex: 1; min-height: 44px; }
+  #tailDiscoveryPanel .tail-settings-grid { grid-template-columns: 1fr; }
+  #tailDiscoveryPanel .tail-toolbar { grid-template-columns: repeat(2, minmax(0,1fr)); }
+  #tailDiscoveryPanel #tailResultFilters .tail-toolbar { grid-template-columns: 1fr; }
+  #tailDiscoveryPanel .tail-result-tools { grid-template-columns: minmax(0, 1fr) auto; }
+  #tailDiscoveryPanel .tail-results-meta .tail-toggle { margin-left: 0; }
+  #tailDiscoveryPanel .tail-flight-heading { flex-direction: column; }
+  #tailDiscoveryPanel .tail-flight-heading h4 { font-size: 16px; }
+  #tailDiscoveryPanel .tail-flight-heading h4 span { margin-left: 4px; }
+  #tailDiscoveryPanel .tail-flight-best { text-align: left; display: flex; align-items: center; gap: 10px; }
+  #tailDiscoveryPanel .tail-flight-group { padding: 12px; }
+  #tailDiscoveryPanel .tail-review-actions { flex-wrap: wrap; align-content: start; }
+  #tailDiscoveryPanel .tail-job-head { display: block; }
+  #tailDiscoveryPanel .tail-job-head .tail-job-actions { margin-top: 8px; }
+  #tailDiscoveryPanel .tail-job-counter { display: block; margin-top: 8px; }
+  #tailDiscoveryPanel button, #tailDiscoveryPanel a { min-height: 40px; }
+  #tailDiscoveryPanel summary { min-height: 44px; }
+  #tailDiscoveryPanel .tail-results-heading { gap: 10px; }
+  #tailDiscoveryPanel .tail-result-context { gap: 10px; }
+  #tailDiscoveryPanel .tail-candidate-list { grid-template-columns: 1fr; }
+  #tailDiscoveryPanel .tail-quote-state small { font-size: 11px; }
+  #tailDiscoveryPanel .tail-empty-state { padding: 20px 12px; }
+}

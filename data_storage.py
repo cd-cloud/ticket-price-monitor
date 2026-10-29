@@ -733,6 +733,9 @@ class PriceRepository:
         transfer: str | None = None,
         departure_date: str | None = None,
         limit: int = 100,
+        *,
+        checkpoint_job_id: str | None = None,
+        offset: int = 0,
     ) -> list[dict[str, Any]]:
         clauses: list[str] = []
         params: list[Any] = []
@@ -745,12 +748,19 @@ class PriceRepository:
         if departure_date:
             clauses.append("departure_date = ?")
             params.append(departure_date)
+        if checkpoint_job_id:
+            clauses.append("""id IN (
+                SELECT CAST(j.value AS INTEGER)
+                FROM tail_candidate_checkpoints AS c, json_each(c.result_ids) AS j
+                WHERE c.job_id = ?
+            )""")
+            params.append(checkpoint_job_id)
 
         sql = "SELECT * FROM tail_discovery_results"
         if clauses:
             sql += " WHERE " + " AND ".join(clauses)
-        sql += " ORDER BY observed_at DESC, price ASC LIMIT ?"
-        params.append(max(1, min(int(limit), 500)))
+        sql += " ORDER BY observed_at DESC, id DESC LIMIT ? OFFSET ?"
+        params.extend([max(1, min(int(limit), 500)), max(0, int(offset))])
 
         with self.connect() as conn:
             rows = conn.execute(sql, params).fetchall()

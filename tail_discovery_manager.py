@@ -209,10 +209,21 @@ class TailDiscoveryManager:
             "candidates": [item.to_dict() for item in TAIL_DESTINATIONS],
         }
 
-    def tail_discovery_results(self, limit: int = 100) -> list[dict[str, Any]]:
+    def tail_discovery_results(self, limit: int = 100, *, job_id: str | None = None,
+                               offset: int = 0) -> list[dict[str, Any]]:
         from providers import ctrip_tail_parser
 
-        results = self.repository.fetch_tail_discovery_results(limit=limit)
+        root = None
+        if job_id:
+            job = self.repository.fetch_tail_discovery_job(job_id)
+            if not job:
+                raise KeyError(job_id)
+            root = str((job.get("result") or {}).get("checkpoint_job_id")
+                       or (job.get("progress") or {}).get("checkpoint_job_id")
+                       or (job.get("payload") or {}).get("_checkpoint_job_id") or job_id)
+        results = self.repository.fetch_tail_discovery_results(
+            limit=limit, checkpoint_job_id=root, offset=offset,
+        )
         for item in results:
             raw_payload = item.get("raw_payload") if isinstance(item.get("raw_payload"), dict) else {}
             item.update(public_quote_metadata(item))

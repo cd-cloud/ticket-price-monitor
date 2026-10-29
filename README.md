@@ -16,6 +16,7 @@
 - 报价区分可比基准和仅供参考，显示采集时效及人数、税费、票规待核实项。
 
 甩尾执行模式、数据迁移和测试说明见 [docs/TAIL_DISCOVERY.md](docs/TAIL_DISCOVERY.md)。
+新版甩尾工作区、任务结果隔离、断线恢复与 UI 测试见 [docs/TAIL_UI_WORKSPACE.md](docs/TAIL_UI_WORKSPACE.md)。
 
 ## 常用命令
 

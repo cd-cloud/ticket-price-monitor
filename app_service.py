@@ -271,8 +271,9 @@ class FlightPriceApplication:
     def tail_discovery_candidates(self) -> dict[str, Any]:
         return self.tail_discovery_manager.tail_discovery_candidates()
 
-    def tail_discovery_results(self, limit: int = 100) -> list[dict[str, Any]]:
-        return self.tail_discovery_manager.tail_discovery_results(limit=limit)
+    def tail_discovery_results(self, limit: int = 100, *, job_id: str | None = None,
+                               offset: int = 0) -> list[dict[str, Any]]:
+        return self.tail_discovery_manager.tail_discovery_results(limit=limit, job_id=job_id, offset=offset)
 
     def run_once_via_cli(self, provider_filter: str | None = None) -> dict[str, Any]:
         return self.legacy_run_service.run_once_via_cli(provider_filter=provider_filter)

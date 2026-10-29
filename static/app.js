@@ -17,6 +17,21 @@ let tailCandidateProfileOverride = "";
 let activeTailJobId = "";
 let activeTailJobTimer = null;
 let tailDiscoveryJobs = [];
+let tailSelectedJobId = "";
+let tailSelectedJob = null;
+let tailResultView = "current";
+let tailResultRequest = 0;
+let tailResultOffset = 0;
+let tailHasMore = false;
+let tailCandidatesManual = false;
+let tailSavedCandidates = null;
+let tailPollFailures = 0;
+let tailResultsLoaded = false;
+let tailConnectionUnknown = false;
+let tailSubmitting = false;
+let tailCandidatesLoaded = false;
+let tailFormTouched = false;
+const tailDisclosureState = new Map();
 let browserProfileData = { providers: [] };
 var tailCandidateNames = window.tailCandidateNames || {};
 window.tailCandidateNames = tailCandidateNames;
@@ -1526,6 +1541,361 @@ function renderBrowserProfileCard(item) {
   `;
 }
 
+function tailFormFieldIds() {
+  return ["tailOriginInput", "tailTransferInput", "tailDateInput", "tailProviderSelect",
+    "tailQueryMaxPriceInput", "tailDepartureTimeStartInput", "tailDepartureTimeEndInput",
+    "tailCabinSelect", "tailAirlineSelect", "tailAirlineInput", "tailFilterScopeInput",
+    "tailSearchScopeInput", "tailFollowupBudgetInput", "tailCallBudgetInput", "tailPassengersInput",
+    "tailBudgetCitiesInput", "tailBudgetMinutesInput", "tailTargetInput", "tailBaselineBudgetInput",
+    "tailCandidateProfileSelect"];
+}
+
+
+function saveTailForm() {
+  try {
+    const fields = Object.fromEntries(tailFormFieldIds().map(id => [id, document.getElementById(id)?.value || ""]));
+    localStorage.setItem("tail-search-form-v1", JSON.stringify({
+      fields, manual: tailCandidatesManual, candidates: selectedTailCandidates(),
+    }));
+  } catch { /* A private browser or full storage must not block searching. */ }
+}
+
+
+function restoreTailForm() {
+  try {
+    const saved = JSON.parse(localStorage.getItem("tail-search-form-v1") || "null");
+    if (!saved || typeof saved.fields !== "object") return;
+    for (const id of tailFormFieldIds()) {
+      const input = document.getElementById(id);
+      const value = saved.fields[id];
+      if (input && typeof value === "string") input.value = value;
+    }
+    tailCandidatesManual = saved.manual === true;
+    tailCandidateProfileOverride = document.getElementById("tailCandidateProfileSelect").value;
+    if (tailCandidatesManual && Array.isArray(saved.candidates)) tailSavedCandidates = saved.candidates;
+  } catch { /* Ignore incompatible saved settings, never copy arbitrary keys. */ }
+}
+
+
+function updateTailFormSummary() {
+  const value = id => document.getElementById(id)?.value || "";
+  const route = [value("tailOriginInput"), value("tailTransferInput")].filter(Boolean).join(" → ");
+  const summary = document.getElementById("tailQuerySummary");
+  if (summary) summary.textContent = [route, value("tailDateInput"), providerLabel(value("tailProviderSelect"))].filter(Boolean).join(" · ");
+  const filters = document.getElementById("tailFilterSummary");
+  if (filters) filters.textContent = [
+    cabinLabel(value("tailCabinSelect")), value("tailAirlineInput") || "不限航司",
+    value("tailFilterScopeInput") === "all_legs" ? "全行程" : "仅首段",
+  ].join(" · ");
+  const settings = document.getElementById("tailSearchSummary");
+  if (settings) settings.textContent = value("tailSearchScopeInput") === "open" ? "开放发现 · 非全量"
+    : `${value("tailSearchScopeInput") === "hybrid" ? "开放 + 定向补查 · " : ""}已选 ${selectedTailCandidates().length} 城市`;
+  updateTailResultContext();
+}
+
+function tailConditionLabel(payload = {}) {
+  return [
+    payload.origin && payload.transfer ? `${tailPlaceLabel(payload.origin)} → ${tailPlaceLabel(payload.transfer)}` : "路线未记录",
+    payload.departure_date || "日期未记录",
+    payload.provider ? providerLabel(payload.provider) : "平台未记录",
+  ].join(" · ");
+}
+
+function tailQueryDiffers(saved, draft) {
+  // Compare only recorded settings: older tasks may not have a complete payload.
+  const numeric = new Set(["max_price", "passengers", "max_candidates", "max_minutes",
+    "target_results", "max_baseline_queries", "max_followup_candidates", "max_provider_calls"]);
+  const ignored = new Set(["mode", "ignore_cache"]);
+  if (saved.search_scope !== "hybrid" && draft.search_scope !== "hybrid") ignored.add("max_followup_candidates");
+  if (saved.provider !== "feizhu" && draft.provider !== "feizhu") {
+    for (const key of ["max_baseline_queries", "max_followup_candidates", "max_provider_calls"]) ignored.add(key);
+  }
+  if (saved.search_scope === "open" && draft.search_scope === "open") {
+    for (const key of ["candidates", "candidate_profile", "max_candidates", "target_results"]) ignored.add(key);
+  }
+  if (saved.search_scope === "hybrid" && draft.search_scope === "hybrid") {
+    ignored.add("max_candidates"); ignored.add("target_results");
+  }
+  const normalize = (key, value) => {
+    if (numeric.has(key)) return Number(value || 0);
+    if (["origin", "transfer"].includes(key)) return normalizeCode(value || "");
+    if (["candidates", "preferred_airlines"].includes(key)) {
+      const values = Array.isArray(value) ? value : String(value || "").split(/[,，、;\s]+/);
+      return [...new Set(values.map(v => String(v).trim().toUpperCase()).filter(Boolean))].sort().join(",");
+    }
+    return String(value ?? "").trim();
+  };
+  return Object.keys(draft).some(key => !ignored.has(key) && Object.hasOwn(saved, key)
+    && normalize(key, saved[key]) !== normalize(key, draft[key]));
+}
+
+function updateTailResultContext() {
+  const context = document.getElementById("tailResultIdentity");
+  const notice = document.getElementById("tailDraftNotice");
+  const snapshot = document.getElementById("tailTaskConditions");
+  if (!context || !notice || !snapshot) return;
+  notice.hidden = true;
+  snapshot.textContent = "";
+  if (tailResultView === "history") {
+    context.textContent = "历史报价 · 跨任务的已保存结果";
+    notice.textContent = "上方条件仅用于新查询，不会改变历史报价；请使用列表筛选。";
+    notice.hidden = false;
+    return;
+  }
+  const job = tailSelectedJob?.job_id === tailSelectedJobId ? tailSelectedJob : null;
+  if (!job) {
+    context.textContent = tailSelectedJobId ? "正在读取所选任务条件…" : "尚未选择查询任务";
+    return;
+  }
+  const p = job.payload || {};
+  context.textContent = `结果所属：${tailConditionLabel(p)}`;
+  const parts = [
+    p.cabin ? cabinLabel(p.cabin) : "舱位未记录",
+    Object.hasOwn(p, "preferred_airlines") ? (Array.isArray(p.preferred_airlines) ? p.preferred_airlines.join("、") : p.preferred_airlines) || "不限航司" : "航司未记录",
+    p.passengers ? `${p.passengers} 人` : "人数未记录",
+    p.filter_scope ? (p.filter_scope === "all_legs" ? "舱位 / 航司约束全行程" : "舱位 / 航司仅约束首段") : "筛选范围未记录",
+    Object.hasOwn(p, "departure_time_start") || Object.hasOwn(p, "departure_time_end")
+      ? `起飞时间：${p.departure_time_start || "不限"} — ${p.departure_time_end || "不限"}` : "起飞时间范围未记录",
+    !Object.hasOwn(p, "max_price") ? "查询价格上限未记录"
+      : `查询价格上限：${p.max_price || "不限"}`,
+  ];
+  if (p.search_scope) parts.push(`检索方式：${{candidates:"定向城市", open:"开放发现（非全量）", hybrid:"开放发现 + 定向补查"}[p.search_scope] || p.search_scope}`);
+  if (Array.isArray(p.candidates) && p.search_scope !== "open") {
+    parts.push(`任务候选：${p.candidates.length} 城市（${p.candidates.slice(0, 8).map(tailPlaceLabel).join("、")}${p.candidates.length > 8 ? "…" : ""}）`);
+  }
+  for (const [key, label, zero] of [
+    ["max_minutes", "时间上限（分钟）", "不限"],
+    ["max_candidates", "查询城市上限", "不限"],
+    ["target_results", "已校验首段停止目标", "不限"],
+    ["max_followup_candidates", "补查城市上限", "关闭"],
+    ["max_provider_calls", "本轮调用上限", "不限"],
+    ["max_baseline_queries", "同首段基准补查次数", "关闭"],
+  ]) {
+    if (!Object.hasOwn(p, key)) continue;
+    if (p.provider !== "feizhu" && ["max_followup_candidates", "max_provider_calls", "max_baseline_queries"].includes(key)) continue;
+    if (p.search_scope !== "hybrid" && key === "max_followup_candidates") continue;
+    if (["open", "hybrid"].includes(p.search_scope) && ["max_candidates", "target_results"].includes(key)) continue;
+    parts.push(`${label}：${Number(p[key]) || zero}`);
+  }
+  snapshot.textContent = `${parts.join(" · ")}。任务未记录的设置无法比对；修改上方条件不会改写此任务。`;
+  if (tailQueryDiffers(p, buildTailQueryPayload())) {
+    notice.textContent = `${tailFormTouched ? "查询条件已修改" : "上方待提交条件与此任务不同"}，下方仍为所选任务的结果。点击“开始搜索”才会使用新条件。`;
+    notice.hidden = false;
+  }
+}
+
+function updateTailResultTools() {
+  const summary = document.getElementById("tailResultFilterSummary");
+  if (summary) {
+    const count = Number(Boolean(document.getElementById("tailDateFilter")?.value))
+      + Number(Number(document.getElementById("tailMaxPriceInput")?.value || 0) > 0)
+      + Number((document.getElementById("tailTrustInput")?.value || "all") !== "all")
+      + Number(document.getElementById("tailLatestOnlyInput")?.checked === false);
+    summary.textContent = count ? `筛选 · ${count} 项已调整` : "筛选";
+  }
+  const jump = document.getElementById("tailViewResultsBtn");
+  if (jump) jump.hidden = !tailDiscoveryResults.length;
+  updateTailResultContext();
+}
+
+
+function filterTailCandidateList() {
+  const keyword = document.getElementById("tailCandidateSearch").value.trim().toLowerCase();
+  document.querySelectorAll("#tailCandidateList label").forEach(label => {
+    label.hidden = !label.textContent.toLowerCase().includes(keyword);
+  });
+}
+
+
+function clearTailResultFilters() {
+  for (const [id, value] of [["tailDateFilter", ""], ["tailMaxPriceInput", ""], ["tailTrustInput", "all"]]) {
+    document.getElementById(id).value = value;
+  }
+  document.getElementById("tailLatestOnlyInput").checked = true;
+  renderTailResults(tailDiscoveryResults);
+}
+
+
+function replaceTailMarkup(container, html) {
+  if (container.innerHTML === html) return;
+  const details = container.querySelectorAll?.("details[data-disclosure]") || [];
+  for (const el of details) tailDisclosureState.set(el.dataset.disclosure, el.open);
+  const anchors = [...(container.querySelectorAll?.("[data-stable-key]") || [])];
+  const anchor = anchors.find(el => el.getBoundingClientRect().bottom > 80);
+  const anchorKey = anchor?.dataset.stableKey;
+  const anchorTop = anchor?.getBoundingClientRect().top;
+  const focusKey = container.contains?.(document.activeElement) ? document.activeElement?.dataset.focusKey : null;
+  container.innerHTML = html;
+  for (const el of container.querySelectorAll?.("details[data-disclosure]") || []) {
+    if (tailDisclosureState.has(el.dataset.disclosure)) el.open = tailDisclosureState.get(el.dataset.disclosure);
+  }
+  if (focusKey) {
+    [...container.querySelectorAll("[data-focus-key]")].find(el => el.dataset.focusKey === focusKey)?.focus({preventScroll:true});
+  }
+  if (anchorKey && anchorTop < window.innerHeight) {
+    const replacement = [...container.querySelectorAll("[data-stable-key]")].find(el => el.dataset.stableKey === anchorKey);
+    if (replacement) window.scrollBy(0, replacement.getBoundingClientRect().top - anchorTop);
+  }
+}
+
+
+async function tailGetJson(url) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 15000);
+  try {
+    const response = await fetch(url, {signal: controller.signal});
+    const data = await response.json();
+    if (!response.ok) {
+      const error = new Error(data.detail || "读取失败");
+      error.status = response.status;
+      throw error;
+    }
+    return data;
+  } finally { clearTimeout(timer); }
+}
+
+async function tailPostJob(url, options = {}) {
+  // Disable competing actions before dispatch, not after the response arrives.
+  tailSubmitting = true;
+  updateTailBusyControls();
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 20000);
+  try {
+    const response = await fetch(url, {method:"POST", signal:controller.signal, ...options});
+    const data = await response.json();
+    if (!response.ok) {
+      const error = new Error(data.detail || "任务操作失败");
+      error.authoritative = true;
+      throw error;
+    }
+    return data;
+  } catch (error) {
+    if (!error.authoritative) {
+      tailConnectionUnknown = true;
+      document.getElementById("tailConnectionStatus").hidden = false;
+      document.getElementById("tailConnectionStatus").textContent = "提交响应中断，正在确认后台是否已接受任务；不会自动重复提交。";
+      setTimeout(() => initializeTailWorkspace().catch(() => {}), 3500);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+    tailSubmitting = false;
+    updateTailBusyControls();
+  }
+}
+
+
+function tailBusy() {
+  return Boolean(activeTailJobId) || tailConnectionUnknown || tailSubmitting;
+}
+
+
+function updateTailBusyControls() {
+  const busy = tailBusy();
+  document.getElementById("tailRunBtn").disabled = busy;
+  document.getElementById("tailQueryFields").disabled = busy;
+  document.getElementById("tailRunBtn").textContent = busy ? "查询进行中" : "开始搜索";
+  document.getElementById("tailRunHint").textContent = tailConnectionUnknown
+    ? "连接中断，后台状态待确认；请勿重复发起。"
+    : busy ? "已完成的结果会逐步出现；停止查询会保留已保存结果。" : "条件保存在本机。修改后点击搜索才会生效。";
+  document.querySelectorAll("#tailResults [data-tail-action='recheck'], #tailJobSummary [data-tail-action]").forEach(button => {
+    button.disabled = busy && button.dataset.tailAction !== "continue";
+  });
+}
+
+
+function renderTailJobPicker() {
+  const select = document.getElementById("tailJobPicker");
+  const jobs = tailSelectedJob && !tailDiscoveryJobs.some(job => job.job_id === tailSelectedJob.job_id)
+    ? [tailSelectedJob, ...tailDiscoveryJobs] : tailDiscoveryJobs;
+  const html = jobs.length ? jobs.map(job => {
+    const p = job.payload || {};
+    const stamp = job.created_at ? formatQueryTime(job.created_at) : job.job_id;
+    const title = `${tailPlaceLabel(p.origin || "任务")} → ${tailPlaceLabel(p.transfer || "?")} · ${p.departure_date || ""} · ${tailJobStatusLabel(job.status)} · ${stamp}`;
+    return `<option value="${escapeHtml(job.job_id)}">${escapeHtml(title)}</option>`;
+  }).join("") : '<option value="">尚无任务</option>';
+  if (select.innerHTML !== html) select.innerHTML = html;
+  select.value = tailSelectedJobId;
+}
+
+
+async function selectTailJob(jobId) {
+  tailSelectedJobId = jobId;
+  tailResultRequest++; // Invalidate stale result requests immediately.
+  tailResultsLoaded = false;
+  tailDiscoveryResults = [];
+  tailResultOffset = 0;
+  tailHasMore = false;
+  tailSelectedJob = null;
+  updateTailPagination();
+  renderTailResults([]);
+  if (jobId) {
+    const job = await tailGetJson(`/api/tail-discovery/jobs/${encodeURIComponent(jobId)}`);
+    if (tailSelectedJobId !== jobId) return;
+    tailSelectedJob = job;
+    if (!activeTailJobId) renderTailJobProgress(job);
+    if (tailResultView === "history") {
+      setTailResultView("current");
+      return;
+    }
+  } else tailSelectedJob = null;
+  await fetchTailResults();
+}
+
+
+function setTailResultView(view) {
+  tailResultView = view === "history" ? "history" : "current";
+  tailResultsLoaded = false;
+  tailResultOffset = 0;
+  tailDiscoveryResults = [];
+  document.querySelectorAll("[data-tail-view]").forEach(button => {
+    button.setAttribute("aria-pressed", String(button.dataset.tailView === tailResultView));
+  });
+  document.getElementById("tailJobPickerLabel").hidden = tailResultView === "history";
+  document.getElementById("tailResultScopeNote").textContent = tailResultView === "history"
+    ? "所有任务的已保存报价；筛选仅作用于已加载条目。更新列表不会重新查询平台。"
+    : "仅所选任务的已保存报价（含继续任务的此前结果）；更新列表不重新查价。";
+  renderTailResults([]);
+  fetchTailResults().catch(() => {});
+}
+
+
+function updateTailPagination() {
+  document.getElementById("tailLoadMoreBtn").hidden = !tailHasMore;
+  document.getElementById("tailPageNote").textContent = tailHasMore
+    ? `已加载 ${tailDiscoveryResults.length} 条，尚有更多。筛选和排序仅作用于已加载报价。`
+    : tailDiscoveryResults.length ? `已加载 ${tailDiscoveryResults.length} 条保存报价；不代表平台全量库存。` : "";
+}
+
+
+async function initializeTailWorkspace() {
+  // Fail closed during boot: a page reload must not allow a second job before
+  // the server has confirmed whether one is still running.
+  tailConnectionUnknown = true;
+  updateTailBusyControls();
+  try {
+    if (!tailCandidatesLoaded) await fetchTailCandidates();
+    await fetchTailJobs();
+    await resumeLatestTailJob();
+  }
+  catch {
+    tailConnectionUnknown = true;
+    updateTailBusyControls();
+    document.getElementById("tailConnectionStatus").hidden = false;
+    document.getElementById("tailConnectionStatus").textContent = "暂时无法确认后台任务，正在重连；不会重复发起查询。";
+    setTimeout(() => initializeTailWorkspace().catch(error => showTailError(error.message)), 10000);
+  }
+}
+
+
+function tailPlaceLabel(code) {
+  if (code === "__OPEN__") return "开放目的地";
+  const entries = typeof AIRPORT_SUGGESTIONS === "undefined" ? [] : AIRPORT_SUGGESTIONS;
+  const entry = entries.find(item => item.code === String(code || "").toUpperCase());
+  return entry ? `${entry.city} (${entry.code})` : airportCodeDisplayText(code);
+}
+
+
 function ensureTailDiscoveryPanel() {
   if (document.getElementById("tailDiscoveryPanel")) return;
   const routeGrid = document.querySelector(".route-grid");
@@ -1533,61 +1903,40 @@ function ensureTailDiscoveryPanel() {
   const panel = document.createElement("section");
   panel.id = "tailDiscoveryPanel";
   panel.className = "panel tail-discovery-panel";
+
   panel.innerHTML = `
     <div class="panel-head">
-      <div>
-        <h2>甩尾发现</h2>
-        <p class="muted">输入 A 和中转点 B，系统逐个尝试候选目的地 C，先过滤完整行程，再按到 B 的实际航班比较尾段方案。</p>
-      </div>
-      <button id="tailRefreshBtn" class="ghost" type="button">重载已保存结果</button>
+      <div><p class="eyebrow">Tail discovery</p><h2>找一程合适的航班</h2>
+      <p class="muted">确定想抵达的城市，比较不同尾段组合。搜索报价不代表可出票。</p></div>
     </div>
-    <p id="tailActionError" class="muted" role="alert" hidden></p>
+    <p id="tailActionError" role="alert" hidden></p>
     <form id="tailDiscoveryForm" class="tail-form">
-      <label>
-        出发地 A
-        <input id="tailOriginInput" data-airport-input placeholder="北京 (BJS)" autocomplete="off" required />
-      </label>
-      <label>
-        中转点 B
-        <input id="tailTransferInput" data-airport-input placeholder="成都 (CTU)" autocomplete="off" required />
-      </label>
-      <label>
-        出发日期
-        <input id="tailDateInput" type="date" required />
-      </label>
-      <label>
-        查询平台
-        <select id="tailProviderSelect">
-          <option value="ctrip">携程</option>
-          <option value="feizhu">飞猪（实验）</option>
-        </select>
-      </label>
-      <label>
-        价格上限
-        <input id="tailQueryMaxPriceInput" type="number" min="0" step="50" placeholder="留空不限，如 1200" />
-      </label>
-      <label>
-        起飞时间开始
-        <input id="tailDepartureTimeStartInput" type="time" />
-      </label>
-      <label>
-        起飞时间结束
-        <input id="tailDepartureTimeEndInput" type="time" />
-      </label>
-      <label>
-        舱位
-        <select id="tailCabinSelect">
+      <details id="tailQueryEditor" class="tail-query-editor" open>
+        <summary><span>查询条件</span><span id="tailQuerySummary" class="muted">先选出发地、想抵达的城市和日期</span></summary>
+        <fieldset id="tailQueryFields">
+          <div class="tail-basic-grid">
+            <label>出发地<input id="tailOriginInput" data-airport-input placeholder="北京 (BJS)" autocomplete="off" required /></label>
+            <label>想抵达的城市 <small>行程中转点</small><input id="tailTransferInput" data-airport-input placeholder="上海 (SHA)" autocomplete="off" required /></label>
+            <label>出发日期<input id="tailDateInput" type="date" required /></label>
+            <label>查询平台<select id="tailProviderSelect"><option value="ctrip">携程</option><option value="feizhu">飞猪（实验）</option></select></label>
+          </div>
+          <div class="tail-options-grid">
+            <details class="tail-settings" id="tailFilters">
+              <summary>筛选条件 <span id="tailFilterSummary" class="muted"></span></summary>
+              <div class="tail-settings-grid">
+                <label>查询价格上限<input id="tailQueryMaxPriceInput" type="number" min="0" step="50" placeholder="不限" /></label>
+                <label>人数<input id="tailPassengersInput" type="number" min="1" max="9" value="1" required /></label>
+                <label>最早起飞<input id="tailDepartureTimeStartInput" type="time" /></label>
+                <label>最晚起飞<input id="tailDepartureTimeEndInput" type="time" /></label>
+                <label>舱位<select id="tailCabinSelect">
           <option value="economy_plus">经济舱/超级经济舱</option>
           <option value="business_first">商务舱/头等舱</option>
           <option value="economy">经济舱</option>
           <option value="premium_economy">超级经济舱</option>
           <option value="business">商务舱</option>
           <option value="first">头等舱</option>
-        </select>
-      </label>
-      <label>
-        指定航司
-        <select id="tailAirlineSelect">
+        </select></label>
+                <label>航司<select id="tailAirlineSelect">
           <option value="">不限航司</option>
           <option value="CA,ZH,TV,SC,KY,NX">国航系航司（CA/ZH/TV/SC/KY/NX）</option>
           <option value="CA">中国国航 CA</option>
@@ -1609,149 +1958,196 @@ function ensureTailDiscoveryPanel() {
           <option value="GS">天津航空 GS</option>
           <option value="GJ">长龙航空 GJ</option>
           <option value="EU">成都航空 EU</option>
-        </select>
-        <input id="tailAirlineInput" placeholder="可选 ZH 或 深圳航空，多个用逗号分隔" autocomplete="off" />
-      </label>
-      <label>舱位／航司筛选范围
-        <select id="tailFilterScopeInput">
-          <option value="first_leg">仅实际乘坐首段 A→B（默认）</option>
-          <option value="all_legs">全行程每个航段都符合</option>
-        </select>
-      </label>
-      <p class="muted">首段模式不限制尾段舱位和航司，但仍校验完整行程。飞猪不向上游限制整程舱位；携程按舱位组检索，跨组混舱覆盖仍不保证。</p>
-      <label>查询模式
-        <select id="tailModeInput"><option value="explore">重新探索候选城市</option><option value="refresh">刷新已发现报价</option></select>
-      </label>
-      <label>目的地查询方式
-        <select id="tailSearchScopeInput">
-          <option value="candidates">按候选城市逐个查询</option>
-          <option value="open">开放目的地发现（仅飞猪，非全量）</option>
-          <option value="hybrid">历史引导：开放发现＋定向补查（仅飞猪）</option>
-        </select>
-      </label>
-      <p id="tailOpenScopeNotice" class="muted" hidden>不指定最终目的地，一次发现多个尾段城市，结果不是全量。本模式不使用候选城市列表、城市数或首段数量预算；运行时间上限仍生效。成功响应整体保存，继续任务不是翻页；再次查询请点重新探索。刷新已发现报价会定向查询已发现城市。</p>
-      <p id="tailHybridScopeNotice" class="muted" hidden>先开放取样，再从已选城市、近期历史航线和本次发现中按优先级定向补查；每批重新排序。路线存在不代表当前联程可售，未返回的城市不计为失败。补查城市上限按原任务累计，调用预算按本轮计算。</p>
-      <label>混合模式最多定向补查城市（0 不补查）<input id="tailFollowupBudgetInput" type="number" min="0" max="50" value="5" /></label>
-      <label>飞猪本轮总调用上限（0 不限，含基准补查）<input id="tailCallBudgetInput" type="number" min="0" max="500" value="20" /></label>
-      <label>人数（库存须复核）<input id="tailPassengersInput" type="number" min="1" max="9" value="1" /></label>
-      <label>最多查询城市（0 不限）<input id="tailBudgetCitiesInput" type="number" min="0" max="500" value="0" /></label>
-      <label>最多运行分钟（0 不限）<input id="tailBudgetMinutesInput" type="number" min="0" max="1440" value="0" /></label>
-      <label>找到几个已校验首段后停止（0 不限）<input id="tailTargetInput" type="number" min="0" max="100" value="0" /></label>
-      <label>飞猪补查同航班基准次数（每轮，0 关闭）<input id="tailBaselineBudgetInput" type="number" min="0" max="20" value="3" /></label>
-      <p class="muted">基准补查仅用于筛选后保留的首段；该预算不含初始基准和中转搜索。已校验首段数量不等于已确认省钱数量。</p>
+        </select></label>
+                <label class="tail-wide">自定义航司（覆盖上方选择）<input id="tailAirlineInput" placeholder="不限；或输入 CA、MU 等代码，逗号分隔" autocomplete="off" /></label>
+                <label class="tail-wide">舱位 / 航司适用范围<select id="tailFilterScopeInput"><option value="first_leg">仅首段：出发地 → 想抵达的城市</option><option value="all_legs">全行程每段都符合</option></select></label>
+              </div>
+              <p class="muted">首段模式仍校验完整行程，但不限制尾段舱位和航司。携程跨组混舱覆盖不保证；人数库存须另行复核。</p>
+            </details>
+            <details class="tail-settings" id="tailSearchSettings">
+              <summary>搜索设置 <span id="tailSearchSummary" class="muted"></span></summary>
+              <input id="tailModeInput" type="hidden" value="explore" />
+              <div class="tail-settings-grid">
+                <label class="tail-wide" id="tailScopeField">检索方式<select id="tailSearchScopeInput"><option value="candidates">按已选尾段城市查询</option><option value="open">开放目的地发现（非全量）</option><option value="hybrid">开放发现 + 历史引导补查</option></select></label>
+                <p id="tailOpenScopeNotice" class="muted tail-wide" hidden>一次发现多个尾段城市，不代表全量。不使用城市数及首段数量预算；继续已完成任务不会翻页，再次搜索才会重新查询。</p>
+                <p id="tailHybridScopeNotice" class="muted tail-wide" hidden>先开放取样，再从所选城市与历史线索定向补查。补查城市上限按原任务累计，调用上限按本轮计算；历史路线不代表当前可售。</p>
+                <label>查询城市上限<input id="tailBudgetCitiesInput" type="number" min="0" max="500" placeholder="不限" /><small>留空或 0 表示不限</small></label>
+                <label>运行时间上限（分钟）<input id="tailBudgetMinutesInput" type="number" min="0" max="1440" placeholder="不限" /><small>留空或 0 表示不限</small></label>
+                <label>已校验首段达到几个后停止<input id="tailTargetInput" type="number" min="0" max="100" placeholder="不限" /><small>留空或 0 表示不限，不等于确认省钱</small></label>
+                <label>定向补查城市上限<input id="tailFollowupBudgetInput" type="number" min="0" max="50" value="5" /><small>0 表示关闭</small></label>
+                <label>本轮调用上限<input id="tailCallBudgetInput" type="number" min="0" max="500" value="20" /><small>含基准查询，0 表示不限；不等于计费次数</small></label>
+                <label>同首段航班基准补查次数<input id="tailBaselineBudgetInput" type="number" min="0" max="20" value="3" /><small>每轮计数，不含初始基准；0 表示关闭</small></label>
+              </div>
+              <div class="tail-candidates">
+                <div class="tail-candidate-head">
+                  <label>尾段城市来源<select id="tailCandidateProfileSelect"><option value="">按航司推荐</option><option value="ALL_DOMESTIC">国内航点</option><option value="DEFAULT">基础目的地</option></select></label>
+                  <div id="tailCandidateSummary" class="tail-candidate-summary" role="status">正在加载候选城市…</div>
+                </div>
+                <details class="tail-candidate-box">
+                  <summary>调整尾段城市</summary>
+                  <label>搜索城市<input id="tailCandidateSearch" type="search" placeholder="城市名 / 三字码" /></label>
+                  <div class="tail-inline-actions">
+                    <button type="button" class="ghost compact" data-candidates="all">选择搜索到的城市</button>
+                    <button type="button" class="ghost compact" data-candidates="none">清空选择</button>
+                    <button type="button" class="ghost compact" data-candidates="recommended">恢复推荐</button>
+                  </div>
+                  <div id="tailCandidateList" class="tail-candidate-list"></div>
+                </details>
+              </div>
+            </details>
+          </div>
+        </fieldset>
+      </details>
       <div class="tail-run-actions">
-        <button id="tailRunBtn" class="primary" type="submit">开始发现</button>
-        <button id="tailCancelBtn" class="ghost danger" type="button" hidden disabled>中止任务</button>
-        <span class="muted">有限搜索未命中仍可重试；不使用无航线缓存。</span>
-      </div>
-      <div class="tail-candidates">
-        <div class="tail-candidate-head">
-          <label>
-            目的地范围
-            <select id="tailCandidateProfileSelect">
-              <option value="">按航司推荐目的地</option>
-              <option value="ALL_DOMESTIC">全面检索国内航点</option>
-              <option value="DEFAULT">基础默认目的地</option>
-            </select>
-          </label>
-          <div id="tailCandidateSummary" class="tail-candidate-summary">候选目的地加载中...</div>
-        </div>
-        <details class="tail-candidate-box">
-          <summary>展开 / 调整候选目的地</summary>
-          <div id="tailCandidateList" class="tail-candidate-list"></div>
-        </details>
+        <button id="tailRunBtn" class="primary" type="submit">开始搜索</button>
+        <button id="tailCancelBtn" class="ghost danger" type="button" hidden disabled>停止查询</button>
+        <button id="tailViewResultsBtn" class="ghost" type="button" hidden>查看结果 ↓</button>
+        <span id="tailRunHint" class="muted">条件保存在本机。修改后点击搜索才会生效。</span>
       </div>
     </form>
-    <div class="tail-toolbar">
-      <div id="tailSummary" class="tail-summary">暂无命中结果</div>
-      <label class="tail-control">
-        排序
-        <select id="tailSortSelect">
-          <option value="price">价格从低到高</option>
-          <option value="savings">节省金额优先</option>
-          <option value="time">查询时间从新到旧</option>
-          <option value="confidence">可信度优先</option>
-        </select>
-      </label>
-      <label class="tail-control">
-        日期
-        <select id="tailDateFilter">
-          <option value="">全部日期</option>
-        </select>
-      </label>
-      <label class="tail-control">
-        价格上限
-        <input id="tailMaxPriceInput" type="number" min="0" step="50" placeholder="如 1200" />
-      </label>
-      <label class="tail-toggle">
-        <input id="tailLatestOnlyInput" type="checkbox" checked />
-        每个具体行程只显示最新报价
-      </label>
-    </div>
-    <label class="tail-control">结果状态
-      <select id="tailTrustInput"><option value="all">全部（历史与待复核分区展示）</option><option value="verified">仅已校验且未过期</option><option value="review">仅待复核／已过期</option></select>
-    </label>
-    <p class="muted">搜索报价不代表可出票。行李、票规和后续行程影响须另外确认；未确认人数、税费时只展示参考价差口径，不承诺节省。</p>
+    <p id="tailConnectionStatus" role="status" hidden></p>
     <div id="tailJobSummary" class="tail-job-summary" hidden></div>
-    <div id="tailResults" class="tail-results"></div>
+    <section class="tail-results-workspace" aria-label="甩尾查询结果">
+      <div class="tail-results-heading">
+        <h3 id="tailResultsHeading" tabindex="-1">航班方案</h3>
+        <div class="tail-view-tabs" role="group" aria-label="结果来源">
+          <button type="button" data-tail-view="current" aria-pressed="true">本次查询</button>
+          <button type="button" data-tail-view="history" aria-pressed="false">历史报价</button>
+        </div>
+        <button id="tailRefreshBtn" class="ghost compact" type="button" title="只重新读取已保存的结果，不查询平台">刷新已存结果</button>
+      </div>
+      <div class="tail-result-context">
+        <p id="tailResultIdentity"></p>
+        <p id="tailDraftNotice" class="tail-draft-notice" role="status" hidden></p>
+        <details id="tailTaskContextDetails">
+          <summary>切换任务 / 查询条件</summary>
+          <label id="tailJobPickerLabel">查看任务（最近 20 个）<select id="tailJobPicker"><option value="">尚无任务</option></select></label>
+          <p id="tailTaskConditions" class="muted"></p>
+          <p id="tailResultScopeNote" class="muted">本次结果仅属于所选任务；继续任务会包含此前已完成的结果。</p>
+        </details>
+      </div>
+      <div class="tail-result-tools">
+        <label class="tail-control">排序<select id="tailSortSelect"><option value="price">参考价从低到高</option><option value="savings">可比价差优先</option><option value="time">更新时间从新到旧</option><option value="confidence">行程证据优先</option></select></label>
+        <details id="tailResultFilters">
+          <summary id="tailResultFilterSummary">筛选</summary>
+          <div class="tail-toolbar">
+            <label class="tail-control">报价状态<select id="tailTrustInput"><option value="all">全部状态</option><option value="verified">已校验且未过期</option><option value="review">信息待核实（未过期）</option><option value="stale">已过期 / 时间未知</option></select></label>
+            <label class="tail-control">出发日期<select id="tailDateFilter"><option value="">全部日期</option></select></label>
+            <label class="tail-control">列表价格上限<input id="tailMaxPriceInput" type="number" min="0" step="50" placeholder="只筛选已加载结果" /></label>
+          </div>
+          <div class="tail-results-meta">
+            <label class="tail-toggle"><input id="tailLatestOnlyInput" type="checkbox" checked />同一行程只看最新报价</label>
+            <button type="button" class="ghost compact" id="tailClearFiltersBtn">清除列表筛选</button>
+          </div>
+          <p class="muted">筛选和排序仅作用于已加载报价，不会重新查询平台。</p>
+        </details>
+      </div>
+      <div class="tail-results-meta">
+        <span id="tailSummary" role="status">尚未搜索</span>
+      </div>
+      <p id="tailListError" class="tail-warning" role="alert" hidden></p>
+      <p class="tail-safety-note">仅已加载报价，非全量库存。行程校验不代表价格有效或可出票。</p>
+      <div id="tailResults" class="tail-results"></div>
+      <div class="tail-pagination"><span id="tailPageNote" class="muted"></span><button id="tailLoadMoreBtn" type="button" class="ghost" hidden>加载更多已保存报价</button></div>
+    </section>
   `;
   routeGrid.insertAdjacentElement("afterend", panel);
   enhanceAirportInputs(panel);
-  for (const id of ["tailProviderSelect", "tailModeInput", "tailSearchScopeInput"]) {
-    document.getElementById(id).addEventListener("change", updateTailSearchScope);
-  }
+
+  restoreTailForm();
   updateTailSearchScope();
-  document.getElementById("tailDiscoveryForm").addEventListener("submit", (event) => {
+  updateTailFormSummary();
+  const form = document.getElementById("tailDiscoveryForm");
+  form.addEventListener("submit", event => {
     event.preventDefault();
-    runTailDiscovery().catch((error) => {
-      console.error(error);
-    });
+    runTailDiscovery().catch(error => showTailError(error.message));
   });
-  document.getElementById("tailTrustInput").addEventListener("change", () => renderTailResults(tailDiscoveryResults));
-  panel.addEventListener("click", async (event) => {
+  form.addEventListener("input", event => {
+    tailFormTouched = true;
+    if (event.target.id === "tailCandidateSearch") filterTailCandidateList();
+    updateTailFormSummary();
+    saveTailForm();
+  });
+  form.addEventListener("change", event => {
+    tailFormTouched = true;
+    const id = event.target.id;
+    if (id === "tailAirlineSelect") document.getElementById("tailAirlineInput").value = event.target.value;
+    if (event.target.matches('#tailCandidateList input')) tailCandidatesManual = true;
+    if (id === "tailCandidateProfileSelect") {
+      tailCandidateProfileOverride = event.target.value;
+      tailCandidatesManual = false; // Explicit source change, not silent route-input reset.
+    }
+    if (["tailOriginInput", "tailTransferInput", "tailAirlineInput", "tailAirlineSelect", "tailCandidateProfileSelect"].includes(id)) applyTailAirlineDefaults();
+    updateTailSearchScope();
+    updateTailCandidateSummary();
+    updateTailFormSummary();
+    saveTailForm();
+  });
+  form.addEventListener("invalid", event => {
+    for (let parent = event.target.parentElement; parent && parent !== form; parent = parent.parentElement) {
+      if (parent.tagName === "DETAILS") parent.open = true;
+    }
+  }, true);
+  panel.addEventListener("toggle", event => {
+    const key = event.target.dataset?.disclosure;
+    if (key) tailDisclosureState.set(key, event.target.open);
+  }, true);
+  panel.addEventListener("click", async event => {
+    const choice = event.target.closest("[data-candidates]");
+    if (choice) {
+      tailFormTouched = true;
+      const action = choice.dataset.candidates;
+      tailCandidatesManual = action !== "recommended";
+      if (action === "recommended") applyTailAirlineDefaults();
+      else document.querySelectorAll('#tailCandidateList input').forEach(input => {
+        if (action === "none") input.checked = false;
+        else if (!input.disabled && !input.closest("label").hidden) input.checked = true;
+      });
+      updateTailCandidateSummary(); saveTailForm(); return;
+    }
+    const view = event.target.closest("[data-tail-view]");
+    if (view) { setTailResultView(view.dataset.tailView); return; }
     const button = event.target.closest("button[data-tail-action]");
     if (!button) return;
+    const action = button.dataset.tailAction;
+    if (action === "clear-filters") { clearTailResultFilters(); return; }
+    if (action === "edit") {
+      document.getElementById("tailQueryEditor").open = true;
+      document.getElementById("tailOriginInput").focus(); return;
+    }
+    if (tailSubmitting || tailConnectionUnknown || (tailBusy() && action !== "continue")) return;
     button.disabled = true;
     showTailError("");
     try {
-      if (button.dataset.tailAction === "recheck") {
-        const response = await fetch(`/api/tail-discovery/results/${encodeURIComponent(button.dataset.resultId)}/recheck`, {method: "POST"});
-        const data = await response.json();
-        if (!response.ok) throw new Error(data.detail || "报价复核失败");
+      if (action === "recheck") {
+        const data = await tailPostJob(`/api/tail-discovery/results/${encodeURIComponent(button.dataset.resultId)}/recheck`);
         startTailJobPolling(data);
-      } else {
-        await handleTailJobAction(button.dataset.tailAction, button.dataset.jobId);
-      }
+      } else await handleTailJobAction(action, button.dataset.jobId);
     } catch (error) { showTailError(error.message); }
-    finally { button.disabled = false; }
+    finally { button.disabled = Boolean(activeTailJobId); }
   });
-  document.getElementById("tailCancelBtn")?.addEventListener("click", () => cancelActiveTailJob().catch(error => showTailError(error.message)));
-  document.getElementById("tailRefreshBtn").addEventListener("click", fetchTailResults);
-  document.getElementById("tailSortSelect").addEventListener("change", () => renderTailResults(tailDiscoveryResults));
-  document.getElementById("tailDateFilter").addEventListener("change", () => renderTailResults(tailDiscoveryResults));
-  document.getElementById("tailMaxPriceInput").addEventListener("input", () => renderTailResults(tailDiscoveryResults));
-  document.getElementById("tailLatestOnlyInput").addEventListener("change", () => renderTailResults(tailDiscoveryResults));
-  document.getElementById("tailAirlineSelect").addEventListener("change", (event) => {
-    document.getElementById("tailAirlineInput").value = event.target.value || "";
-    applyTailAirlineDefaults();
+  document.getElementById("tailCancelBtn").addEventListener("click", () => cancelActiveTailJob().catch(error => showTailError(error.message)));
+  document.querySelector("#tailQueryEditor > summary").addEventListener("click", () => { tailFormTouched = true; });
+  document.getElementById("tailRefreshBtn").addEventListener("click", () => fetchTailResults().catch(() => {}));
+  document.getElementById("tailViewResultsBtn").addEventListener("click", () => {
+    const heading = document.getElementById("tailResultsHeading");
+    heading.focus({preventScroll:true});
+    heading.scrollIntoView({block:"start", behavior:"instant"});
   });
-  document.getElementById("tailAirlineInput").addEventListener("change", () => {
-    applyTailAirlineDefaults();
-  });
-  document.getElementById("tailCandidateProfileSelect").addEventListener("change", (event) => {
-    tailCandidateProfileOverride = event.target.value || "";
-    applyTailAirlineDefaults();
-  });
-  document.getElementById("tailOriginInput").addEventListener("change", applyTailAirlineDefaults);
-  document.getElementById("tailOriginInput").addEventListener("input", applyTailAirlineDefaults);
-  document.getElementById("tailTransferInput").addEventListener("change", applyTailAirlineDefaults);
-  document.getElementById("tailTransferInput").addEventListener("input", applyTailAirlineDefaults);
+  document.getElementById("tailLoadMoreBtn").addEventListener("click", () => fetchTailResults({append:true}).catch(() => {}));
+  document.getElementById("tailClearFiltersBtn").addEventListener("click", clearTailResultFilters);
+  document.getElementById("tailJobPicker").addEventListener("change", event => selectTailJob(event.target.value).catch(error => showTailError(error.message)));
+  for (const id of ["tailTrustInput", "tailSortSelect", "tailDateFilter", "tailLatestOnlyInput", "tailMaxPriceInput"]) {
+    document.getElementById(id).addEventListener(id === "tailMaxPriceInput" ? "input" : "change", () => renderTailResults(tailDiscoveryResults));
+  }
 }
+
 
 async function fetchTailCandidates() {
   const container = document.getElementById("tailCandidateList");
   if (!container) return;
   const response = await fetch("/api/tail-discovery/candidates");
+  if (!response.ok) throw new Error("候选城市加载失败，请刷新页面重试");
   const data = await response.json();
   tailSafeBatchSize = Number(data.safe_batch_size || 3);
   tailDefaultProfiles = data.default_profiles || {};
@@ -1768,7 +2164,14 @@ async function fetchTailCandidates() {
     `;
     container.appendChild(label);
   });
+
+  if (tailSavedCandidates) {
+    const saved = new Set(tailSavedCandidates);
+    container.querySelectorAll("input").forEach(input => { input.checked = saved.has(input.value); });
+    tailSavedCandidates = null;
+  }
   applyTailAirlineDefaults();
+  tailCandidatesLoaded = true;
   if (tailDiscoveryResults.length) renderTailResults(tailDiscoveryResults);
 }
 
@@ -1807,7 +2210,7 @@ function excludedTailDestinationCodes() {
 function applyTailAirlineDefaults() {
   const selectedCodes = tailDefaultCodesForAirlines(document.getElementById("tailAirlineInput")?.value || "");
   const excluded = excludedTailDestinationCodes();
-  if (!selectedCodes.length) {
+  if (tailCandidatesManual || !selectedCodes.length) {
     document.querySelectorAll('#tailCandidateList input[type="checkbox"]').forEach((input) => {
       input.disabled = excluded.has(input.value);
       if (input.disabled) input.checked = false;
@@ -1831,11 +2234,9 @@ function updateTailCandidateSummary() {
   const excludedText = Array.from(excluded).map(airportCodeDisplayText).join("、") || "无";
   const summary = document.getElementById("tailCandidateSummary");
   if (summary) {
-    summary.innerHTML = `
-      <strong>${escapeHtml(String(selected.length))} 个目的地</strong>
-      <span>${escapeHtml(selectedPreview || "尚未选择")}${escapeHtml(more)}</span>
-      <small>已自动排除：${escapeHtml(excludedText)}</small>
-    `;
+    summary.innerHTML = `<strong>已选 ${selected.length} 个尾段城市</strong>
+      <small>${tailCandidatesManual ? "自定义选择，不随航司自动重置" : "自动推荐"} · 已排除出发地和抵达城市</small>`;
+    updateTailFormSummary();
   }
 }
 
@@ -1852,28 +2253,27 @@ function updateTailSearchScope() {
   if (notice) notice.hidden = !open;
   const hybridNotice = document.getElementById("tailHybridScopeNotice");
   if (hybridNotice) hybridNotice.hidden = !hybrid;
-  const followup = document.getElementById("tailFollowupBudgetInput");
-  if (followup) followup.disabled = !hybrid;
-  const calls = document.getElementById("tailCallBudgetInput");
-  if (calls) calls.disabled = document.getElementById("tailProviderSelect")?.value !== "feizhu";
+
+  const feizhu = document.getElementById("tailProviderSelect")?.value === "feizhu";
+  const setField = (id, enabled) => {
+    const input = document.getElementById(id);
+    if (!input) return;
+    input.disabled = !enabled;
+    const label = input.closest?.("label");
+    if (label) label.hidden = !enabled;
+  };
+  setField("tailSearchScopeInput", allowed);
+  setField("tailFollowupBudgetInput", hybrid);
+  setField("tailCallBudgetInput", feizhu);
+  setField("tailBaselineBudgetInput", feizhu);
+  setField("tailBudgetCitiesInput", !open && !hybrid);
+  setField("tailTargetInput", !open && !hybrid);
   const candidates = document.querySelector("#tailDiscoveryForm .tail-candidates");
   if (candidates) candidates.hidden = open;
-  for (const id of ["tailBudgetCitiesInput", "tailTargetInput"]) {
-    const element = document.getElementById(id);
-    if (element) element.disabled = open || hybrid;
-  }
+
 }
 
-async function runTailDiscovery() {
-  const button = document.getElementById("tailRunBtn");
-  const cancelButton = document.getElementById("tailCancelBtn");
-  const selectedCandidates = selectedTailCandidates();
-  showTailError("");
-  button.disabled = true;
-  if (cancelButton) {
-    cancelButton.hidden = true;
-    cancelButton.disabled = true;
-  }
+function buildTailQueryPayload() {
   const payload = {
     origin: normalizeCode(document.getElementById("tailOriginInput").value),
     transfer: normalizeCode(document.getElementById("tailTransferInput").value),
@@ -1891,7 +2291,7 @@ async function runTailDiscovery() {
     max_candidates: Number(document.getElementById("tailBudgetCitiesInput")?.value || 0),
     max_minutes: Number(document.getElementById("tailBudgetMinutesInput")?.value || 0),
     target_results: Number(document.getElementById("tailTargetInput")?.value || 0),
-    candidates: selectedCandidates,
+    candidates: selectedTailCandidates(),
     search_scope: document.getElementById("tailSearchScopeInput")?.value || "candidates",
     filter_scope: document.getElementById("tailFilterScopeInput")?.value || "first_leg",
     max_baseline_queries: Number(document.getElementById("tailBaselineBudgetInput")?.value ?? 3),
@@ -1906,25 +2306,35 @@ async function runTailDiscovery() {
     payload.max_candidates = 0;
     payload.target_results = 0;
   }
+  return payload;
+}
+
+async function runTailDiscovery() {
+  const button = document.getElementById("tailRunBtn");
+  const cancelButton = document.getElementById("tailCancelBtn");
+  if (tailBusy()) return;
+  showTailError("");
+  button.disabled = true;
+  tailSubmitting = true;
+  document.getElementById("tailQueryFields").disabled = true;
+  if (cancelButton) {
+    cancelButton.hidden = true;
+    cancelButton.disabled = true;
+  }
+  const payload = buildTailQueryPayload();
   try {
-    const response = await fetch("/api/tail-discovery/run", {
-      method: "POST",
+    const data = await tailPostJob("/api/tail-discovery/run", {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
-    const data = await response.json();
-    if (!response.ok) {
-      throw new Error(data.detail || "甩尾发现失败");
-    }
-    activeTailJobId = data.job_id || "";
-    updateTailCancelButton(data);
-    pollTailDiscoveryJob(activeTailJobId, true);
+    saveTailForm();
+    startTailJobPolling(data);
   } catch (error) {
     showTailError(error.message);
-    button.disabled = false;
   } finally {
+    tailSubmitting = false;
+    updateTailBusyControls();
     if (!activeTailJobId) {
-      button.disabled = false;
       updateTailCancelButton(null);
     }
   }
@@ -1938,129 +2348,107 @@ async function cancelActiveTailJob() {
   pollTailDiscoveryJob(activeTailJobId, true);
 }
 
-async function pollTailDiscoveryJob(jobId, immediate = false) {
-  if (!jobId) return;
-  if (activeTailJobTimer) {
-    clearTimeout(activeTailJobTimer);
-    activeTailJobTimer = null;
-  }
-  const delay = immediate ? 0 : 3500;
+function pollTailDiscoveryJob(jobId, immediate = false) {
+  if (!jobId || activeTailJobId !== jobId) return;
+  if (activeTailJobTimer) clearTimeout(activeTailJobTimer);
   activeTailJobTimer = setTimeout(async () => {
+    let job;
     try {
-      const response = await fetch(`/api/tail-discovery/jobs/${encodeURIComponent(jobId)}`);
-      const data = await response.json();
-      if (!response.ok) {
-        throw new Error(data.detail || "读取甩尾任务进度失败");
-      }
-      renderTailJobProgress(data);
-      updateTailCancelButton(data);
-      fetchTailJobs().catch(() => {});
-      const button = document.getElementById("tailRunBtn");
-      if (data.status === "needs_verification") {
-        if (button) button.disabled = true;
-        pollTailDiscoveryJob(jobId);
-        return;
-      }
-      if (["finished", "paused"].includes(data.status)) {
-        await fetchTailResults();
-        await fetchTailJobs();
-        if (button) button.disabled = false;
-        activeTailJobId = "";
-        updateTailCancelButton(null);
-        return;
-      }
-      if (data.status === "failed") {
-        showTailError(data.error || "任务失败，已完成结果已保留");
-        await fetchTailResults();
-        await fetchTailJobs();
-        if (button) button.disabled = false;
-        activeTailJobId = "";
-        updateTailCancelButton(null);
-        return;
-      }
-      if (data.status === "cancelled" || data.status === "interrupted") {
-        await fetchTailResults();
-        await fetchTailJobs();
-        if (button) button.disabled = false;
-        activeTailJobId = "";
-        updateTailCancelButton(null);
-        return;
-      }
-      pollTailDiscoveryJob(jobId);
+      job = await tailGetJson(`/api/tail-discovery/jobs/${encodeURIComponent(jobId)}`);
+      if (activeTailJobId !== jobId) return;
     } catch (error) {
-      const button = document.getElementById("tailRunBtn");
-      if (button) button.disabled = false;
-      activeTailJobId = "";
-      updateTailCancelButton(null);
+      if (activeTailJobId !== jobId) return;
+      tailPollFailures++;
+      tailConnectionUnknown = true;
+      const status = document.getElementById("tailConnectionStatus");
+      status.hidden = false;
+      status.textContent = "连接中断，后台状态待确认。已保留结果，正在自动重连；请勿重复搜索。";
+      if (error.status === 404) {
+        // A missing job is authoritative, unlike an offline/timeout response.
+        activeTailJobId = ""; tailConnectionUnknown = false;
+        status.textContent = "后台已找不到此任务。现有结果已保留，请更新列表或重新搜索。";
+        updateTailCancelButton(null);
+      }
+      updateTailBusyControls();
+      if (activeTailJobId) pollTailDiscoveryJob(jobId);
+      return;
     }
-  }, delay);
+    tailPollFailures = 0; tailConnectionUnknown = false;
+    document.getElementById("tailConnectionStatus").hidden = true;
+    if (tailSelectedJobId === jobId) tailSelectedJob = job;
+    renderTailJobProgress(job);
+    updateTailCancelButton(job);
+    const done = ![...ACTIVE_TAIL_JOB_STATUSES, "cancelling"].includes(job.status);
+    if (done) activeTailJobId = "";
+    updateTailBusyControls();
+    if (job.status === "failed") showTailError(job.error || "查询受阻，已完成结果已保留。");
+    // Quote failures do not alter a known running job's status.
+    if (tailResultView === "current" && tailSelectedJobId === jobId) {
+      await fetchTailResults({background:true}).catch(() => {});
+    }
+    await fetchTailJobs().catch(() => {});
+    if (!done) pollTailDiscoveryJob(jobId);
+  }, immediate ? 0 : Math.min(30000, 3500 * 2 ** Math.min(tailPollFailures, 3)));
 }
 
 function renderTailJobProgress(job) {
-  updateTailCancelButton(job);
   const container = document.getElementById("tailJobSummary");
   if (!container) return;
-  if (!job) {
-    container.hidden = true;
-    container.innerHTML = "";
-    return;
-  }
+  if (!job) { container.hidden = true; return; }
   const progress = job.progress || job.result?.progress || {};
-  const queueItems = progress.queue?.items || job.result?.queue?.items || [];
+  const queue = progress.queue?.items || job.result?.queue?.items || [];
   const attempts = progress.attempts || job.result?.report?.attempts || [];
-  const attemptByDestination = new Map(
-    attempts
-      .filter((item) => item?.destination)
-      .map((item) => [String(item.destination).toUpperCase(), item])
-  );
-  const mergedItems = queueItems.length
-    ? queueItems.map((item) => ({ ...item, ...(attemptByDestination.get(String(item.destination || "").toUpperCase()) || {}) }))
-    : attempts;
-  const total = progress.total ?? progress.queue?.total ?? mergedItems.length;
+  const byCity = new Map(attempts.map(item => [item.destination, item]));
+  const items = queue.length ? queue.map(item => ({...item, ...(byCity.get(item.destination) || {})})) : attempts;
   const attempted = progress.attempted ?? attempts.length;
+  const total = progress.total ?? progress.queue?.total ?? items.length;
   const saved = progress.saved ?? job.result?.saved ?? 0;
-  const noMatch = progress.no_match ?? 0;
-  const failed = progress.failed ?? 0;
-  const pending = progress.pending ?? progress.queue?.pending ?? 0;
   const policy = job.result?.candidate_policy || progress.candidate_policy || {};
-  const open = job.payload?.search_scope === "open" || policy.search_scope === "open";
-  const hybrid = job.payload?.search_scope === "hybrid" || policy.search_scope === "hybrid";
-  const rows = mergedItems.slice(0, 36).map(renderTailJobCandidate).join("");
-  const overflow = mergedItems.length > 36 ? `<p class="muted">还有 ${mergedItems.length - 36} 个候选未展开显示。</p>` : "";
+  const scope = job.payload?.search_scope || policy.search_scope;
+  const active = [...ACTIVE_TAIL_JOB_STATUSES, "cancelling"].includes(job.status);
+  const running = items.find(item => ["running", "started"].includes(item.status));
+  const pending = items.filter(item => ["pending", "cancelled_before_query", "running"].includes(item.status)).length;
+  const failed = items.filter(item => ["failed", "retryable_failed"].includes(item.status)).length || progress.failed || 0;
+  const id = escapeHtml(job.job_id);
+  const action = (value, label, primary = false) => `<button type="button" class="${primary ? "primary" : "ghost"} compact"
+    data-tail-action="${value}" data-job-id="${id}" data-focus-key="${id}-${value}" ${tailBusy() && value !== "continue" ? "disabled" : ""}>${label}</button>`;
+  let actions = "", primaryAction = "";
+  if (job.status === "needs_verification") primaryAction = action("continue", "已在浏览器完成验证，继续", true);
+  else if (!active) {
+    if (pending || job.status === "paused" || job.status === "interrupted" || job.status === "cancelled") primaryAction = action("resume", "继续未完成项", true);
+    if (failed) {
+      if (!primaryAction) primaryAction = action("retry-failed", "重试失败城市", true);
+      else actions += action("retry-failed", "重试失败城市");
+    }
+    if (saved) actions += action("refresh", "重新查价");
+    actions += action("explore", "重新查询此任务");
+  }
+  const p = job.payload || {};
+  const condition = tailConditionLabel(p);
+  const counter = scope === "open" ? `已保存 ${saved} 条报价 · 开放取样，非全量`
+    : scope === "hybrid" ? `已完成 ${attempted} 个查询单元 · 保存 ${saved} 条报价 · 非全量`
+      : `已查 ${attempted}${total ? ` / ${total}` : ""} 个城市 · 保存 ${saved} 条报价`;
   container.hidden = false;
-  container.innerHTML = `
+  replaceTailMarkup(container, `
     <div class="tail-job-head">
-      <div>
-        <strong>最近甩尾任务</strong>
-        <span>${escapeHtml(tailJobStatusLabel(job.status))}</span>
-      </div>
-      <div class="tail-job-counts">
-        <span>${hybrid ? "查询单元（开放＋定向）" : open ? "查询批次" : "总数"} ${escapeHtml(String(total || 0))}</span>
-        <span>已查 ${escapeHtml(String(attempted || 0))}</span>
-        <span>命中 ${escapeHtml(String(saved || 0))}</span>
-        <span>未命中 ${escapeHtml(String(noMatch || 0))}</span>
-        <span>失败 ${escapeHtml(String(failed || 0))}</span>
-        <span>等待 ${escapeHtml(String(pending || 0))}</span>
-        <span>历史航线线索 ${escapeHtml(String(policy.known_route_edges || 0))}</span>
-        <span>缓存跳过 ${escapeHtml(String(policy.cache_skipped || 0))}</span>
-      </div>
+      <strong>${escapeHtml(active ? "正在执行的任务" : "所选任务")} · ${escapeHtml(tailJobStatusLabel(job.status))}</strong>
+      <span class="tail-job-counter" role="status">${escapeHtml(counter)}</span>
+      ${primaryAction ? `<div class="tail-job-actions">${primaryAction}</div>` : ""}
     </div>
-    <p>${escapeHtml(progress.message || job.error || "")}</p>
-    ${open ? '<p class="muted">开放目的地：部分结果，不代表全量。一个批次可保存多个实际目的地；继续已完成任务不会翻页，重新探索才会再次查询。</p>' : ""}
-    ${hybrid ? '<p class="muted">历史引导混合发现：一个开放批次＋有限定向补查；成功开放批次恢复时不重复请求。候选池不是平台全量航线。</p>' : ""}
-    ${renderTailPriorities(policy)}
-    <div class="tail-job-actions">
-      ${job.status === "needs_verification" ? `<button type="button" class="ghost compact" data-tail-action="continue" data-job-id="${escapeHtml(job.job_id)}">已完成人工验证，继续</button>` : ""}
-      ${![...ACTIVE_TAIL_JOB_STATUSES, "cancelling"].includes(job.status) ? `
-        <button type="button" class="ghost compact" data-tail-action="resume" data-job-id="${escapeHtml(job.job_id)}">继续未完成项</button>
-        <button type="button" class="ghost compact" data-tail-action="refresh" data-job-id="${escapeHtml(job.job_id)}">刷新已发现报价</button>
-        <button type="button" class="ghost compact" data-tail-action="explore" data-job-id="${escapeHtml(job.job_id)}">重新探索</button>
-        <button type="button" class="ghost compact" data-tail-action="retry-failed" data-job-id="${escapeHtml(job.job_id)}">重试失败目的地</button>` : ""}
-    </div>
-    <div class="tail-job-candidates">${rows || '<span class="muted">任务已创建，等待候选进入队列。</span>'}</div>
-    ${overflow}
-  `;
-  cleanVisibleText(container);
+    ${active && (tailResultView === "history" || tailSelectedJobId !== job.job_id) ? `<p class="muted">执行中：${escapeHtml(condition)}；下方结果另有所属。</p>` : ""}
+    ${running ? `<p>正在查询：${escapeHtml(tailPlaceLabel(running.destination))}</p>` : ""}
+    ${job.status !== "finished" ? `<p class="tail-job-message">${escapeHtml(job.error || progress.message || "等待后台更新进度")}</p>` : ""}
+    ${job.status === "needs_verification" ? '<p class="tail-warning">请在已打开的查询浏览器中人工完成验证，再点击继续。本页不会自动绕过验证。</p>' : ""}
+    <details data-disclosure="job-${id}"><summary data-focus-key="job-details-${id}">任务详情与操作${failed ? ` · ${failed} 项待重试` : ""}</summary>
+      <p class="muted">${escapeHtml(condition)}</p>
+      ${job.status === "finished" ? `<p class="tail-job-message">${escapeHtml(progress.message || "任务已完成；已保存报价仍需复核。")}</p>` : ""}
+      ${actions ? `<div class="tail-job-actions">${actions}</div><p class="muted">以上操作使用此任务的原条件，不使用正在编辑的新条件。</p>` : ""}
+      <details data-disclosure="cities-${id}"><summary>城市进度与检索依据</summary>
+        ${renderTailPriorities(policy)}
+        <div class="tail-job-candidates">${items.map(renderTailJobCandidate).join("") || '<p class="muted">暂无城市明细。</p>'}</div>
+      </details>
+    </details>`);
+  updateTailResultContext();
 }
 
 function renderTailPriorities(policy) {
@@ -2068,7 +2456,7 @@ function renderTailPriorities(policy) {
   const pending = policy.next_candidates || [];
   const rows = (pending.length ? pending : (policy.priority_trace || []).slice(-10)).slice(0, 10);
   const calls = policy.provider_calls || {};
-  return `<details class="tail-priority-details">
+  return `<details class="tail-priority-details" data-disclosure="priorities">
     <summary>历史优先级与调用预算（规则估计，非可售保证）</summary>
     <p class="muted">${policy.provider_calls_supported === false
       ? "携程浏览器调用数未计量，请使用城市数和运行时间预算。"
@@ -2149,29 +2537,68 @@ function tailAttemptPhaseLabel(phase) {
 }
 
 function updateTailCancelButton(job) {
-  const cancelButton = document.getElementById("tailCancelBtn");
-  if (!cancelButton) return;
-  const canCancel = Boolean(job?.job_id) && ACTIVE_TAIL_JOB_STATUSES.includes(job.status);
-  cancelButton.hidden = !canCancel;
-  cancelButton.disabled = !canCancel;
-  cancelButton.textContent = job?.status === "needs_verification" ? "中止验证任务" : "中止任务";
+  const button = document.getElementById("tailCancelBtn");
+  if (!button) return;
+  const active = Boolean(job?.job_id) && [...ACTIVE_TAIL_JOB_STATUSES, "cancelling"].includes(job.status);
+  button.hidden = !active;
+  button.disabled = !active || job.status === "cancelling";
+  button.textContent = job?.status === "cancelling" ? "正在停止…" : "停止查询";
 }
 
-async function fetchTailResults() {
-  const container = document.getElementById("tailResults");
-  if (!container) return;
-  const response = await fetch("/api/tail-discovery/results?limit=200");
-  const data = await response.json();
-  tailDiscoveryResults = data.results || [];
-  updateTailDateFilter(tailDiscoveryResults);
-  renderTailResults(tailDiscoveryResults);
+async function fetchTailResults({append = false, background = false} = {}) {
+  if (!document.getElementById("tailResults")) return;
+  const requestId = ++tailResultRequest;
+  const view = tailResultView, jobId = tailSelectedJobId;
+  if (view === "current" && !jobId) {
+    tailResultsLoaded = true; tailDiscoveryResults = []; tailHasMore = false;
+    renderTailResults([]); updateTailPagination(); return;
+  }
+  document.getElementById("tailLoadMoreBtn").disabled = true;
+  try {
+    let offset = append ? tailResultOffset : 0, rows = [], more = false;
+    // Preserve the amount already loaded when refreshing during a running task.
+    const target = !append && background ? Math.max(200, tailResultOffset) : offset + 200;
+    do {
+      const params = new URLSearchParams({limit:"200", offset:String(offset)});
+      if (view === "current") params.set("job_id", jobId);
+      const data = await tailGetJson(`/api/tail-discovery/results?${params}`);
+      if (requestId !== tailResultRequest) return;
+      const batch = data.results || [];
+      rows.push(...batch);
+      offset = data.next_offset ?? offset + batch.length;
+      more = Boolean(data.has_more) && batch.length > 0;
+    } while (!append && more && offset < target);
+    if (requestId !== tailResultRequest || view !== tailResultView || jobId !== tailSelectedJobId) return;
+    const combined = append ? [...tailDiscoveryResults, ...rows] : rows;
+    tailDiscoveryResults = [...new Map(combined.map(row => [row.id, row])).values()];
+    tailResultOffset = offset; tailHasMore = more; tailResultsLoaded = true;
+    const listError = document.getElementById("tailListError");
+    if (listError) listError.hidden = true;
+    updateTailDateFilter(tailDiscoveryResults);
+    renderTailResults(tailDiscoveryResults);
+    updateTailPagination();
+  } catch (error) {
+    if (requestId === tailResultRequest) {
+      const listError = document.getElementById("tailListError");
+      if (listError) {
+        listError.hidden = false;
+        listError.textContent = "报价列表更新失败，已保留现有结果。可点“刷新已存结果”重试。";
+      }
+    }
+    throw error;
+  } finally {
+    if (requestId === tailResultRequest) document.getElementById("tailLoadMoreBtn").disabled = false;
+  }
 }
 
 async function fetchTailJobs() {
-  const response = await fetch("/api/tail-discovery/jobs?limit=8");
-  const data = await response.json();
+  const data = await tailGetJson("/api/tail-discovery/jobs?limit=20");
   tailDiscoveryJobs = data.jobs || [];
-  renderTailJobProgress(tailDiscoveryJobs[0] || null);
+  if (!tailSelectedJobId && tailDiscoveryJobs.length) {
+    tailSelectedJob = tailDiscoveryJobs[0];
+    tailSelectedJobId = tailSelectedJob.job_id;
+  }
+  renderTailJobPicker();
   updateWorkspaceTabs();
 }
 
@@ -2180,38 +2607,50 @@ function showTailError(message) {
   if (el) { el.textContent = message; el.hidden = !message; }
 }
 
-function startTailJobPolling(data) {
-  activeTailJobId = data.job_id || "";
-  const button = document.getElementById("tailRunBtn");
-  if (button) button.disabled = Boolean(activeTailJobId);
-  updateTailCancelButton(data);
-  pollTailDiscoveryJob(activeTailJobId, true);
+function startTailJobPolling(job, immediate = true) {
+  tailSubmitting = false;
+  activeTailJobId = job.job_id || "";
+  tailSelectedJobId = activeTailJobId;
+  tailSelectedJob = job;
+  tailPollFailures = 0;
+  tailConnectionUnknown = false;
+  document.getElementById("tailConnectionStatus").hidden = true;
+  document.getElementById("tailQueryEditor").open = false;
+  renderTailJobPicker();
+  renderTailJobProgress(job);
+  updateTailCancelButton(job);
+  updateTailBusyControls();
+  clearTailResultFilters();
+  setTailResultView("current");
+  pollTailDiscoveryJob(activeTailJobId, immediate);
 }
 
 async function handleTailJobAction(action, jobId) {
   if (!jobId) return;
   const restart = ["resume", "refresh", "explore"].includes(action);
-  const response = await fetch(`/api/tail-discovery/jobs/${encodeURIComponent(jobId)}/${restart ? "restart" : action}`, {
-    method: "POST", headers: {"Content-Type": "application/json"},
-    ...(restart ? {body: JSON.stringify({mode: action})} : {}),
+  const data = await tailPostJob(`/api/tail-discovery/jobs/${encodeURIComponent(jobId)}/${restart ? "restart" : action}`, {
+    headers:{"Content-Type":"application/json"},
+    ...(restart ? {body:JSON.stringify({mode:action})} : {}),
   });
-  const data = await response.json();
-  if (!response.ok) throw new Error(data.detail || "任务操作失败");
   if (action !== "cancel") startTailJobPolling(data);
-  updateTailCancelButton(data);
-  await fetchTailJobs();
+  else { updateTailCancelButton(data); renderTailJobProgress(data); }
+  fetchTailJobs().catch(() => {});
 }
 
 async function resumeLatestTailJob() {
-  const response = await fetch("/api/tail-discovery/jobs/latest");
-  const data = await response.json();
+  const data = await tailGetJson("/api/tail-discovery/jobs/latest");
   const job = data.job;
-  if (!job || !["queued", "running", "needs_verification"].includes(job.status)) return;
-  activeTailJobId = job.job_id || "";
-  const button = document.getElementById("tailRunBtn");
-  if (button) button.disabled = true;
-  updateTailCancelButton(job);
-  pollTailDiscoveryJob(activeTailJobId);
+  tailConnectionUnknown = false;
+  document.getElementById("tailConnectionStatus").hidden = true;
+  if (job && [...ACTIVE_TAIL_JOB_STATUSES, "cancelling"].includes(job.status)) startTailJobPolling(job);
+  else {
+    updateTailBusyControls();
+    if (tailSelectedJob) renderTailJobProgress(tailSelectedJob);
+    await fetchTailResults().catch(() => {});
+    // Restore a result-first workspace once, without folding a form the user
+    // already started editing while initialization was in flight.
+    if (!tailFormTouched && tailDiscoveryResults.length) document.getElementById("tailQueryEditor").open = false;
+  }
 }
 
 function updateTailDateFilter(results) {
@@ -2219,10 +2658,11 @@ function updateTailDateFilter(results) {
   if (!select) return;
   const previous = select.value;
   const dates = Array.from(new Set((results || []).map((item) => item.departure_date).filter(Boolean))).sort();
+  if (previous && !dates.includes(previous)) dates.push(previous);
   select.innerHTML = '<option value="">全部日期</option>' + dates
     .map((date) => `<option value="${escapeHtml(date)}">${escapeHtml(date)}</option>`)
     .join("");
-  select.value = dates.includes(previous) ? previous : "";
+  select.value = previous;
 }
 
 function compareTailResults(left, right) {
@@ -2266,33 +2706,52 @@ function prepareTailResults(results) {
   const date = document.getElementById("tailDateFilter")?.value || "";
   const max = Number(document.getElementById("tailMaxPriceInput")?.value || 0);
   const trust = document.getElementById("tailTrustInput")?.value || "all";
-  prepared = prepared.filter(item => (!date || item.departure_date === date)
+  return prepared.filter(item => (!date || item.departure_date === date)
     && (!max || Number(item.price) <= max)
-    && (trust === "all" || (trust === "verified" ? tailQuoteVerified(item) : !tailQuoteVerified(item))));
-  return prepared.sort(compareTailResults);
+    && (trust === "all" || (trust === "verified" ? tailQuoteVerified(item)
+      : trust === "stale" ? !tailQuoteFresh(item) : tailQuoteFresh(item) && !tailQuoteVerified(item))))
+    .sort(compareTailResults);
 }
 
 function renderTailResults(results) {
   const container = document.getElementById("tailResults");
   if (!container) return;
-  const visibleResults = prepareTailResults(results);
-  renderTailSummary(visibleResults, results);
-  if (!visibleResults.length) {
-    container.innerHTML = `
-      <div class="tail-empty-state">
-        <strong>当前筛选下没有甩尾命中结果</strong>
-        <span>可以调整日期筛选、航司筛选或重新发起查询。</span>
-      </div>
-    `;
-    return;
+  updateTailResultTools();
+  const visible = prepareTailResults(results);
+  renderTailSummary(visible, results);
+  if (!visible.length) {
+    let title, message, action = "";
+    if (results.length) {
+      title = "已有报价，但被列表筛选隐藏了";
+      message = "调整上方日期、价格或报价状态即可，不需要重新搜索。";
+      action = '<button type="button" class="ghost compact" data-tail-action="clear-filters">清除列表筛选</button>';
+    } else if (tailResultView === "current" && !tailSelectedJobId) {
+      title = "先告诉我们你想抵达哪里";
+      message = "填写出发地、抵达城市和日期，开始搜索；也可以切到历史报价。";
+    } else if (!tailResultsLoaded) {
+      title = "正在读取已保存结果"; message = "这一步不会重新查询平台。";
+    } else if (tailResultView === "current" && activeTailJobId === tailSelectedJobId) {
+      title = "正在查找，已完成的报价会逐步出现";
+      message = tailConnectionUnknown ? "连接中断不代表任务已停止，正在重连。" : "你可以先查看任务进度，不必反复点击搜索。";
+    } else {
+      title = tailResultView === "history" ? "还没有已保存的历史报价" : "本次尚未确认符合条件的报价";
+      message = tailResultView === "history" ? "开始一次搜索后，保存的结果会出现在这里。"
+        : "不代表没有航班。查看上方任务原因，再决定重试或调整条件。旧版任务若无检查点，可在历史报价中查看。";
+      action = '<button type="button" class="ghost compact" data-tail-action="edit">查看查询条件</button>';
+    }
+    replaceTailMarkup(container, `<div class="tail-empty-state"><strong>${title}</strong><span>${message}</span>${action}</div>`);
+  } else {
+    const groups = [
+      ["已校验且未过期", visible.filter(tailQuoteVerified), "verified"],
+      ["信息待核实 · 未过期", visible.filter(item => tailQuoteFresh(item) && !tailQuoteVerified(item)), "review"],
+      ["已过期 / 时间未知", visible.filter(item => !tailQuoteFresh(item)), "stale"],
+    ];
+    replaceTailMarkup(container, groups.filter(([, rows]) => rows.length).map(([label, rows, state]) =>
+      `<section class="tail-state-section"><h3>${label} <span>${rows.length}</span></h3>
+       ${groupTailResultsByRoute(rows).map(group => renderTailRouteGroup({...group, state})).join("")}</section>`
+    ).join(""));
   }
-  container.innerHTML = [
-    ["行程已校验 · 报价未过期（仍非出票确认）", visibleResults.filter(tailQuoteVerified)],
-    ["待复核／历史报价", visibleResults.filter(item => !tailQuoteVerified(item))],
-  ].filter(([,items]) => items.length).map(([title, items]) =>
-    `<h3>${escapeHtml(title)}</h3>${groupTailResultsByRoute(items).map(renderTailRouteGroup).join("")}`
-  ).join("");
-  cleanVisibleText(container);
+  if (typeof updateTailBusyControls === "function") updateTailBusyControls();
   updateWorkspaceTabs();
 }
 
@@ -2339,110 +2798,133 @@ function tailQuoteTermsLabel(terms) {
   return `${basis} · ${tax} · 请求 ${terms.requested_passengers || 1} 人 · ${terms.inventory_verified ? "人数库存已校验" : "人数库存未校验"}`;
 }
 
+function tailComparableBaseline(item, key) {
+  const baseline = item.baselines?.[key], terms = item.quote_terms || {}, other = baseline?.quote_terms || {};
+  if (!tailQuoteVerified(item) || baseline?.status !== "comparable" || baseline.reasons?.length
+      || baseline.savings_amount == null || !Number.isFinite(Number(baseline.savings_amount))
+      || !Number.isFinite(Number(baseline.price)) || Number(baseline.price) <= 0
+      || !Number.isFinite(Number(item.price)) || Number(item.price) <= 0) return null;
+  // Public metadata from legacy rows may be incomplete. Never promote its
+  // top-level savings_amount alone into a confirmed, current comparison.
+  for (const field of ["currency", "price_basis", "tax_included", "priced_passengers"]) {
+    if (terms[field] == null || terms[field] === "unknown" || terms[field] !== other[field]) return null;
+  }
+  if (!terms.currency || terms.currency !== item.currency || Number(terms.priced_passengers) <= 0) return null;
+  if (Number(item.passengers || 1) > 1 && (!terms.inventory_verified || !other.inventory_verified
+      || Number(terms.priced_passengers) !== Number(item.passengers))) return null;
+  if (key === "same_flight" && (!terms.fare_conditions || terms.fare_conditions !== other.fare_conditions)) return null;
+  if (Math.abs(Number(baseline.price) - Number(item.price) - Number(baseline.savings_amount)) > .011) return null;
+  return baseline;
+}
+
+function tailDecisionDifference(item) {
+  if (!tailQuoteFresh(item)) return "历史报价，请先复核价差";
+  for (const [key, label] of [["same_flight", "同首段单买"], ["market", "符合条件的直飞最低价"]]) {
+    const baseline = tailComparableBaseline(item, key);
+    if (!baseline) continue;
+    const amount = Number(baseline.savings_amount);
+    return amount === 0 ? `与${label}参考价相同`
+      : `比${label}${amount > 0 ? "低" : "高"} ${item.currency} ${Math.abs(amount).toFixed(2).replace(/\.00$/, "")} · 可比参考价差`;
+  }
+  return "暂无可比价差";
+}
+
 function renderTailBaselines(item) {
   return [["market", "符合条件的直飞最低价"], ["same_flight", "同首段航班单买价"]].map(([key, label]) => {
     const value = item.baselines?.[key];
     if (!value || value.price === null) return `<small>${label}：暂无可比基准</small>`;
-    const detail = value.status === "comparable" ? `可比价差 ${Number(value.savings_amount).toFixed(0)}` : "仅供参考";
+    const detail = tailComparableBaseline(item, key) ? `可比价差 ${Number(value.savings_amount).toFixed(2)}` : "仅供参考，价差待复核";
     return `<small>${label}：${escapeHtml(item.currency || "CNY")} ${Number(value.price).toFixed(0)} · ${detail}</small>
       <small>${escapeHtml((value.reasons || []).join("；"))}</small>`;
   }).join("");
 }
 
-function renderTailFlightGroups(items) {
+function renderTailFlightGroups(items, state = "") {
   const groups = new Map();
   for (const item of items) {
     const leg = (item.flight_details || [])[0] || {};
-    const key = [item.first_leg_key || item.itinerary_key || item.id, item.currency, item.passengers || 1,
-      item.quote_terms?.price_basis || "unknown"].join("|");
-    if (!groups.has(key)) groups.set(key, {leg, items: []});
+    const key = [state, item.departure_date, item.first_leg_key || item.itinerary_key || item.id,
+      item.currency, item.passengers || 1, item.quote_terms?.price_basis || "unknown"].join("|");
+    if (!groups.has(key)) groups.set(key, {leg, items:[], key});
     groups.get(key).items.push(item);
   }
   return [...groups.values()].map(group => {
     group.items.sort(compareTailResults);
     const leg = group.leg;
     const best = [...group.items].sort((a,b) => Number(a.price) - Number(b.price))[0];
-    return `<section class="tail-flight-group">
-      <h4>${escapeHtml(leg.flight_no || "航班号待确认")} · ${escapeHtml(leg.departure_time || "--:--")} → ${escapeHtml(leg.arrival_time || "--:--")}</h4>
-      <p>${escapeHtml(airportCodeDisplayText(leg.departure_airport || leg.origin))} → ${escapeHtml(airportCodeDisplayText(leg.arrival_airport || leg.destination))}
-      · ${group.items.length} 个尾段报价 · 最低参考 ${escapeHtml(best.currency || "CNY")} ${Number(best.price).toFixed(0)}</p>
-      ${group.items.slice(0,3).map((item,index) => renderTailResultCard(item,index+1)).join("")}
-      ${group.items.length > 3 ? `<details><summary>更多尾段方案（${group.items.length-3}）</summary>${group.items.slice(3).map((item,index) => renderTailResultCard(item,index+4)).join("")}</details>` : ""}
+    const key = escapeHtml(group.key);
+    return `<section class="tail-flight-group" data-stable-key="${key}">
+      <div class="tail-flight-heading">
+        <div><p class="tail-first-leg-label">想乘坐的首段 · ${escapeHtml(tailPlaceLabel(group.items[0].origin))} → ${escapeHtml(tailPlaceLabel(group.items[0].transfer))}</p>
+        <h4>${escapeHtml(leg.flight_no || "航班号待确认")} <span>${escapeHtml(leg.departure_time || "--:--")} → ${escapeHtml(leg.arrival_time || "--:--")}</span></h4>
+        <p class="muted">${escapeHtml(airportCodeDisplayText(leg.departure_airport || leg.origin))} → ${escapeHtml(airportCodeDisplayText(leg.arrival_airport || leg.destination))}</p></div>
+        <div class="tail-flight-best"><small>${group.items.length} 个尾段方案 · 最低参考</small><strong>${escapeHtml(best.currency || "CNY")} ${Number(best.price).toFixed(0)}</strong></div>
+      </div>
+      ${renderTailResultCard(group.items[0], 1)}
+      ${group.items.length > 1 ? `<details class="tail-alternatives" data-disclosure="alternatives-${key}"><summary data-focus-key="alternatives-${key}">比较其他 ${group.items.length - 1} 个尾段方案</summary>
+      ${group.items.slice(1).map((item, index) => renderTailResultCard(item,index+2)).join("")}</details>` : ""}
     </section>`;
   }).join("");
 }
 
 function renderTailResultCard(item, index) {
-  const legs = (item.flight_details || []).map((leg, legIndex) => {
-    const segmentIndex = legIndex + 1;
-    const from = airportCodeDisplayText(leg.departure_airport || leg.origin);
-    const to = airportCodeDisplayText(leg.arrival_airport || leg.destination);
-    const flight = [leg.airline, leg.flight_no].filter(Boolean).join(" ") || "携程列表未展开航班号";
-    const cabin = cabinLabel(leg.cabin || item.cabin);
-    const time = `${leg.departure_time || "--:--"} -> ${leg.arrival_time || "--:--"}`;
-    const layover = leg.transfer_layover ? ` · 中转停留 ${leg.transfer_layover}` : "";
-    return `
-      <div class="tail-leg-row">
-        <div class="tail-leg-index">${escapeHtml(segmentIndex)}</div>
-        <div>
-          <strong>${escapeHtml(from)} -> ${escapeHtml(to)}</strong>
-          <span>${escapeHtml(time)} · ${escapeHtml(flight)}</span>
-          <span>${escapeHtml(leg.departure_date || item.departure_date)} · ${escapeHtml(cabin)}${escapeHtml(layover)}</span>
-        </div>
-      </div>
-    `;
-  }).join("");
-  const routeTitle = `${airportCodeDisplayText(item.origin)} -> ${airportCodeDisplayText(item.transfer)} -> ${airportCodeDisplayText(item.destination)}`;
-  const confidence = tailResultConfidence(item);
+  const key = escapeHtml(String(item.id || item.itinerary_key || `${item.destination}-${index}`));
   const reviewUrl = safeTailReviewUrl(item.review_url || item.search_url || "");
-  const hasSavings = item.savings_amount !== null && item.savings_amount !== undefined;
-  const savings = Number(item.savings_amount || 0);
-  const savingsLabel = savings >= 0 ? "节省" : "贵";
-  const savingsText = hasSavings
-    ? `${savingsLabel} ¥${Math.abs(savings).toFixed(0)}${item.savings_percent !== null && item.savings_percent !== undefined ? ` (${Math.abs(Number(item.savings_percent)).toFixed(1)}%)` : ""}`
-    : "口径未确认，不计算节省金额";
-  const metaItems = [
-    item.departure_date,
-    `平台 ${providerLabel(item.provider)}`,
-    item.search_scope === "open" ? "开放目的地发现（非全量）" : "",
-    item.filter_scope === "first_leg" ? "舱位／航司仅约束首段" : item.filter_scope === "all_legs" ? "舱位／航司约束全行程" : "",
-    cabinLabel(item.cabin),
-    item.detail_quality || item.raw_payload?.detail_quality || "partial",
-    confidence.label,
-    item.observed_at ? `查询 ${formatQueryDate(item.observed_at)}` : "",
-  ].filter(Boolean);
-  return `
-    <article class="tail-result-card">
-      <div class="tail-rank">${escapeHtml(index)}</div>
-      <div class="tail-result-main">
-        <div class="tail-route-title">${escapeHtml(routeTitle)}</div>
-        <div class="tail-route-meta">${metaItems.map((meta) => `<span>${escapeHtml(meta)}</span>`).join("")}</div>
-      </div>
-      <div class="tail-price">
-        <small>${item.provider === "feizhu" ? `平台 ${escapeHtml(item.quote_terms?.source_price_field || "ticketPrice")} · 整段总价未核实` : "组合参考报价 · 人数/税费以复核为准"}</small>
-        <strong>${escapeHtml(item.currency || "CNY")} ${Number(item.price || 0).toFixed(0)}</strong>
-        ${renderTailBaselines(item)}
-        <small>${escapeHtml(savingsText)}</small>
-      </div>
-      <div class="tail-review-actions">
-        <span class="tail-confidence level-${escapeHtml(confidence.level)}">${escapeHtml(confidence.label)}</span>
-        <span>${tailQuoteFresh(item) ? "未过期" : "已过期／采集时间未知"}</span>
-        ${["inconclusive", "not_found"].includes(item.recheck_outcome?.status) ? "<span>最近复核无法确认原行程，旧价待确认，可重试；不代表已下架</span>" : ""}
-        ${item.recheck_outcome?.status === "failed" ? "<span>最近复核失败，旧价待确认</span>" : ""}
-        ${item.rechecked_at ? `<span>复核采集 ${escapeHtml(formatQueryDate(item.rechecked_at))}</span>` : ""}
-        ${item.id ? `<button type="button" class="ghost compact" data-tail-action="recheck" data-result-id="${escapeHtml(String(item.id))}">重新查询此行程</button>` : ""}
-        ${reviewUrl ? `<a class="ghost compact tail-review-link" href="${escapeHtml(reviewUrl)}" target="_blank" rel="noreferrer">打开${escapeHtml(providerLabel(item.provider))}复核</a>` : ""}
-      </div>
-      <details class="tail-details">
-        <summary>航段与待核实事项</summary>
-        ${item.search_metadata?.system_message ? `<p>平台提示：${escapeHtml(item.search_metadata.system_message)}</p>` : ""}
-        ${item.provider === "feizhu" ? "<p>CLI 返回结果不保证完整；未返回不代表无航线。票价、税费及库存请打开飞猪复核。</p>" : ""}
-        <p>${item.suitability?.airport_change ? "涉及换机场；" : ""}行李：未核实；票规：未核实；后续行程影响：未核实。搜索结果不代表可出票。</p>
-        <p>${escapeHtml(tailQuoteTermsLabel(item.quote_terms))}</p>
-        <div class="tail-leg-list">${legs || "暂无航段明细"}</div>
-      </details>
-    </article>
-  `;
+  const valid = (item.validation?.status || item.raw_payload?.validation?.status) === "valid";
+  const fresh = tailQuoteFresh(item);
+  const scope = item.filter_scope === "first_leg" ? "舱位／航司仅约束首段"
+    : item.filter_scope === "all_legs" ? "舱位／航司约束全行程" : "";
+  const legs = (item.flight_details || []).map((leg, i) => `
+    <div class="tail-leg-row"><span class="tail-leg-index">${i+1}</span><div>
+      <strong>${escapeHtml(airportCodeDisplayText(leg.departure_airport || leg.origin))} → ${escapeHtml(airportCodeDisplayText(leg.arrival_airport || leg.destination))}</strong>
+      <span>${escapeHtml(leg.departure_date || item.departure_date)} · ${escapeHtml(leg.departure_time || "--:--")} → ${escapeHtml(leg.arrival_time || "--:--")} · ${escapeHtml(leg.flight_no || "航班号待确认")}</span>
+      <span>${escapeHtml(cabinLabel(leg.cabin || item.cabin))}${leg.transfer_layover ? ` · 中转停留 ${escapeHtml(leg.transfer_layover)}` : ""}</span></div></div>`).join("");
+  const difference = tailDecisionDifference(item);
+  const details = item.flight_details || [];
+  const stops = [];
+  for (const leg of details) {
+    const from = leg.departure_airport || leg.origin || "待核实";
+    const to = leg.arrival_airport || leg.destination || "待核实";
+    if (stops[stops.length - 1] !== from) stops.push(from);
+    stops.push(to);
+  }
+  const fullRoute = details.length > 1
+    ? stops.map(tailPlaceLabel).join(" → ")
+    : `${tailPlaceLabel(item.origin)} → ${tailPlaceLabel(item.transfer)} → ${tailPlaceLabel(item.destination)}`;
+  const status = !fresh ? "已过期 / 时间未知" : valid ? "行程已校验" : "信息待核实";
+  return `<article class="tail-result-card">
+    <div class="tail-result-main"><small>${valid && details.length > 1 ? "完整购票行程" : "候选购票行程 · 待核实"}</small>
+      <strong>${escapeHtml(fullRoute)}</strong>
+      <span class="muted">${escapeHtml(providerLabel(item.provider))} · ${escapeHtml(cabinLabel(item.cabin))}</span>
+      ${item.suitability?.airport_change ? '<span class="tail-warning">涉及换机场</span>' : ""}</div>
+    <div class="tail-price"><strong>${escapeHtml(item.currency || "CNY")} ${Number(item.price || 0).toFixed(0)}</strong>
+      <small>${item.provider === "feizhu" ? "平台参考价 · 总价未核实" : "组合参考报价"}</small>
+      <small>${escapeHtml({per_person:"每人", party_total:"全体乘客总价"}[item.quote_terms?.price_basis] || "计价单位未确认")} · ${item.quote_terms?.tax_included === true ? "含税" : item.quote_terms?.tax_included === false ? "不含税" : "税费口径未确认"}</small>
+      <span class="tail-decision-difference">${escapeHtml(difference)}</span>
+    </div>
+    <div class="tail-quote-state"><span class="tail-status ${valid && fresh ? "verified" : "review"}">${status}</span>
+      <small>${item.observed_at ? `采集 ${escapeHtml(formatQueryTime(item.observed_at))}` : "采集时间未知"}</small>
+      ${item.recheck_outcome?.status === "failed" ? "<small>最近复核失败，旧价待确认</small>" : ""}
+      ${["inconclusive", "not_found"].includes(item.recheck_outcome?.status) ? "<small>最近复核无法确认原行程，可重试；不代表已下架</small>" : ""}
+    </div>
+    <div class="tail-review-actions">
+      ${item.id ? `<button type="button" class="ghost compact" data-tail-action="recheck" data-result-id="${key}" data-focus-key="recheck-${key}">复核报价</button>` : ""}
+      ${reviewUrl ? `<a class="ghost compact tail-review-link" href="${escapeHtml(reviewUrl)}" target="_blank" rel="noopener noreferrer">去${escapeHtml(providerLabel(item.provider))}核实</a>` : ""}
+    </div>
+    <p class="tail-card-caveat">价格及出票需复核 · 行李、票规及后续航段影响未核实</p>
+    <details class="tail-details" data-disclosure="quote-${key}">
+      <summary data-focus-key="quote-details-${key}">完整行程、价差与待核实事项</summary>
+      <p>${escapeHtml(tailPlaceLabel(item.origin))} → ${escapeHtml(tailPlaceLabel(item.transfer))} → ${escapeHtml(tailPlaceLabel(item.destination))} · ${escapeHtml(scope)}</p>
+      ${item.search_metadata?.system_message ? `<p>平台提示：${escapeHtml(item.search_metadata.system_message)}</p>` : ""}
+      ${item.provider === "feizhu" ? `<p>平台 ${escapeHtml(item.quote_terms?.source_price_field || "ticketPrice")} · 整段总价未核实。CLI 返回结果不保证完整；未返回不代表无航线。</p>` : ""}
+      <div class="tail-baselines">${renderTailBaselines(item)}
+        <p>${escapeHtml(difference)}（非购买承诺）</p>
+        ${!tailComparableBaseline(item, "market") && !tailComparableBaseline(item, "same_flight") ? "<p>口径未确认，不计算节省金额；历史报价须重新复核。</p>" : ""}</div>
+      <p>${escapeHtml(tailQuoteTermsLabel(item.quote_terms))}</p>
+      <p>行李：未核实；票规：未核实；后续行程影响：未核实。搜索结果不代表可出票。</p>
+      <div class="tail-leg-list">${legs || "暂无可确认的航段明细"}</div>
+    </details>
+  </article>`;
 }
 
 function tailResultConfidence(item) {
@@ -2474,32 +2956,12 @@ function tailResultConfidenceScore(item) {
 }
 
 function renderTailRouteGroup(group) {
-  const title = `${airportCodeDisplayText(group.origin)} -> ${airportCodeDisplayText(group.transfer)} -> X`;
-  const destinations = new Set(group.results.map((item) => item.destination).filter(Boolean));
-  return `
-    <section class="tail-route-group">
-      <div class="tail-route-group-head">
-        <div>
-          <strong>${escapeHtml(title)}</strong>
-          <span>${escapeHtml(group.dateGroups.length)} 个日期 · ${escapeHtml(destinations.size)} 个目的地</span>
-        </div>
-        <div class="tail-route-group-best">点击日期查看结果</div>
-      </div>
-      <div class="tail-date-groups">
-        ${group.dateGroups.map((dateGroup) => `
-          <details class="tail-date-group">
-            <summary>
-              <span>${escapeHtml(dateGroup.date)}</span>
-              <small>${escapeHtml(dateGroup.items.length)} 条结果，点击展开</small>
-            </summary>
-            <div class="tail-date-result-list">
-              ${renderTailFlightGroups(dateGroup.items)}
-            </div>
-          </details>
-        `).join("")}
-      </div>
-    </section>
-  `;
+  return `<section class="tail-route-group">
+    <div class="tail-route-group-head"><strong>${escapeHtml(tailPlaceLabel(group.origin))} → ${escapeHtml(tailPlaceLabel(group.transfer))}</strong>
+    <span>${group.results.length} 条组合报价</span></div>
+    ${group.dateGroups.map(date => `<div class="tail-date-group"><h4>${escapeHtml(date.date)}</h4>
+      ${renderTailFlightGroups(date.items, group.state || "")}</div>`).join("")}
+  </section>`;
 }
 
 function renderTailSummary(visibleResults, allResults) {
@@ -2568,6 +3030,7 @@ function setWorkspaceTab(tab, options = {}) {
   const panels = workspacePanelMap();
   const nextTab = panels[tab] ? tab : "routes";
   activeWorkspaceTab = nextTab;
+  document.body.dataset.workspace = nextTab;
   if (options.persist !== false) {
     localStorage.setItem("activeWorkspaceTab", nextTab);
   }
@@ -2723,10 +3186,13 @@ organizeDashboardLayout();
 enhanceAirportInputs(document);
 renderSegmentRows();
 syncRouteTypeMode();
-fetchTailCandidates();
-fetchTailResults();
-fetchTailJobs();
+initializeTailWorkspace().catch(error => showTailError(error.message));
 fetchBrowserProfiles().catch(() => {});
-resumeLatestTailJob().catch(() => {});
 fetchDashboard().then(() => scheduleDashboardPolling(3000));
+// Expiry is a clock-based UI state, not a new platform query.
+setInterval(() => {
+  if (!document.hidden && activeWorkspaceTab === "tail" && tailResultsLoaded && !tailBusy()) {
+    renderTailResults(tailDiscoveryResults);
+  }
+}, 60000);
 
