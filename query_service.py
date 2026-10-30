@@ -98,6 +98,55 @@ class QueryService:
         finally:
             self.run_lock.release()
 
+    async def inspect_airchina_experiment(
+        self, route, *, flight_no, progress, manual_handler, cancel_event,
+        timeout_seconds=240,
+    ):
+        """Experimental task manager owns the shared run_lock.
+
+        Reuse browser/session infrastructure, but not production snapshot writes,
+        credential loading, backend query retries or generic price extraction.
+        One deadline includes startup, manual pauses and collection.
+        """
+        from dataclasses import replace
+        from provider_runtime import ProviderRuntime
+        from providers import airchina
+
+        airchina.validate_inspection(route, flight_no=flight_no)
+        self.refresh_config()
+        config = replace(self.get_config(), headless=False)
+        provider = config.providers.get("airchina")
+        if provider is None:
+            raise ValueError("配置中缺少 airchina；请参考示例配置。")
+
+        async def execute():
+            progress("starting_browser")
+            async with self.automation_factory(config, {}) as automation:
+                page, context = await automation._new_page(provider)
+                try:
+                    return await airchina.inspect(
+                        ProviderRuntime(automation), provider, route, page,
+                        flight_no=flight_no, progress=progress, manual_handler=manual_handler,
+                    )
+                finally:
+                    await automation._close_context_quietly(context)
+
+        async def watch_cancel(task):
+            while not cancel_event.is_set():
+                await asyncio.sleep(.1)
+            task.cancel()
+
+        async with asyncio.timeout(timeout_seconds):
+            task = asyncio.create_task(execute())
+            watcher = asyncio.create_task(watch_cancel(task))
+            try:
+                if cancel_event.is_set():
+                    task.cancel()
+                return await task
+            finally:
+                watcher.cancel()
+                await asyncio.gather(watcher, return_exceptions=True)
+
     async def run_route_once(
         self,
         route_key: str,

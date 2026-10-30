@@ -297,6 +297,89 @@ test('full itinerary preserves an airport change rather than silently skipping i
   assert.match(html,/涉及换机场/);
 });
 
+test('dual provider controls retain Ctrip candidates and separate Fliggy scope and budgets',()=>{
+  const {ctx,elements}=ui();
+  elements.tailProviderSelect.value='both';
+  elements.tailFeizhuScopeInput={value:'open'};
+  elements.tailBothNotice={hidden:true};
+  ctx.updateTailSearchScope();
+  assert.equal(elements.tailSearchScopeInput.value,'candidates');
+  assert.equal(elements.tailSearchScopeInput.disabled,true);
+  assert.equal(elements.candidates.hidden,false);
+  assert.equal(elements.tailBudgetCitiesInput.disabled,false);
+  assert.equal(elements.tailTargetInput.disabled,false);
+  assert.equal(elements.tailCallBudgetInput.disabled,false);
+  assert.equal(elements.tailFeizhuScopeInput.disabled,false);
+  assert.equal(elements.tailFollowupBudgetInput.disabled,true);
+  assert.equal(elements.tailBothNotice.hidden,false);
+  elements.tailFeizhuScopeInput.value='hybrid';ctx.updateTailSearchScope();
+  assert.equal(elements.tailFollowupBudgetInput.disabled,false);
+  elements.tailProviderSelect.value='ctrip';ctx.updateTailSearchScope();
+  assert.equal(elements.tailFeizhuScopeInput.value,'hybrid');
+  assert.equal(elements.tailFeizhuScopeInput.disabled,true);
+  assert.equal(elements.tailCallBudgetInput.disabled,true);
+});
+
+test('dual submission builds one payload with independent provider settings',()=>{
+  const {ctx,elements}=ui();
+  loadFunctions(ctx,['tailFormFieldIds','buildTailQueryPayload']);
+  for (const id of ctx.tailFormFieldIds()) elements[id] ||= {value:''};
+  Object.assign(ctx,{normalizeCode:x=>x,selectedTailCandidates:()=>['CAN'],
+    tailCandidateProfileOverride:''});
+  elements.tailProviderSelect.value='both';elements.tailFeizhuScopeInput.value='open';
+  elements.tailSearchScopeInput.value='candidates';
+  elements.tailOriginInput.value='BJS';elements.tailTransferInput.value='SHA';
+  elements.tailDateInput.value='2027-06-20';elements.tailCallBudgetInput.value='8';
+  const draft=ctx.buildTailQueryPayload();
+  assert.equal(draft.provider,'both');assert.equal(draft.feizhu_search_scope,'open');
+  assert.equal(draft.search_scope,'candidates');
+  assert.deepEqual(Array.from(draft.candidates),['CAN']);
+  assert.equal(draft.max_candidates,10);
+  assert.equal(draft.target_results,2);
+  assert.equal(draft.max_provider_calls,8);
+});
+
+test('dual draft comparison detects Fliggy scope and its hybrid budget independently',()=>{
+  const {ctx}=ui();
+  const saved={provider:'both',search_scope:'candidates',feizhu_search_scope:'hybrid',max_followup_candidates:5};
+  assert.equal(ctx.tailQueryDiffers(saved,{...saved,max_followup_candidates:6}),true);
+  assert.equal(ctx.tailQueryDiffers(saved,{...saved,feizhu_search_scope:'open'}),true);
+});
+
+test('provider filter does not deduplicate or price-compare different platforms as one quote',()=>{
+  const {ctx,elements}=ui();
+  const rows=[quote({id:1,provider:'ctrip'}),quote({id:2,provider:'feizhu',price:650})];
+  assert.equal(ctx.prepareTailResults(rows).length,2);
+  assert.equal((ctx.renderTailFlightGroups(rows).match(/<h4>/g)||[]).length,2);
+  elements.tailResultProviderFilter={value:'ctrip'};
+  assert.deepEqual(Array.from(ctx.prepareTailResults(rows),r=>r.provider),['ctrip']);
+  elements.tailResultFilterSummary={};ctx.updateTailResultTools();
+  assert.match(elements.tailResultFilterSummary.textContent,/1 项/);
+  loadFunctions(ctx,['clearTailResultFilters']);ctx.clearTailResultFilters();
+  assert.equal(elements.tailResultProviderFilter.value,'');
+});
+
+test('batch progress shows sibling success and failure, escapes errors and offers only valid recovery',()=>{
+  const {ctx,elements}=ui();
+  elements.tailJobSummary={innerHTML:''};
+  Object.assign(ctx,{tailBusy:()=>false,tailJobStatusLabel:x=>x,renderTailJobCandidate:()=>'',ACTIVE_TAIL_JOB_STATUSES:['running','queued','needs_verification']});
+  loadFunctions(ctx,['renderTailJobProgress','renderTailBatchProgress']);
+  const job={job_id:'batch',status:'partial',payload:{provider:'both'},progress:{saved:2,children:[
+    {job_id:'c',provider:'ctrip',status:'finished',payload:{provider:'ctrip'},saved:2},
+    {job_id:'f',provider:'feizhu',status:'failed',payload:{provider:'feizhu',search_scope:'open'},error:'<img src=x>'},
+  ]}};
+  ctx.renderTailJobProgress(job);
+  const html=elements.tailJobSummary.innerHTML;
+  assert.match(html,/ctrip · finished/);assert.match(html,/feizhu · failed/);
+  assert.match(html,/继续未完成平台/);assert.match(html,/重试失败平台/);
+  assert.doesNotMatch(html,/<img src=x>/);
+  job.status='running';ctx.renderTailJobProgress(job);
+  assert.doesNotMatch(elements.tailJobSummary.innerHTML,/data-tail-action="resume"|data-tail-action="retry-failed"/);
+  job.status='needs_verification';ctx.renderTailJobProgress(job);
+  assert.match(elements.tailJobSummary.innerHTML,/data-tail-action="continue"/);
+  assert.match(elements.tailJobSummary.innerHTML,/飞猪无需等待/);
+});
+
 function loadFunctions(ctx, names) {
   for (const name of names) {
     const pattern = new RegExp(`^(?:async )?function ${name}\\(`, 'm');

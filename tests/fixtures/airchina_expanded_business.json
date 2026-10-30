@@ -1,0 +1,563 @@
+{
+  "blocked_visible": false,
+  "cabin_headers": {
+    "business": "公务舱",
+    "economy": "经济舱",
+    "first": "头等舱",
+    "superEconomy": "超级经济舱"
+  },
+  "date_text": "2026年11月10日\n周二",
+  "header_count": 1,
+  "loading_visible": false,
+  "notice_confirmation_visible": false,
+  "passengers_text": "1成人",
+  "price_notice": "以下价格为每位成人旅客不含税票价",
+  "route_text": "北京首都(PEK)\n上海虹桥(SHA)",
+  "rows": [
+    {
+      "arrival_airport": "SHA T2",
+      "arrival_time": "09:15",
+      "between_text": "",
+      "cabins": {
+        "business": {
+          "cell_text": "3\n￥2880\n起",
+          "price_text": "￥2880\n起"
+        },
+        "economy": {
+          "cell_text": "￥1040\n起",
+          "price_text": "￥1040\n起"
+        },
+        "first": {
+          "cell_text": "--",
+          "price_text": null
+        },
+        "superEconomy": {
+          "cell_text": "--",
+          "price_text": null
+        }
+      },
+      "departure_airport": "PEK T3",
+      "departure_time": "07:00",
+      "duration": "2h15m",
+      "expanded_cabins": [],
+      "flight_numbers": [
+        "CA1527"
+      ],
+      "products": []
+    },
+    {
+      "arrival_airport": "SHA T2",
+      "arrival_time": "10:00",
+      "between_text": "",
+      "cabins": {
+        "business": {
+          "cell_text": "5\n￥2880\n起",
+          "price_text": "￥2880\n起"
+        },
+        "economy": {
+          "cell_text": "￥1040\n起",
+          "price_text": "￥1040\n起"
+        },
+        "first": {
+          "cell_text": "--",
+          "price_text": null
+        },
+        "superEconomy": {
+          "cell_text": "￥2150\n起",
+          "price_text": "￥2150\n起"
+        }
+      },
+      "departure_airport": "PEK T3",
+      "departure_time": "07:25",
+      "duration": "2h35m",
+      "expanded_cabins": [],
+      "flight_numbers": [
+        "CA1507"
+      ],
+      "products": []
+    },
+    {
+      "arrival_airport": "SHA T2",
+      "arrival_time": "11:00",
+      "between_text": "",
+      "cabins": {
+        "business": {
+          "cell_text": "￥2880\n起",
+          "price_text": "￥2880\n起"
+        },
+        "economy": {
+          "cell_text": "￥2150\n起",
+          "price_text": "￥2150\n起"
+        },
+        "first": {
+          "cell_text": "8\n￥9250\n起",
+          "price_text": "￥9250\n起"
+        },
+        "superEconomy": {
+          "cell_text": "--",
+          "price_text": null
+        }
+      },
+      "departure_airport": "PEK T3",
+      "departure_time": "08:30",
+      "duration": "2h30m",
+      "expanded_cabins": [],
+      "flight_numbers": [
+        "CA1501"
+      ],
+      "products": []
+    },
+    {
+      "arrival_airport": "SHA T2",
+      "arrival_time": "11:55",
+      "between_text": "",
+      "cabins": {
+        "business": {
+          "cell_text": "4\n￥2880\n起",
+          "price_text": "￥2880\n起"
+        },
+        "economy": {
+          "cell_text": "￥2150\n起",
+          "price_text": "￥2150\n起"
+        },
+        "first": {
+          "cell_text": "--",
+          "price_text": null
+        },
+        "superEconomy": {
+          "cell_text": "￥2150\n起",
+          "price_text": "￥2150\n起"
+        }
+      },
+      "departure_airport": "PEK T3",
+      "departure_time": "09:30",
+      "duration": "2h25m",
+      "expanded_cabins": [],
+      "flight_numbers": [
+        "CA1519"
+      ],
+      "products": []
+    },
+    {
+      "arrival_airport": "SHA T2",
+      "arrival_time": "12:45",
+      "between_text": "",
+      "cabins": {
+        "business": {
+          "cell_text": "6\n￥2880\n起",
+          "price_text": "￥2880\n起"
+        },
+        "economy": {
+          "cell_text": "￥1530\n起",
+          "price_text": "￥1530\n起"
+        },
+        "first": {
+          "cell_text": "--",
+          "price_text": null
+        },
+        "superEconomy": {
+          "cell_text": "￥2150\n起",
+          "price_text": "￥2150\n起"
+        }
+      },
+      "departure_airport": "PEK T3",
+      "departure_time": "10:25",
+      "duration": "2h20m",
+      "expanded_cabins": [],
+      "flight_numbers": [
+        "CA1531"
+      ],
+      "products": []
+    },
+    {
+      "arrival_airport": "SHA T2",
+      "arrival_time": "13:25",
+      "between_text": "",
+      "cabins": {
+        "business": {
+          "cell_text": "6\n￥2880\n起",
+          "price_text": "￥2880\n起"
+        },
+        "economy": {
+          "cell_text": "￥1300\n起",
+          "price_text": "￥1300\n起"
+        },
+        "first": {
+          "cell_text": "--",
+          "price_text": null
+        },
+        "superEconomy": {
+          "cell_text": "￥2150\n起",
+          "price_text": "￥2150\n起"
+        }
+      },
+      "departure_airport": "PEK T3",
+      "departure_time": "10:55",
+      "duration": "2h30m",
+      "expanded_cabins": [],
+      "flight_numbers": [
+        "CA1523"
+      ],
+      "products": []
+    },
+    {
+      "arrival_airport": "SHA T2",
+      "arrival_time": "13:55",
+      "between_text": "",
+      "cabins": {
+        "business": {
+          "cell_text": "3\n￥2880\n起",
+          "price_text": "￥2880\n起"
+        },
+        "economy": {
+          "cell_text": "￥860\n起",
+          "price_text": "￥860\n起"
+        },
+        "first": {
+          "cell_text": "--",
+          "price_text": null
+        },
+        "superEconomy": {
+          "cell_text": "￥2150\n起",
+          "price_text": "￥2150\n起"
+        }
+      },
+      "departure_airport": "PEK T3",
+      "departure_time": "11:30",
+      "duration": "2h25m",
+      "expanded_cabins": [],
+      "flight_numbers": [
+        "CA1557"
+      ],
+      "products": []
+    },
+    {
+      "arrival_airport": "SHA T2",
+      "arrival_time": "15:00",
+      "between_text": "",
+      "cabins": {
+        "business": {
+          "cell_text": "8\n￥2880\n起",
+          "price_text": "￥2880\n起"
+        },
+        "economy": {
+          "cell_text": "￥780\n起",
+          "price_text": "￥780\n起"
+        },
+        "first": {
+          "cell_text": "--",
+          "price_text": null
+        },
+        "superEconomy": {
+          "cell_text": "￥2150\n起",
+          "price_text": "￥2150\n起"
+        }
+      },
+      "departure_airport": "PEK T3",
+      "departure_time": "12:30",
+      "duration": "2h30m",
+      "expanded_cabins": [],
+      "flight_numbers": [
+        "CA1533"
+      ],
+      "products": []
+    },
+    {
+      "arrival_airport": "SHA T2",
+      "arrival_time": "16:05",
+      "between_text": "",
+      "cabins": {
+        "business": {
+          "cell_text": "3\n￥2880\n起",
+          "price_text": "￥2880\n起"
+        },
+        "economy": {
+          "cell_text": "￥780\n起",
+          "price_text": "￥780\n起"
+        },
+        "first": {
+          "cell_text": "--",
+          "price_text": null
+        },
+        "superEconomy": {
+          "cell_text": "--",
+          "price_text": null
+        }
+      },
+      "departure_airport": "PEK T3",
+      "departure_time": "13:45",
+      "duration": "2h20m",
+      "expanded_cabins": [],
+      "flight_numbers": [
+        "CA1517"
+      ],
+      "products": []
+    },
+    {
+      "arrival_airport": "SHA T2",
+      "arrival_time": "16:55",
+      "between_text": "",
+      "cabins": {
+        "business": {
+          "cell_text": "4\n￥2880\n起",
+          "price_text": "￥2880\n起"
+        },
+        "economy": {
+          "cell_text": "￥860\n起",
+          "price_text": "￥860\n起"
+        },
+        "first": {
+          "cell_text": "--",
+          "price_text": null
+        },
+        "superEconomy": {
+          "cell_text": "--",
+          "price_text": null
+        }
+      },
+      "departure_airport": "PEK T3",
+      "departure_time": "14:30",
+      "duration": "2h25m",
+      "expanded_cabins": [],
+      "flight_numbers": [
+        "CA1521"
+      ],
+      "products": []
+    },
+    {
+      "arrival_airport": "SHA T2",
+      "arrival_time": "17:55",
+      "between_text": "",
+      "cabins": {
+        "business": {
+          "cell_text": "7\n￥2880\n起",
+          "price_text": "￥2880\n起"
+        },
+        "economy": {
+          "cell_text": "￥780\n起",
+          "price_text": "￥780\n起"
+        },
+        "first": {
+          "cell_text": "8\n￥9250\n起",
+          "price_text": "￥9250\n起"
+        },
+        "superEconomy": {
+          "cell_text": "--",
+          "price_text": null
+        }
+      },
+      "departure_airport": "PEK T3",
+      "departure_time": "15:45",
+      "duration": "2h10m",
+      "expanded_cabins": [],
+      "flight_numbers": [
+        "CA1515"
+      ],
+      "products": []
+    },
+    {
+      "arrival_airport": "SHA T2",
+      "arrival_time": "18:45",
+      "between_text": "",
+      "cabins": {
+        "business": {
+          "cell_text": "3\n￥2880\n起",
+          "price_text": "￥2880\n起"
+        },
+        "economy": {
+          "cell_text": "￥600\n起",
+          "price_text": "￥600\n起"
+        },
+        "first": {
+          "cell_text": "--",
+          "price_text": null
+        },
+        "superEconomy": {
+          "cell_text": "--",
+          "price_text": null
+        }
+      },
+      "departure_airport": "PEK T3",
+      "departure_time": "16:30",
+      "duration": "2h15m",
+      "expanded_cabins": [
+        "business"
+      ],
+      "flight_numbers": [
+        "CA1549"
+      ],
+      "products": [
+        {
+          "name": "公务折扣",
+          "price_block_text": "¥2880",
+          "price_text": "¥2880",
+          "seat_class_text": "(R舱)",
+          "seat_text": "剩余3张",
+          "summaries": [
+            {
+              "label": "退改费",
+              "value": "0%起"
+            },
+            {
+              "label": "行李额",
+              "value": "30KG"
+            },
+            {
+              "label": "里程累积",
+              "value": "110%"
+            }
+          ]
+        },
+        {
+          "name": "公务",
+          "price_block_text": "¥8390",
+          "price_text": "¥8390",
+          "seat_class_text": "(J舱)",
+          "seat_text": "剩余7张",
+          "summaries": [
+            {
+              "label": "退改费",
+              "value": "0%起"
+            },
+            {
+              "label": "行李额",
+              "value": "30KG"
+            },
+            {
+              "label": "里程累积",
+              "value": "300%"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "arrival_airport": "SHA T2",
+      "arrival_time": "19:55",
+      "between_text": "",
+      "cabins": {
+        "business": {
+          "cell_text": "8\n￥2880\n起",
+          "price_text": "￥2880\n起"
+        },
+        "economy": {
+          "cell_text": "￥600\n起",
+          "price_text": "￥600\n起"
+        },
+        "first": {
+          "cell_text": "--",
+          "price_text": null
+        },
+        "superEconomy": {
+          "cell_text": "8\n￥1880\n起",
+          "price_text": "￥1880\n起"
+        }
+      },
+      "departure_airport": "PEK T3",
+      "departure_time": "17:30",
+      "duration": "2h25m",
+      "expanded_cabins": [],
+      "flight_numbers": [
+        "CA1509"
+      ],
+      "products": []
+    },
+    {
+      "arrival_airport": "SHA T2",
+      "arrival_time": "20:55",
+      "between_text": "",
+      "cabins": {
+        "business": {
+          "cell_text": "8\n￥2880\n起",
+          "price_text": "￥2880\n起"
+        },
+        "economy": {
+          "cell_text": "￥600\n起",
+          "price_text": "￥600\n起"
+        },
+        "first": {
+          "cell_text": "--",
+          "price_text": null
+        },
+        "superEconomy": {
+          "cell_text": "￥2150\n起",
+          "price_text": "￥2150\n起"
+        }
+      },
+      "departure_airport": "PEK T3",
+      "departure_time": "18:30",
+      "duration": "2h25m",
+      "expanded_cabins": [],
+      "flight_numbers": [
+        "CA1565"
+      ],
+      "products": []
+    },
+    {
+      "arrival_airport": "SHA T2",
+      "arrival_time": "21:40",
+      "between_text": "",
+      "cabins": {
+        "business": {
+          "cell_text": "8\n￥2880\n起",
+          "price_text": "￥2880\n起"
+        },
+        "economy": {
+          "cell_text": "￥600\n起",
+          "price_text": "￥600\n起"
+        },
+        "first": {
+          "cell_text": "--",
+          "price_text": null
+        },
+        "superEconomy": {
+          "cell_text": "￥2150\n起",
+          "price_text": "￥2150\n起"
+        }
+      },
+      "departure_airport": "PEK T3",
+      "departure_time": "19:30",
+      "duration": "2h10m",
+      "expanded_cabins": [],
+      "flight_numbers": [
+        "CA1563"
+      ],
+      "products": []
+    },
+    {
+      "arrival_airport": "SHA T2",
+      "arrival_time": "22:55",
+      "between_text": "",
+      "cabins": {
+        "business": {
+          "cell_text": "8\n￥2880\n起",
+          "price_text": "￥2880\n起"
+        },
+        "economy": {
+          "cell_text": "￥600\n起",
+          "price_text": "￥600\n起"
+        },
+        "first": {
+          "cell_text": "--",
+          "price_text": null
+        },
+        "superEconomy": {
+          "cell_text": "--",
+          "price_text": null
+        }
+      },
+      "departure_airport": "PEK T3",
+      "departure_time": "20:30",
+      "duration": "2h25m",
+      "expanded_cabins": [],
+      "flight_numbers": [
+        "CA1589"
+      ],
+      "products": []
+    }
+  ],
+  "schema": "airchina_visible_oneway_v1",
+  "trip_type": "单程",
+  "url": "https://www.airchina.com.cn/flight/oneway/pek-sha/2026-11-10",
+  "verification_visible": false
+}

@@ -134,8 +134,8 @@
     },
     "airchina": {
       "enabled": false,
-      "login_url": "https://www.airchina.com.cn/cn/login/",
-      "search_url_template": "https://et.airchina.com.cn/InternetBooking/AirLowFareSearchExternal.do?tripType=OW&outboundOption.originLocationCode={origin}&outboundOption.destinationLocationCode={destination}&outboundOption.departureDay={departure_date}&guestTypes%5B0%5D.type=ADT&guestTypes%5B0%5D.amount={passengers}",
+      "login_url": "https://www.airchina.com.cn/zh-CN",
+      "search_url_template": "https://www.airchina.com.cn/flight/oneway/{origin}-{destination}/{departure_date}",
       "storage_state_file": "./runtime/airchina_state.json",
       "timeout_ms": 45000,
       "locale": "zh-CN",

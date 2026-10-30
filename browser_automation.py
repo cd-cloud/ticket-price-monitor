@@ -124,6 +124,9 @@ class BrowserAutomation:
             await self._close_context_quietly(context)
 
     async def inspect_query_page(self, provider_name: str, route: RouteQuery, pause: bool = True) -> Path:
+        if provider_name == "airchina":
+            from airchina_probe import inspect_airchina_page
+            return await inspect_airchina_page(self, route, manual_wait_seconds=20 if pause else 0)
         provider = self.app_config.providers[provider_name]
         page, context = await self._new_page(provider)
         try:
@@ -169,6 +172,9 @@ class BrowserAutomation:
             await self._close_context_quietly(context)
 
     async def query_provider(self, provider_name: str, route: RouteQuery) -> QueryResult:
+        if provider_name == "airchina":
+            from providers.airchina_page import QUERY_NOT_READY
+            raise RuntimeError(QUERY_NOT_READY)
         provider = self.app_config.providers[provider_name]
         errors: list[str] = []
         backend_names = self._backend_names_for_provider(provider)
@@ -248,6 +254,9 @@ class BrowserAutomation:
         raise RuntimeError(f"All browser backends failed for provider={provider_name} route={route.route_key}: {' | '.join(errors)}")
 
     async def _query_provider_without_backend_retry(self, provider_name: str, route: RouteQuery) -> QueryResult:
+        if provider_name == "airchina":
+            from providers.airchina_page import QUERY_NOT_READY
+            raise RuntimeError(QUERY_NOT_READY)
         provider = self.app_config.providers[provider_name]
         page, context = await self._new_page(provider)
         try:
@@ -864,6 +873,9 @@ class BrowserAutomation:
         page: Page,
         response_store: list[dict] | None = None,
     ) -> OfferDetails:
+        if provider.name == "airchina":
+            from providers.airchina_page import QUERY_NOT_READY
+            raise RuntimeError(QUERY_NOT_READY)
         if provider.name == "ctrip":
             match = (ctrip_network_parser.extract_multi_city_match_from_network(response_store or [], route)
                      if route.is_multi_city else

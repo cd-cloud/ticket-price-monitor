@@ -10,6 +10,7 @@ from browser_profile_service import BrowserProfileService
 from config_manager import ConfigManager
 from dashboard_builder import build_dashboard_payload
 from data_storage import PriceRepository
+from experimental_query_service import ExperimentalQueryService
 from legacy_run_service import LegacyRunService
 from query_service import QueryService
 from report_service import ReportService
@@ -66,6 +67,9 @@ class FlightPriceApplication:
             get_config=lambda: self.config,
             refresh_config=self.refresh_config,
             summary_store=self.run_summary,
+        )
+        self.experimental_queries = ExperimentalQueryService(
+            query_service=self.query_service, repository=self.repository, run_lock=self._run_lock,
         )
         self.auto_query_worker = AutoQueryWorker(
             self,
@@ -131,7 +135,7 @@ class FlightPriceApplication:
         from browser_automation import BrowserAutomation
 
         route = self.config.routes[route_index]
-        credentials = self.config_manager.load_credentials(allow_missing=True)
+        credentials = {} if provider == "airchina" else self.config_manager.load_credentials(allow_missing=True)
         async with BrowserAutomation(self.config, credentials, backend_override=backend_override) as automation:
             path = await automation.inspect_query_page(provider, route, pause=pause)
         logging.info("inspection saved to %s", path)

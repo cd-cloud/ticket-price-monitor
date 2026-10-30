@@ -221,8 +221,38 @@
       </div>
     </template>
 
+    <template id="airchinaExperimentTemplate">
+      <section id="airchinaExperimentPanel" class="panel">
+        <h2>国航实验查询</h2>
+        <p>仅单程、明确机场、1 成人。结果是<strong>每成人不含税参考票价</strong>，不进入正式报价、最低价排名或甩尾比价。</p>
+        <form id="airchinaExperimentForm" class="route-form">
+          <label>出发机场码<input name="origin" placeholder="PEK" maxlength="3" pattern="[A-Za-z]{3}" required /></label>
+          <label>到达机场码<input name="destination" placeholder="SHA" maxlength="3" pattern="[A-Za-z]{3}" required /></label>
+          <label>出发日期<input name="departure_date" type="date" required /></label>
+          <label>舱等<select name="cabin"><option value="economy">经济舱</option><option value="business">公务舱</option></select></label>
+          <label>指定航班（可选）<input name="flight_no" placeholder="CA1549；留空只读列表" pattern="[A-Za-z]{2}[0-9]{3,4}" /></label>
+          <div class="actions"><button type="submit" class="primary">开始实验查询</button></div>
+        </form>
+        <p>将打开本机项目浏览器，不复用当前应用内标签。总时限 4 分钟（含人工等待）；验证由你自行处理，程序不会点击验证码、确认提示或预订。</p>
+        <p id="airchinaExperimentError" role="alert"></p>
+        <div class="actions">
+          <label>任务记录<select id="airchinaExperimentJobs" aria-label="国航实验任务记录"></select></label>
+          <button id="airchinaExperimentRefresh" type="button" class="secondary">刷新记录</button>
+        </div>
+        <div id="airchinaExperimentStatus" role="status" aria-live="polite">尚未选择任务。</div>
+        <div class="actions">
+          <button id="airchinaExperimentContinue" type="button" class="primary" hidden>我已手动处理，继续读取</button>
+          <button id="airchinaExperimentCancel" type="button" class="secondary" hidden>取消任务</button>
+        </div>
+        <div id="airchinaExperimentResults" class="airchina-experiment-results"></div>
+      </section>
+    </template>
+    <script>
+      document.querySelector(".shell").appendChild(document.getElementById("airchinaExperimentTemplate").content.cloneNode(true));
+    </script>
     <script src="/static/airport_data.js?v={{ static_version }}"></script>
     <script src="/static/airport_ui.js?v={{ static_version }}"></script>
     <script src="/static/app.js?v={{ static_version }}"></script>
+    <script src="/static/airchina_experiment.js?v={{ static_version }}"></script>
   </body>
 </html>

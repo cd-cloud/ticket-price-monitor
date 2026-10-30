@@ -244,6 +244,11 @@ class PriceRepository:
     def initialize(self) -> None:
         with self.connect() as conn:
             conn.executescript(SCHEMA)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS experimental_query_jobs (
+                    job_id TEXT PRIMARY KEY, updated_at TEXT NOT NULL, payload TEXT NOT NULL
+                )
+            """)
             self._ensure_columns(conn, "tail_discovery_results", {"itinerary_key": "TEXT"})
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_tail_itinerary ON tail_discovery_results(itinerary_key, observed_at)"
@@ -265,6 +270,40 @@ class PriceRepository:
                 ON price_snapshots(parser_confidence, detail_quality, detail_source)
                 """
             )
+
+    def save_experimental_query(self, job: dict) -> None:
+        """Separate namespace: never appears in snapshots, reports or tail learning."""
+        with self.connect() as conn:
+            conn.execute(
+                "INSERT INTO experimental_query_jobs VALUES (?, ?, ?) "
+                "ON CONFLICT(job_id) DO UPDATE SET updated_at=excluded.updated_at, payload=excluded.payload",
+                (job["job_id"], job["updated_at"], json.dumps(job, ensure_ascii=False)),
+            )
+
+    def experimental_query(self, job_id: str) -> dict | None:
+        with self.connect() as conn:
+            row = conn.execute("SELECT payload FROM experimental_query_jobs WHERE job_id=?", (job_id,)).fetchone()
+        return json.loads(row["payload"]) if row else None
+
+    def experimental_queries(self, limit: int = 20) -> list[dict]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT payload FROM experimental_query_jobs ORDER BY updated_at DESC, rowid DESC LIMIT ?",
+                (max(1, min(int(limit), 100)),),
+            ).fetchall()
+        return [json.loads(row["payload"]) for row in rows]
+
+    def interrupt_experimental_queries(self) -> None:
+        """Single-process app startup: orphan browser sessions cannot be resumed."""
+        with self.connect() as conn:
+            rows = conn.execute("SELECT payload FROM experimental_query_jobs").fetchall()
+            for row in rows:
+                job = json.loads(row["payload"])
+                if job["status"] in {"queued", "running", "waiting_user", "cancelling"}:
+                    job.update(status="interrupted", stage="interrupted", updated_at=self.now_iso(),
+                               finished_at=self.now_iso(), message="应用已重启，原浏览器会话不可恢复；请重新提交。")
+                    conn.execute("UPDATE experimental_query_jobs SET updated_at=?, payload=? WHERE job_id=?",
+                                 (job["updated_at"], json.dumps(job, ensure_ascii=False), job["job_id"]))
 
     def _ensure_columns(self, conn: sqlite3.Connection, table: str, columns: dict[str, str]) -> None:
         existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
@@ -735,6 +774,7 @@ class PriceRepository:
         limit: int = 100,
         *,
         checkpoint_job_id: str | None = None,
+        checkpoint_job_ids: list[str] | None = None,
         offset: int = 0,
     ) -> list[dict[str, Any]]:
         clauses: list[str] = []
@@ -748,7 +788,20 @@ class PriceRepository:
         if departure_date:
             clauses.append("departure_date = ?")
             params.append(departure_date)
-        if checkpoint_job_id:
+        if checkpoint_job_ids is not None:
+            # Empty batch scope must never fall back to all historical quotes.
+            roots = list(dict.fromkeys(checkpoint_job_ids))
+            if not roots:
+                clauses.append("0")
+            else:
+                placeholders = ",".join("?" for _ in roots)
+                clauses.append(f"""id IN (
+                    SELECT CAST(j.value AS INTEGER)
+                    FROM tail_candidate_checkpoints AS c, json_each(c.result_ids) AS j
+                    WHERE c.job_id IN ({placeholders})
+                )""")
+                params.extend(roots)
+        elif checkpoint_job_id:
             clauses.append("""id IN (
                 SELECT CAST(j.value AS INTEGER)
                 FROM tail_candidate_checkpoints AS c, json_each(c.result_ids) AS j
@@ -977,7 +1030,8 @@ class PriceRepository:
             row = conn.execute(
                 """
                 SELECT * FROM tail_discovery_jobs
-                ORDER BY updated_at DESC, created_at DESC
+                WHERE CASE WHEN json_valid(payload) THEN json_extract(payload, '$._parent_job_id') ELSE NULL END IS NULL
+                ORDER BY updated_at DESC, created_at DESC, rowid DESC
                 LIMIT 1
                 """
             ).fetchone()
@@ -988,7 +1042,8 @@ class PriceRepository:
             rows = conn.execute(
                 """
                 SELECT * FROM tail_discovery_jobs
-                ORDER BY updated_at DESC, created_at DESC
+                WHERE CASE WHEN json_valid(payload) THEN json_extract(payload, '$._parent_job_id') ELSE NULL END IS NULL
+                ORDER BY updated_at DESC, created_at DESC, rowid DESC
                 LIMIT ?
                 """,
                 (max(1, min(int(limit), 100)),),

@@ -121,8 +121,14 @@ class TailDiscoveryJobManager:
         with self._lock:
             if not self._jobs:
                 return self._normalize_persisted_job(self._repository.latest_tail_discovery_job())
-            latest_job = max(self._jobs.values(), key=lambda item: str(item.get("created_at") or ""))
-            return dict(latest_job)
+            # Timestamps have one-second precision. A retry/dual submission in
+            # the same second must not restore an older completed task and
+            # unlock the UI while the new parent is still active.
+            _, latest_job = max(enumerate(self._jobs.values()), key=lambda pair: (
+                pair[1].get("status") in {"queued", "running", "needs_verification", "cancelling"},
+                str(pair[1].get("created_at") or ""), pair[0],
+            ))
+            return deepcopy(latest_job)
 
     def list_recent(self, limit: int = 20) -> list[dict[str, Any]]:
         persisted = [
@@ -147,7 +153,7 @@ class TailDiscoveryJobManager:
                 if not persisted:
                     raise KeyError(job_id)
                 return self._normalize_persisted_job(persisted) or persisted
-            if job.get("status") in {"finished", "failed", "cancelled", "interrupted", "paused"}:
+            if job.get("status") in {"finished", "failed", "cancelled", "interrupted", "paused", "partial"}:
                 return dict(job)
             progress = dict(job.get("progress") or {})
             progress["stage"] = "cancelling"
@@ -189,8 +195,11 @@ class TailDiscoveryJobManager:
             progress = dict(job.get("progress") or {})
             progress["stage"] = "interrupted"
             progress["message"] = "服务曾重启，浏览器已关闭；可继续任务，已完成结果保留。"
+            for child in progress.get("children") or []:
+                if child.get("status") in {"queued", "running", "needs_verification", "cancelling"}:
+                    child["status"] = "interrupted"
             job["progress"] = progress
-        if job.get("status") in {"finished", "failed", "cancelled", "interrupted", "paused"}:
+        if job.get("status") in {"finished", "failed", "cancelled", "interrupted", "paused", "partial"}:
             job = dict(job)
             job = _normalize_terminal_queue_payload(job)
         return job
@@ -290,6 +299,10 @@ class TailDiscoveryJobManager:
                 progress = dict(progress)
                 progress["stage"] = "cancelled"
                 progress["message"] = "任务已取消，已保留取消前完成的结果。"
+            if payload.get("provider") == "both" and result.get("terminal_status") in {
+                "finished", "failed", "partial", "paused", "cancelled",
+            }:
+                final_status = result["terminal_status"]
             self._update(
                 job_id,
                 status=final_status,

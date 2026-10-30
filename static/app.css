@@ -1665,6 +1665,7 @@ pre {
 #tailDiscoveryPanel .tail-settings p { font-size: 13px; line-height: 1.65; }
 #tailDiscoveryPanel .tail-run-actions { align-items: center; padding: 18px 0; flex-wrap: wrap; }
 #tailRunHint { font-size: 13px; }
+#tailBothQuickNote { font-size: 13px; line-height: 1.6; margin: 0 0 16px; }
 #tailDiscoveryPanel .tail-candidate-head { grid-template-columns: 1fr; padding: 12px 0; border: 0; background: none; }
 #tailDiscoveryPanel .tail-candidate-summary { padding: 10px; border-radius: 8px; }
 #tailDiscoveryPanel .tail-candidate-summary small { font-size: 12px; }
@@ -1683,6 +1684,12 @@ pre {
 #tailDiscoveryPanel .tail-job-counter { font-size: 13px; color: var(--accent); }
 #tailDiscoveryPanel .tail-job-message { margin: 10px 0; line-height: 1.6; font-size: 13px; }
 #tailDiscoveryPanel .tail-job-candidates { max-height: 320px; overflow-y: auto; }
+#tailDiscoveryPanel .tail-provider-progress { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+#tailDiscoveryPanel .tail-provider-progress-card { min-width: 0; border: 1px solid var(--border); padding: 12px; border-radius: 10px; background: #fffdfa; overflow-wrap: anywhere; }
+#tailDiscoveryPanel .tail-provider-progress-card > strong { display: block; font-size: 14px; }
+#tailDiscoveryPanel .tail-provider-progress-card > span,
+#tailDiscoveryPanel .tail-provider-progress-card p,
+#tailDiscoveryPanel .tail-provider-progress-card summary { font-size: 13px; line-height: 1.6; }
 #tailDiscoveryPanel .tail-job-summary > details { border-top: 1px solid var(--border); font-size: 13px; }
 #tailDiscoveryPanel .tail-priority-details { padding: 0 8px; }
 #tailDiscoveryPanel .tail-results-workspace { border-top: 1px solid var(--border); padding-top: 14px; }
@@ -1707,7 +1714,7 @@ pre {
 #tailResultFilters > p { line-height: 1.6; }
 #tailDiscoveryPanel #tailResultFilters > summary { color: var(--accent); min-height: 44px; }
 #tailDiscoveryPanel .tail-toolbar { display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); background: none; border: 0; padding: 0; margin-top: 16px; gap: 12px; }
-#tailDiscoveryPanel #tailResultFilters .tail-toolbar { grid-template-columns: repeat(3, minmax(0, 1fr)); margin-top: 4px; }
+#tailDiscoveryPanel #tailResultFilters .tail-toolbar { grid-template-columns: repeat(4, minmax(0, 1fr)); margin-top: 4px; }
 #tailDiscoveryPanel .tail-results-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; padding: 12px 0; font-size: 13px; }
 #tailDiscoveryPanel .tail-results-meta .tail-toggle { margin-left: auto; font-size: 12px; }
 #tailDiscoveryPanel .tail-safety-note { color: var(--muted); font-size: 12px; line-height: 1.7; margin: 0 0 16px; }
@@ -1790,6 +1797,7 @@ body[data-workspace="tail"] .hero .actions { display: none; }
   #tailDiscoveryPanel .tail-flight-group { padding: 12px; }
   #tailDiscoveryPanel .tail-review-actions { flex-wrap: wrap; align-content: start; }
   #tailDiscoveryPanel .tail-job-head { display: block; }
+  #tailDiscoveryPanel .tail-provider-progress { grid-template-columns: 1fr; }
   #tailDiscoveryPanel .tail-job-head .tail-job-actions { margin-top: 8px; }
   #tailDiscoveryPanel .tail-job-counter { display: block; margin-top: 8px; }
   #tailDiscoveryPanel button, #tailDiscoveryPanel a { min-height: 40px; }
@@ -1800,3 +1808,10 @@ body[data-workspace="tail"] .hero .actions { display: none; }
   #tailDiscoveryPanel .tail-quote-state small { font-size: 11px; }
   #tailDiscoveryPanel .tail-empty-state { padding: 20px 12px; }
 }
+#airchinaExperimentStatus { white-space: pre-line; margin: 16px 0; }
+#airchinaExperimentError { color: #a32b24; }
+.airchina-experiment-results { overflow-x: auto; }
+.airchina-experiment-results table { min-width: 560px; }
+#airchinaExperimentPanel .actions { flex-wrap: wrap; }
+#airchinaExperimentPanel .actions label { min-width: 0; max-width: 100%; }
+#airchinaExperimentPanel select { max-width: 100%; }

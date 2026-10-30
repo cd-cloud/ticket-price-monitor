@@ -52,6 +52,18 @@ async def run(output: Path):
                          ("offline-demo", "CAN", "test", "matched", "{}", json.dumps(ids), repo.now_iso()))
         actions = []
         live = {"status":"running", "offline":False, "quote_error":False}
+        dual = {"status":"running", "payload":None, "rows":None}
+        def dual_job():
+            return {"job_id":"dual-demo", "status":dual["status"], "payload":dual["payload"],
+                "progress":{"saved":5, "message":"模拟双平台进度；已完成结果分别保留", "children":[
+                    {"job_id":"dual-c", "provider":"ctrip", "status":"finished", "saved":4,
+                     "payload":{**(dual["payload"] or {}),"provider":"ctrip","search_scope":"candidates"},
+                     "progress":{"message":"已查询候选城市"}},
+                    {"job_id":"dual-f", "provider":"feizhu", "status":"running" if dual["status"] == "running" else "failed", "saved":1,
+                     "payload":{**(dual["payload"] or {}),"provider":"feizhu","search_scope":"open"},
+                     "error":None if dual["status"] == "running" else "模拟平台暂时不可用，已保存结果保留",
+                     "progress":{"message":"已返回开放发现报价"}},
+                ]}}
         live_reads = []
         async with async_playwright() as p:
             browser = await p.chromium.launch(channel="chrome", headless=True)
@@ -63,7 +75,17 @@ async def run(output: Path):
                 assert url.hostname == "127.0.0.1", f"Unexpected external request: {url.hostname}"
                 if route.request.method == "POST":
                     actions.append((url.path, route.request.post_data))
+                    submitted = json.loads(route.request.post_data or "{}")
+                    if url.path == "/api/tail-discovery/run" and submitted.get("provider") == "both":
+                        dual["payload"] = submitted
+                        existing = client.get("/api/tail-discovery/results?job_id=offline-demo").json()["results"]
+                        extra = {**existing[0], "id":999, "provider":"feizhu", "price":650,
+                                 "quote_terms":{}, "baselines":{}, "savings_amount":None}
+                        dual["rows"] = [*existing, extra]
+                        return await route.fulfill(status=200, json=dual_job())
                     return await route.fulfill(status=200, json={"job_id": "ui-action", "status": "finished"})
+                if url.path == "/api/tail-discovery/jobs/dual-demo":
+                    return await route.fulfill(status=200, json=dual_job())
                 if url.path == "/api/tail-discovery/jobs/ui-action":
                     return await route.fulfill(status=200, json={"job_id": "ui-action", "status": "finished"})
                 if url.path == "/api/tail-discovery/jobs/live":
@@ -76,6 +98,8 @@ async def run(output: Path):
                         "progress":{"saved":4,"attempted":1,"total":5,"message":"模拟查询中"}})
                 if url.path == "/api/tail-discovery/results":
                     job_id = parse_qs(url.query).get("job_id", [""])[0]
+                    if job_id == "dual-demo":
+                        return await route.fulfill(status=200, json={"results":dual["rows"],"has_more":False,"next_offset":5})
                     if job_id == "ui-action":
                         return await route.fulfill(status=200, json={"results":[], "has_more":False,"next_offset":0})
                     if job_id == "live":
@@ -102,9 +126,10 @@ async def run(output: Path):
             await page.locator("#tailViewResultsBtn").click()
             assert await page.locator("#tailResultsHeading").evaluate("el => el === document.activeElement")
             assert await page.locator(".tail-flight-group").count() == 1
+            assert await page.locator("#tailProviderSelect").input_value() == "both"
             assert not await page.locator("#tailSearchSettings").get_attribute("open")
             assert not await page.locator("#tailFilters").get_attribute("open")
-            assert await page.locator("#tailCallBudgetInput").is_hidden()
+            assert await page.locator("#tailCallBudgetInput").evaluate("el => !el.disabled")
             await page.screenshot(path=str(output / "tail-desktop.png"), full_page=True)
             await page.locator(".tail-alternatives > summary").first.click()
             await page.locator(".tail-details > summary").first.click()
@@ -126,6 +151,7 @@ async def run(output: Path):
             await page.locator("#tailClearFiltersBtn").click()
             # Changes to route or airline must not silently overwrite custom cities.
             await page.locator("#tailQueryEditor > summary").click()
+            await page.locator("#tailProviderSelect").select_option("ctrip")
             await page.locator("#tailSearchSettings > summary").click()
             await page.locator(".tail-candidate-box > summary").click()
             await page.locator("[data-candidates='none']").click()
@@ -270,6 +296,45 @@ async def run(output: Path):
             await page.locator("button[data-tail-action='resume']").click()
             await page.wait_for_function("document.querySelector('#tailRunBtn').disabled === false")
             assert any(path.endswith("/restart") and json.loads(body)["mode"] == "resume" for path, body in actions)
+            # One user action creates one dual-provider parent, not competing POSTs.
+            await page.locator("#tailQueryEditor > summary").click()
+            await page.locator("#tailProviderSelect").select_option("both")
+            await page.locator("#tailSearchSettings > summary").click()
+            assert await page.locator("#tailFeizhuScopeInput").is_visible()
+            assert await page.locator("#tailBudgetCitiesInput").is_enabled()
+            assert await page.locator("#tailCallBudgetInput").is_enabled()
+            await page.locator("#tailFeizhuScopeInput").select_option("hybrid")
+            assert await page.locator("#tailFollowupBudgetInput").is_enabled()
+            await page.locator("#tailFeizhuScopeInput").select_option("open")
+            await page.locator("#tailRunBtn").click()
+            await page.wait_for_function("document.querySelectorAll('.tail-result-card').length === 5 && document.querySelectorAll('.tail-provider-progress-card').length === 2")
+            assert len(actions) == 5, "dual search must use exactly one POST"
+            assert dual["payload"]["provider"] == "both"
+            assert dual["payload"]["feizhu_search_scope"] == "open"
+            assert dual["payload"]["candidates"] == ["CAN"]
+            assert dual["payload"]["search_scope"] == "candidates"
+            assert await page.locator("#tailRunBtn").is_disabled()
+            assert await page.locator(".tail-flight-group").count() == 2
+            dual["status"] = "partial"
+            await page.evaluate("pollTailDiscoveryJob('dual-demo',true)")
+            await page.wait_for_function("!document.querySelector('#tailRunBtn').disabled")
+            assert "携程 + 飞猪" in await page.locator("#tailResultIdentity").inner_text()
+            assert "部分平台未完成" in await page.locator("#tailJobSummary").inner_text()
+            assert await page.get_by_role("button", name="继续未完成平台", exact=True).is_visible()
+            await page.locator("#tailResultFilterSummary").click()
+            await page.locator("#tailResultProviderFilter").select_option("feizhu")
+            assert await page.locator(".tail-result-card").count() == 1
+            assert "暂无可比价差" in await page.locator(".tail-result-card").inner_text()
+            await page.locator("#tailClearFiltersBtn").click()
+            assert await page.locator(".tail-result-card").count() == 5
+            await page.locator("#tailResultFilterSummary").click()
+            await page.evaluate("document.querySelector('#tailTaskContextDetails').open=false")
+            for width in (1280, 390, 320):
+                await page.set_viewport_size({"width":width,"height":900})
+                await page.evaluate("document.activeElement?.blur(); window.scrollTo(0,0)")
+                await page.evaluate("new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))")
+                assert not await page.evaluate("document.documentElement.scrollWidth > innerWidth + 1"), f"dual overflow {width}"
+                await page.screenshot(path=str(output / f"tail-dual-{width}.png"), full_page=True)
             assert not errors, errors
             await browser.close()
         client.close()

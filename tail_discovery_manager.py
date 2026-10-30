@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import uuid
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Callable
 
@@ -16,6 +18,7 @@ from tail_discovery_service import TailDiscoveryService
 from tail_jobs import TailDiscoveryJobManager
 from tail_service import normalize_tail_discovery_request
 from tail_quotes import public_quote_metadata, itinerary_key
+from tail_batch import TailBatchRunner, PROVIDERS, ACTIVE, batch_children, checkpoint_root
 
 
 class TailDiscoveryManager:
@@ -42,6 +45,13 @@ class TailDiscoveryManager:
         self.config = config
         self.tail_queue_file = self.config.runtime_dir / "tail_discovery_queue.json"
 
+    def make_service(self, *, run_lock=None, queue_file=None):
+        return TailDiscoveryService(
+            config=self.config, config_manager=self.config_manager,
+            repository=self.repository, run_lock=run_lock if run_lock is not None else self.run_lock,
+            queue_file=queue_file or self.tail_queue_file, safe_batch_size=self.safe_batch_size,
+        )
+
     async def run_tail_discovery(
         self,
         payload: dict[str, Any],
@@ -49,14 +59,7 @@ class TailDiscoveryManager:
         cancel_checker: Callable[[], bool] | None = None,
         verification_continue_checker: Callable[[], bool] | None = None,
     ) -> dict[str, Any]:
-        service = TailDiscoveryService(
-            config=self.config,
-            config_manager=self.config_manager,
-            repository=self.repository,
-            run_lock=self.run_lock,
-            queue_file=self.tail_queue_file,
-            safe_batch_size=self.safe_batch_size,
-        )
+        service = TailBatchRunner(self) if payload.get("provider") == "both" else self.make_service()
         summary = await service.run(
             payload,
             progress_callback=progress_callback,
@@ -85,6 +88,8 @@ class TailDiscoveryManager:
 
     def submit_tail_discovery(self, payload: dict[str, Any]) -> dict[str, Any]:
         payload = {key: value for key, value in payload.items() if not key.startswith("_")}
+        if payload.get("provider") == "both":
+            return self._submit_batch(payload)
         request = normalize_tail_discovery_request(payload)
         if not request.candidates and request.search_scope != "hybrid":
             raise ValueError("请选择至少一个有效的尾段目的地。")
@@ -119,10 +124,97 @@ class TailDiscoveryManager:
             raise RuntimeError(f"平台限流冷却中，{cooldown} 后再试。")
         return self.job_manager.submit(payload)
 
+    def _submit_batch(self, payload, *, source=None, action=None):
+        """Build child plans server-side. Never accept client checkpoint/child IDs."""
+        mode = action or str(payload.get("mode") or "explore")
+        if mode not in {"explore", "resume", "refresh", "retry-failed"}:
+            raise ValueError("联合查询只支持发现、继续、刷新或重试；单条复核使用报价入口。")
+        if source is None and mode == "resume":
+            source = self.job_manager.get(str(payload.get("source_job_id") or ""))
+        if source:
+            if (source.get("payload") or {}).get("provider") != "both":
+                raise ValueError("联合查询不能继续单平台任务。")
+            if source["status"] in ACTIVE:
+                raise ValueError("任务仍在运行，请等待结束或使用继续验证。")
+            if mode != "explore":
+                # Resume/refresh are strictly based on the original snapshot,
+                # not a newly edited form or client-supplied nested metadata.
+                payload = {k: v for k, v in source["payload"].items() if not k.startswith("_")}
+        if mode in {"refresh", "retry-failed"} and not source:
+            raise ValueError("此操作需要原联合任务。")
+        if self.run_lock.locked():
+            raise RuntimeError("已有查询正在运行，请稍后再试。")
+        feizhu_scope = str(payload.get("feizhu_search_scope") or "open")
+        if feizhu_scope not in {"candidates", "open", "hybrid"}:
+            raise ValueError("不支持的飞猪目的地查询方式。")
+        previous = {c["provider"]: c for c in batch_children(source or {})}
+        # A service restart can happen before the parent publishes child status.
+        for plan in (source or {}).get("payload", {}).get("_batch_children", []):
+            previous.setdefault(plan["provider"], plan)
+        plans = []
+        for provider in PROVIDERS:
+            old = self.repository.fetch_tail_discovery_job(previous.get(provider, {}).get("job_id", "")) if source else None
+            if old and old["status"] in ACTIVE:
+                old = self.job_manager._normalize_persisted_job(old)
+            if old and mode in {"resume", "retry-failed"} and (
+                    old["status"] == "finished" or mode == "retry-failed" and old["status"] != "failed"):
+                plans.append({"provider": provider, "job_id": old["job_id"],
+                              "payload": old["payload"], "reuse": True})
+                continue
+            child = {k: v for k, v in payload.items() if not k.startswith("_")}
+            child.update(provider=provider, search_scope="candidates" if provider == "ctrip" else feizhu_scope,
+                         mode="explore", source_job_id="", expected_itinerary_key="", source_result_id=0)
+            if provider == "ctrip":
+                child["max_provider_calls"] = 0
+            elif feizhu_scope in {"open", "hybrid"}:
+                child.update(max_candidates=0, target_results=0)
+                if feizhu_scope == "open":
+                    child["candidates"] = []
+            if old and mode in {"resume", "retry-failed", "refresh"}:
+                child = {k: v for k, v in old["payload"].items() if not k.startswith("_")}
+                child.update(mode="refresh" if mode == "refresh" else "resume", source_job_id=old["job_id"])
+                if mode == "refresh" and child.get("search_scope") in {"open", "hybrid"}:
+                    child.update(search_scope="candidates", candidates=sorted(self.repository.tail_known_destinations(
+                        provider=provider, origin=child["origin"], transfer=child["transfer"],
+                        departure_date=child["departure_date"], cabin=child.get("cabin", "economy_plus"),
+                        passengers=int(child.get("passengers") or 1),
+                    )))
+                effective = (old.get("result") or {}).get("effective_candidates") or (old.get("progress") or {}).get("effective_candidates")
+                if mode != "refresh" and effective and child.get("search_scope") != "hybrid":
+                    child["candidates"] = effective
+            # Refresh with no known destinations is a per-provider error, not a
+            # reason to suppress the other provider's refresh.
+            empty_refresh = bool(source) and mode != "explore" and child.get("candidates") == []
+            validation_input = dict(child)
+            if empty_refresh:
+                validation_input.pop("candidates")
+            normalized = asdict(normalize_tail_discovery_request(validation_input))
+            if empty_refresh:
+                normalized["candidates"] = []
+            elif not normalized["candidates"] and normalized["search_scope"] != "hybrid":
+                raise ValueError("请选择至少一个有效的携程尾段城市。")
+            if old and normalized["mode"] == "resume":
+                normalized["_checkpoint_job_id"] = checkpoint_root(old)
+                normalized["_execution_mode"] = (
+                    (old.get("result") or {}).get("execution_mode")
+                    or (old.get("progress") or {}).get("execution_mode")
+                    or old["payload"].get("_execution_mode") or old["payload"].get("mode") or "explore")
+            plans.append({"provider": provider, "job_id": uuid.uuid4().hex[:12], "payload": normalized,
+                          **({"preflight_error": "此平台当前条件没有已发现的报价，请重新查询。"} if empty_refresh else {})})
+        if mode == "retry-failed" and all(p.get("reuse") for p in plans):
+            raise ValueError("没有失败的平台子任务。")
+        payload = {k: v for k, v in payload.items() if not k.startswith("_")}
+        payload.update(provider="both", mode="resume" if mode == "retry-failed" else mode,
+                       feizhu_search_scope=feizhu_scope, search_scope="candidates",
+                       source_job_id=(source or {}).get("job_id", ""), _batch_children=plans)
+        return self.job_manager.submit(payload)
+
     def restart_job(self, job_id: str, mode: str) -> dict[str, Any]:
         if mode not in {"resume", "refresh", "explore"}:
             raise ValueError("Unknown task action.")
         job = self.job_manager.get(job_id)
+        if (job.get("payload") or {}).get("provider") == "both":
+            return self._submit_batch(job["payload"], source=job, action=mode)
         payload = {key: value for key, value in (job.get("payload") or {}).items() if not key.startswith("_")}
         payload.update(mode=mode, source_job_id=job_id)
         if mode in {"explore", "refresh"}:
@@ -163,6 +255,8 @@ class TailDiscoveryManager:
 
     def retry_failed_tail_discovery_job(self, job_id: str) -> dict[str, Any]:
         job = self.job_manager.get(job_id)
+        if (job.get("payload") or {}).get("provider") == "both":
+            return self._submit_batch(job["payload"], source=job, action="retry-failed")
         payload = dict(job.get("payload") or {})
         progress = job.get("progress") or {}
         result = job.get("result") or {}
@@ -214,6 +308,7 @@ class TailDiscoveryManager:
         from providers import ctrip_tail_parser
 
         root = None
+        roots = None
         if job_id:
             job = self.repository.fetch_tail_discovery_job(job_id)
             if not job:
@@ -221,8 +316,15 @@ class TailDiscoveryManager:
             root = str((job.get("result") or {}).get("checkpoint_job_id")
                        or (job.get("progress") or {}).get("checkpoint_job_id")
                        or (job.get("payload") or {}).get("_checkpoint_job_id") or job_id)
+            if (job.get("payload") or {}).get("provider") == "both":
+                refs = batch_children(job) or job["payload"].get("_batch_children", [])
+                roots = []
+                for ref in refs:
+                    child = self.repository.fetch_tail_discovery_job(ref["job_id"])
+                    roots.append(checkpoint_root(child) if child else ref["payload"].get("_checkpoint_job_id") or ref["job_id"])
+                root = None
         results = self.repository.fetch_tail_discovery_results(
-            limit=limit, checkpoint_job_id=root, offset=offset,
+            limit=limit, checkpoint_job_id=root, checkpoint_job_ids=roots, offset=offset,
         )
         for item in results:
             raw_payload = item.get("raw_payload") if isinstance(item.get("raw_payload"), dict) else {}

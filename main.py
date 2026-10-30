@@ -55,6 +55,17 @@ def build_parser() -> argparse.ArgumentParser:
     inspect_cmd.add_argument("--no-pause", action="store_true")
     inspect_cmd.add_argument("--backend", choices=backend_choices, help="Temporarily force one browser backend")
 
+    airchina_cmd = subparsers.add_parser("airchina-probe", help="Diagnose the Air China page without saving fares")
+    airchina_cmd.add_argument("--origin", required=True, help="Explicit airport code, e.g. PEK (not BJS)")
+    airchina_cmd.add_argument("--destination", required=True, help="Explicit airport code, e.g. SHA")
+    airchina_cmd.add_argument("--date", required=True, help="Future departure date, YYYY-MM-DD")
+    airchina_cmd.add_argument("--flight-no", help="Optionally expand ONE flight's fare products, e.g. CA1549; never books")
+    airchina_cmd.add_argument("--cabin", choices=["economy", "business"], default="economy")
+    airchina_cmd.add_argument("--backend", choices=backend_choices)
+    airchina_cmd.add_argument("--manual-wait-seconds", type=int, choices=range(0, 301), metavar="0..300", default=0)
+    airchina_cmd.add_argument("--capture-visible-page", action="store_true",
+                             help="Opt in to local text/screenshot capture (may contain account information)")
+
     schedule_cmd = subparsers.add_parser("schedule", help="Run recurring queries on a local schedule")
     schedule_cmd.add_argument("--provider", choices=provider_choices)
     schedule_cmd.add_argument("--interval-minutes", type=int)
@@ -94,6 +105,10 @@ def main() -> int:
         path = config_manager.init_config(overwrite=args.overwrite)
         print(f"local config initialized: {path}")
         return 0
+
+    if args.command == "airchina-probe":
+        from airchina_probe import run_airchina_probe
+        return asyncio.run(run_airchina_probe(config_manager, args))
 
     app = FlightPriceApplication(config_manager)
 

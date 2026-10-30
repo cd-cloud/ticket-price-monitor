@@ -45,6 +45,7 @@ def create_app(config_path: str | None = None) -> FastAPI:
             yield
         finally:
             await asyncio.to_thread(service.stop_auto_query_worker)
+            await asyncio.to_thread(service.experimental_queries.close)
 
     app = FastAPI(title="Flight Price Tracker UI", lifespan=lifespan)
     app.mount("/static", StaticFiles(directory=str(ROOT / "static")), name="static")
@@ -93,6 +94,37 @@ def create_app(config_path: str | None = None) -> FastAPI:
     @app.get("/api/health")
     async def health() -> dict:
         return {"ok": True}
+
+    @app.get("/api/experiments/airchina")
+    async def airchina_experiments(limit: int = Query(20, ge=1, le=100)) -> dict:
+        return {"jobs": await asyncio.to_thread(service.experimental_queries.list, limit)}
+
+    @app.post("/api/experiments/airchina", status_code=202)
+    async def submit_airchina_experiment(payload: dict = Body(...)) -> dict:
+        try:
+            return await asyncio.to_thread(service.experimental_queries.submit, payload)
+        except (ValueError, TypeError):
+            raise HTTPException(status_code=400, detail="参数无效：仅支持明确机场、未来单程日期、1成人及经济/公务舱；配置需包含 airchina。")
+        except RuntimeError:
+            raise HTTPException(status_code=409, detail="已有查询正在运行或服务正在关闭，请稍后再试。")
+
+    @app.get("/api/experiments/airchina/{job_id}")
+    async def airchina_experiment(job_id: str) -> dict:
+        try:
+            return await asyncio.to_thread(service.experimental_queries.get, job_id)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="实验任务不存在。")
+
+    @app.post("/api/experiments/airchina/{job_id}/{action}")
+    async def control_airchina_experiment(job_id: str, action: str) -> dict:
+        try:
+            return await asyncio.to_thread(service.experimental_queries.control, job_id, action)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="实验任务不存在。")
+        except ValueError:
+            raise HTTPException(status_code=400, detail="未知操作。")
+        except RuntimeError:
+            raise HTTPException(status_code=409, detail="任务当前不可执行此操作，请刷新任务状态。")
 
     @app.get("/api/browser-session/diagnostics")
     async def browser_session_diagnostics() -> dict:

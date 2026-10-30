@@ -389,6 +389,7 @@ function providerLabel(value) {
   const labels = {
     ctrip: "携程",
     feizhu: "飞猪",
+    both: "携程 + 飞猪",
     priceline: "Priceline",
     airchina: "国航",
   };
@@ -1543,6 +1544,7 @@ function renderBrowserProfileCard(item) {
 
 function tailFormFieldIds() {
   return ["tailOriginInput", "tailTransferInput", "tailDateInput", "tailProviderSelect",
+    "tailFeizhuScopeInput",
     "tailQueryMaxPriceInput", "tailDepartureTimeStartInput", "tailDepartureTimeEndInput",
     "tailCabinSelect", "tailAirlineSelect", "tailAirlineInput", "tailFilterScopeInput",
     "tailSearchScopeInput", "tailFollowupBudgetInput", "tailCallBudgetInput", "tailPassengersInput",
@@ -1588,7 +1590,9 @@ function updateTailFormSummary() {
     value("tailFilterScopeInput") === "all_legs" ? "全行程" : "仅首段",
   ].join(" · ");
   const settings = document.getElementById("tailSearchSummary");
-  if (settings) settings.textContent = value("tailSearchScopeInput") === "open" ? "开放发现 · 非全量"
+  if (settings) settings.textContent = value("tailProviderSelect") === "both"
+    ? `携程 ${selectedTailCandidates().length} 城市 · 飞猪${{open:"开放发现", hybrid:"开放 + 补查", candidates:"同城市查询"}[value("tailFeizhuScopeInput")] || "开放发现"}`
+    : value("tailSearchScopeInput") === "open" ? "开放发现 · 非全量"
     : `${value("tailSearchScopeInput") === "hybrid" ? "开放 + 定向补查 · " : ""}已选 ${selectedTailCandidates().length} 城市`;
   updateTailResultContext();
 }
@@ -1606,8 +1610,11 @@ function tailQueryDiffers(saved, draft) {
   const numeric = new Set(["max_price", "passengers", "max_candidates", "max_minutes",
     "target_results", "max_baseline_queries", "max_followup_candidates", "max_provider_calls"]);
   const ignored = new Set(["mode", "ignore_cache"]);
-  if (saved.search_scope !== "hybrid" && draft.search_scope !== "hybrid") ignored.add("max_followup_candidates");
-  if (saved.provider !== "feizhu" && draft.provider !== "feizhu") {
+  if (saved.provider !== "both" && draft.provider !== "both") ignored.add("feizhu_search_scope");
+  if (![saved.search_scope, draft.search_scope,
+    saved.provider === "both" ? saved.feizhu_search_scope : "",
+    draft.provider === "both" ? draft.feizhu_search_scope : ""].includes("hybrid")) ignored.add("max_followup_candidates");
+  if (!["feizhu", "both"].includes(saved.provider) && !["feizhu", "both"].includes(draft.provider)) {
     for (const key of ["max_baseline_queries", "max_followup_candidates", "max_provider_calls"]) ignored.add(key);
   }
   if (saved.search_scope === "open" && draft.search_scope === "open") {
@@ -1659,7 +1666,8 @@ function updateTailResultContext() {
     !Object.hasOwn(p, "max_price") ? "查询价格上限未记录"
       : `查询价格上限：${p.max_price || "不限"}`,
   ];
-  if (p.search_scope) parts.push(`检索方式：${{candidates:"定向城市", open:"开放发现（非全量）", hybrid:"开放发现 + 定向补查"}[p.search_scope] || p.search_scope}`);
+  if (p.search_scope) parts.push(`${p.provider === "both" ? "携程检索" : "检索方式"}：${{candidates:"定向城市", open:"开放发现（非全量）", hybrid:"开放发现 + 定向补查"}[p.search_scope] || p.search_scope}`);
+  if (p.provider === "both") parts.push(`飞猪：${{candidates:"同城市查询", open:"开放发现（非全量）", hybrid:"开放 + 定向补查"}[p.feizhu_search_scope || "open"]}；平台分别计量预算，实际子任务方式见平台进度`);
   if (Array.isArray(p.candidates) && p.search_scope !== "open") {
     parts.push(`任务候选：${p.candidates.length} 城市（${p.candidates.slice(0, 8).map(tailPlaceLabel).join("、")}${p.candidates.length > 8 ? "…" : ""}）`);
   }
@@ -1688,6 +1696,7 @@ function updateTailResultTools() {
   const summary = document.getElementById("tailResultFilterSummary");
   if (summary) {
     const count = Number(Boolean(document.getElementById("tailDateFilter")?.value))
+      + Number(Boolean(document.getElementById("tailResultProviderFilter")?.value))
       + Number(Number(document.getElementById("tailMaxPriceInput")?.value || 0) > 0)
       + Number((document.getElementById("tailTrustInput")?.value || "all") !== "all")
       + Number(document.getElementById("tailLatestOnlyInput")?.checked === false);
@@ -1708,8 +1717,9 @@ function filterTailCandidateList() {
 
 
 function clearTailResultFilters() {
-  for (const [id, value] of [["tailDateFilter", ""], ["tailMaxPriceInput", ""], ["tailTrustInput", "all"]]) {
-    document.getElementById(id).value = value;
+  for (const [id, value] of [["tailDateFilter", ""], ["tailMaxPriceInput", ""], ["tailTrustInput", "all"], ["tailResultProviderFilter", ""]]) {
+    const input = document.getElementById(id);
+    if (input) input.value = value;
   }
   document.getElementById("tailLatestOnlyInput").checked = true;
   renderTailResults(tailDiscoveryResults);
@@ -1918,12 +1928,15 @@ function ensureTailDiscoveryPanel() {
             <label>出发地<input id="tailOriginInput" data-airport-input placeholder="北京 (BJS)" autocomplete="off" required /></label>
             <label>想抵达的城市 <small>行程中转点</small><input id="tailTransferInput" data-airport-input placeholder="上海 (SHA)" autocomplete="off" required /></label>
             <label>出发日期<input id="tailDateInput" type="date" required /></label>
-            <label>查询平台<select id="tailProviderSelect"><option value="ctrip">携程</option><option value="feizhu">飞猪（实验）</option></select></label>
+            <label>查询平台<select id="tailProviderSelect"><option value="both">携程 + 飞猪同时查</option><option value="ctrip">仅携程</option><option value="feizhu">仅飞猪（实验）</option></select></label>
           </div>
+          <p id="tailBothQuickNote" class="muted" hidden>一次搜索，并行查询携程和飞猪。预算按平台分别计算；某平台不可用时仍保留另一平台结果。</p>
           <div class="tail-options-grid">
             <details class="tail-settings" id="tailFilters">
               <summary>筛选条件 <span id="tailFilterSummary" class="muted"></span></summary>
               <div class="tail-settings-grid">
+                <p id="tailBothNotice" class="muted tail-wide" hidden>双平台并行，失败互不影响。携程按已选城市查询；飞猪按下方方式查询。时间、城市及首段目标按平台分别计量，调用上限只约束飞猪；飞猪需已启用并配置官方凭据。</p>
+                <label class="tail-wide" id="tailFeizhuScopeField" hidden>飞猪检索方式<select id="tailFeizhuScopeInput"><option value="open">开放目的地发现（非全量）</option><option value="candidates">与携程相同的候选城市</option><option value="hybrid">开放发现 + 历史引导补查</option></select></label>
                 <label>查询价格上限<input id="tailQueryMaxPriceInput" type="number" min="0" step="50" placeholder="不限" /></label>
                 <label>人数<input id="tailPassengersInput" type="number" min="1" max="9" value="1" required /></label>
                 <label>最早起飞<input id="tailDepartureTimeStartInput" type="time" /></label>
@@ -2031,6 +2044,7 @@ function ensureTailDiscoveryPanel() {
         <details id="tailResultFilters">
           <summary id="tailResultFilterSummary">筛选</summary>
           <div class="tail-toolbar">
+            <label class="tail-control">报价平台<select id="tailResultProviderFilter"><option value="">全部平台</option><option value="ctrip">携程</option><option value="feizhu">飞猪</option></select></label>
             <label class="tail-control">报价状态<select id="tailTrustInput"><option value="all">全部状态</option><option value="verified">已校验且未过期</option><option value="review">信息待核实（未过期）</option><option value="stale">已过期 / 时间未知</option></select></label>
             <label class="tail-control">出发日期<select id="tailDateFilter"><option value="">全部日期</option></select></label>
             <label class="tail-control">列表价格上限<input id="tailMaxPriceInput" type="number" min="0" step="50" placeholder="只筛选已加载结果" /></label>
@@ -2046,7 +2060,7 @@ function ensureTailDiscoveryPanel() {
         <span id="tailSummary" role="status">尚未搜索</span>
       </div>
       <p id="tailListError" class="tail-warning" role="alert" hidden></p>
-      <p class="tail-safety-note">仅已加载报价，非全量库存。行程校验不代表价格有效或可出票。</p>
+      <p class="tail-safety-note">仅已加载报价，非全量库存。两平台报价口径可能不同，不直接认定平台价差；行程校验不代表价格有效或可出票。</p>
       <div id="tailResults" class="tail-results"></div>
       <div class="tail-pagination"><span id="tailPageNote" class="muted"></span><button id="tailLoadMoreBtn" type="button" class="ghost" hidden>加载更多已保存报价</button></div>
     </section>
@@ -2137,7 +2151,7 @@ function ensureTailDiscoveryPanel() {
   document.getElementById("tailLoadMoreBtn").addEventListener("click", () => fetchTailResults({append:true}).catch(() => {}));
   document.getElementById("tailClearFiltersBtn").addEventListener("click", clearTailResultFilters);
   document.getElementById("tailJobPicker").addEventListener("change", event => selectTailJob(event.target.value).catch(error => showTailError(error.message)));
-  for (const id of ["tailTrustInput", "tailSortSelect", "tailDateFilter", "tailLatestOnlyInput", "tailMaxPriceInput"]) {
+  for (const id of ["tailTrustInput", "tailSortSelect", "tailDateFilter", "tailLatestOnlyInput", "tailMaxPriceInput", "tailResultProviderFilter"]) {
     document.getElementById(id).addEventListener(id === "tailMaxPriceInput" ? "input" : "change", () => renderTailResults(tailDiscoveryResults));
   }
 }
@@ -2243,6 +2257,7 @@ function updateTailCandidateSummary() {
 function updateTailSearchScope() {
   const scope = document.getElementById("tailSearchScopeInput");
   if (!scope) return;
+  const both = document.getElementById("tailProviderSelect")?.value === "both";
   const allowed = document.getElementById("tailProviderSelect")?.value === "feizhu"
     && document.getElementById("tailModeInput")?.value === "explore";
   scope.disabled = !allowed;
@@ -2254,7 +2269,11 @@ function updateTailSearchScope() {
   const hybridNotice = document.getElementById("tailHybridScopeNotice");
   if (hybridNotice) hybridNotice.hidden = !hybrid;
 
-  const feizhu = document.getElementById("tailProviderSelect")?.value === "feizhu";
+  const feizhu = both || document.getElementById("tailProviderSelect")?.value === "feizhu";
+  const bothNotice = document.getElementById("tailBothNotice");
+  if (bothNotice) bothNotice.hidden = !both;
+  const quickNote = document.getElementById("tailBothQuickNote");
+  if (quickNote) quickNote.hidden = !both;
   const setField = (id, enabled) => {
     const input = document.getElementById(id);
     if (!input) return;
@@ -2263,7 +2282,8 @@ function updateTailSearchScope() {
     if (label) label.hidden = !enabled;
   };
   setField("tailSearchScopeInput", allowed);
-  setField("tailFollowupBudgetInput", hybrid);
+  setField("tailFeizhuScopeInput", both);
+  setField("tailFollowupBudgetInput", hybrid || both && document.getElementById("tailFeizhuScopeInput")?.value === "hybrid");
   setField("tailCallBudgetInput", feizhu);
   setField("tailBaselineBudgetInput", feizhu);
   setField("tailBudgetCitiesInput", !open && !hybrid);
@@ -2279,6 +2299,8 @@ function buildTailQueryPayload() {
     transfer: normalizeCode(document.getElementById("tailTransferInput").value),
     departure_date: document.getElementById("tailDateInput").value,
     provider: document.getElementById("tailProviderSelect")?.value || "ctrip",
+    ...(document.getElementById("tailProviderSelect")?.value === "both"
+      ? {feizhu_search_scope: document.getElementById("tailFeizhuScopeInput")?.value || "open"} : {}),
     cabin: document.getElementById("tailCabinSelect").value,
     max_price: Number(document.getElementById("tailQueryMaxPriceInput")?.value || 0) || null,
     departure_time_start: document.getElementById("tailDepartureTimeStartInput")?.value || "",
@@ -2296,7 +2318,7 @@ function buildTailQueryPayload() {
     filter_scope: document.getElementById("tailFilterScopeInput")?.value || "first_leg",
     max_baseline_queries: Number(document.getElementById("tailBaselineBudgetInput")?.value ?? 3),
     max_followup_candidates: Number(document.getElementById("tailFollowupBudgetInput")?.value ?? 5),
-    max_provider_calls: document.getElementById("tailProviderSelect")?.value === "feizhu"
+    max_provider_calls: ["feizhu", "both"].includes(document.getElementById("tailProviderSelect")?.value)
       ? Number(document.getElementById("tailCallBudgetInput")?.value ?? 20) : 0,
   };
   if (payload.search_scope === "open") {
@@ -2395,6 +2417,11 @@ function renderTailJobProgress(job) {
   const container = document.getElementById("tailJobSummary");
   if (!container) return;
   if (!job) { container.hidden = true; return; }
+  if (job.payload?.provider === "both") {
+    renderTailBatchProgress(job, container);
+    updateTailResultContext();
+    return;
+  }
   const progress = job.progress || job.result?.progress || {};
   const queue = progress.queue?.items || job.result?.queue?.items || [];
   const attempts = progress.attempts || job.result?.report?.attempts || [];
@@ -2467,6 +2494,47 @@ function renderTailPriorities(policy) {
   </details>`;
 }
 
+function renderTailBatchProgress(job, container) {
+  const progress = job.progress || job.result?.progress || {};
+  const children = job.result?.children || progress.children || [];
+  const active = [...ACTIVE_TAIL_JOB_STATUSES, "cancelling"].includes(job.status);
+  const id = escapeHtml(job.job_id);
+  const action = (value, label) => `<button type="button" class="ghost compact" data-tail-action="${value}"
+    data-job-id="${id}" data-focus-key="${id}-${value}" ${tailBusy() && value !== "continue" ? "disabled" : ""}>${label}</button>`;
+  let actions = "";
+  if (job.status === "needs_verification") actions += action("continue", "已完成携程人工验证，继续");
+  if (!active) {
+    if (job.status !== "finished") actions += action("resume", "继续未完成平台");
+    if (children.some(c => c.status === "failed")) actions += action("retry-failed", "重试失败平台");
+  }
+  container.hidden = false;
+  replaceTailMarkup(container, `
+    <div class="tail-job-head"><strong>双平台查询 · ${escapeHtml(tailJobStatusLabel(job.status))}</strong>
+      <span class="tail-job-counter" role="status">已保存 ${escapeHtml(String(progress.saved ?? job.result?.saved ?? 0))} 条报价</span></div>
+    <p class="tail-job-message">${escapeHtml(job.error || progress.message || "正在创建携程与飞猪子任务…")}</p>
+    ${active && (tailResultView === "history" || tailSelectedJobId !== job.job_id) ? `<p class="muted">执行中：${escapeHtml(tailConditionLabel(job.payload))}；下方结果另有所属。</p>` : ""}
+    <div class="tail-provider-progress">${children.map(child => {
+      const p = child.payload || {}, cp = child.progress || {};
+      const scope = p.search_scope === "open" ? "开放发现 · 非全量" : p.search_scope === "hybrid" ? "开放 + 定向补查 · 非全量" : "候选城市查询";
+      return `<section class="tail-provider-progress-card">
+        <strong>${escapeHtml(providerLabel(child.provider))} · ${escapeHtml(tailJobStatusLabel(child.status))}</strong>
+        <span>${escapeHtml(scope)} · 已保存 ${escapeHtml(String(child.saved || 0))} 条${child.reused ? " · 保留此前结果" : ""}</span>
+        ${child.error ? `<p class="tail-warning">${escapeHtml(child.error)}</p>` : `<p class="muted">${escapeHtml(cp.message || "等待平台返回进度")}</p>`}
+        <details data-disclosure="child-${escapeHtml(child.job_id)}"><summary>平台进度与预算</summary>
+          <p>运行时间上限：${escapeHtml(String(p.max_minutes || "不限"))} 分钟；${p.provider === "feizhu"
+            ? `本轮调用上限：${escapeHtml(String(p.max_provider_calls || "不限"))}`
+            : `本轮城市上限：${escapeHtml(String(p.max_candidates || "不限"))}`}</p>
+          ${renderTailPriorities(cp.candidate_policy || {})}
+          <div class="tail-job-candidates">${(cp.queue?.items || cp.attempts || []).map(renderTailJobCandidate).join("")}</div>
+        </details></section>`;
+    }).join("")}</div>
+    ${job.status === "needs_verification" ? '<p class="tail-warning">请在携程浏览器中人工完成验证。飞猪无需等待；此按钮不会绕过平台验证。</p>' : ""}
+    ${actions ? `<div class="tail-job-actions">${actions}</div>` : ""}
+    ${!active ? `<details data-disclosure="job-${id}"><summary>任务操作</summary>
+      <div class="tail-job-actions">${action("refresh", "重新查价")}${action("explore", "重新查询两个平台")}</div>
+      <p class="muted">使用原任务条件，预算按平台分别计算；不会使用上方尚未提交的新条件。</p></details>` : ""}`);
+}
+
 function renderTailJobCandidate(item) {
   const destination = String(item.destination || "").toUpperCase();
   const status = String(item.status || "pending");
@@ -2492,6 +2560,7 @@ function tailJobStatusLabel(status) {
     cancelled: "已取消",
     interrupted: "已中断",
     paused: "已停止，可继续",
+    partial: "部分平台未完成",
     cancelling: "正在取消",
   }[status] || status || "-";
 }
@@ -2695,8 +2764,8 @@ function prepareTailResults(results) {
   if (document.getElementById("tailLatestOnlyInput")?.checked) {
     const latest = new Map();
     for (const item of prepared) {
-      const key = item.itinerary_key || [item.provider, item.origin, item.transfer, item.destination,
-        item.departure_date, item.cabin, item.passengers || 1, JSON.stringify(item.flight_details || [])].join("|");
+      const key = `${item.provider}|${item.itinerary_key || [item.provider, item.origin, item.transfer, item.destination,
+        item.departure_date, item.cabin, item.passengers || 1, JSON.stringify(item.flight_details || [])].join("|")}`;
       const current = latest.get(key);
       if (!current || Date.parse(item.observed_at) > Date.parse(current.observed_at)
           || (item.observed_at === current.observed_at && Number(item.id) > Number(current.id))) latest.set(key, item);
@@ -2706,7 +2775,9 @@ function prepareTailResults(results) {
   const date = document.getElementById("tailDateFilter")?.value || "";
   const max = Number(document.getElementById("tailMaxPriceInput")?.value || 0);
   const trust = document.getElementById("tailTrustInput")?.value || "all";
+  const provider = document.getElementById("tailResultProviderFilter")?.value || "";
   return prepared.filter(item => (!date || item.departure_date === date)
+    && (!provider || item.provider === provider)
     && (!max || Number(item.price) <= max)
     && (trust === "all" || (trust === "verified" ? tailQuoteVerified(item)
       : trust === "stale" ? !tailQuoteFresh(item) : tailQuoteFresh(item) && !tailQuoteVerified(item))))
@@ -2844,7 +2915,7 @@ function renderTailFlightGroups(items, state = "") {
   for (const item of items) {
     const leg = (item.flight_details || [])[0] || {};
     const key = [state, item.departure_date, item.first_leg_key || item.itinerary_key || item.id,
-      item.currency, item.passengers || 1, item.quote_terms?.price_basis || "unknown"].join("|");
+      item.provider, item.currency, item.passengers || 1, item.quote_terms?.price_basis || "unknown"].join("|");
     if (!groups.has(key)) groups.set(key, {leg, items:[], key});
     groups.get(key).items.push(item);
   }
@@ -2855,7 +2926,7 @@ function renderTailFlightGroups(items, state = "") {
     const key = escapeHtml(group.key);
     return `<section class="tail-flight-group" data-stable-key="${key}">
       <div class="tail-flight-heading">
-        <div><p class="tail-first-leg-label">想乘坐的首段 · ${escapeHtml(tailPlaceLabel(group.items[0].origin))} → ${escapeHtml(tailPlaceLabel(group.items[0].transfer))}</p>
+        <div><p class="tail-first-leg-label">想乘坐的首段 · ${escapeHtml(tailPlaceLabel(group.items[0].origin))} → ${escapeHtml(tailPlaceLabel(group.items[0].transfer))} · ${escapeHtml(providerLabel(group.items[0].provider))}</p>
         <h4>${escapeHtml(leg.flight_no || "航班号待确认")} <span>${escapeHtml(leg.departure_time || "--:--")} → ${escapeHtml(leg.arrival_time || "--:--")}</span></h4>
         <p class="muted">${escapeHtml(airportCodeDisplayText(leg.departure_airport || leg.origin))} → ${escapeHtml(airportCodeDisplayText(leg.arrival_airport || leg.destination))}</p></div>
         <div class="tail-flight-best"><small>${group.items.length} 个尾段方案 · 最低参考</small><strong>${escapeHtml(best.currency || "CNY")} ${Number(best.price).toFixed(0)}</strong></div>
@@ -2998,6 +3069,7 @@ function workspacePanelMap() {
     tail: document.getElementById("tailDiscoveryPanel"),
     profiles: document.getElementById("browserProfilePanel"),
     insights: document.querySelector(".log-workspace"),
+    experiments: document.getElementById("airchinaExperimentPanel"),
   };
 }
 
@@ -3015,6 +3087,7 @@ function ensureWorkspaceTabs() {
     <button type="button" data-workspace-tab="tail">甩尾发现 <span data-workspace-count="tail"></span></button>
     <button type="button" data-workspace-tab="profiles">浏览器档案 <span data-workspace-count="profiles"></span></button>
     <button type="button" data-workspace-tab="insights">日志</button>
+    <button type="button" data-workspace-tab="experiments">国航实验</button>
   `;
   anchor.insertAdjacentElement("afterend", tabs);
   tabs.addEventListener("click", (event) => {
