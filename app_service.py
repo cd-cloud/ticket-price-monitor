@@ -352,12 +352,21 @@ class FlightPriceApplication:
         return self.browser_profile_service.browser_profiles()
 
     def open_browser_profile(self, provider_name: str, *, profile: str | None = None) -> dict[str, Any]:
+        if provider_name == "airchina":
+            return self.experimental_queries.without_browser_session(
+                lambda: self.browser_profile_service.open_browser_profile(provider_name, profile=profile))
         return self.browser_profile_service.open_browser_profile(provider_name, profile=profile)
 
     def switch_browser_profile(self, provider_name: str, *, profile: str) -> dict[str, Any]:
+        if provider_name == "airchina":
+            return self.experimental_queries.without_browser_session(
+                lambda: self.browser_profile_service.switch_browser_profile(provider_name, profile=profile))
         return self.browser_profile_service.switch_browser_profile(provider_name, profile=profile)
 
     def reset_recovery_profile(self, provider_name: str) -> dict[str, Any]:
+        if provider_name == "airchina":
+            return self.experimental_queries.without_browser_session(
+                lambda: self.browser_profile_service.reset_recovery_profile(provider_name))
         return self.browser_profile_service.reset_recovery_profile(provider_name)
 
     def clean_browser_profile(
@@ -367,6 +376,10 @@ class FlightPriceApplication:
         profile: str | None = None,
         switch_to_recovery: bool = False,
     ) -> dict[str, Any]:
+        if provider_name == "airchina":
+            return self.experimental_queries.without_browser_session(
+                lambda: self.browser_profile_service.clean_browser_profile(
+                    provider_name, profile=profile, switch_to_recovery=switch_to_recovery))
         return self.browser_profile_service.clean_browser_profile(
             provider_name,
             profile=profile,

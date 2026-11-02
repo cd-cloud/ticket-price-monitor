@@ -1815,3 +1815,6 @@ body[data-workspace="tail"] .hero .actions { display: none; }
 #airchinaExperimentPanel .actions { flex-wrap: wrap; }
 #airchinaExperimentPanel .actions label { min-width: 0; max-width: 100%; }
 #airchinaExperimentPanel select { max-width: 100%; }
+#airchinaExperimentNotices details { margin: 12px 0; padding: 12px; border: 1px solid var(--border); border-radius: 12px; }
+#airchinaExperimentNotices summary { cursor: pointer; overflow-wrap: anywhere; }
+#airchinaExperimentNotices pre { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; max-height: 400px; overflow: auto; }

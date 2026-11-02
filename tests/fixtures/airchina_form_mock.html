@@ -1,0 +1,149 @@
+<!doctype html>
+<!-- Synthetic offline UI only. Class stems/structure from observed public controls. -->
+<html lang="zh"><head><meta charset="utf-8"></head><body>
+<div data-id="oneWay">单程</div><div id="tabCurrent" data-id="roundTrip">往返</div>
+<div class="input_inputContainer__test" data-side="origin">
+  <div class="input_inputOutside__test"><input placeholder="出发机场"></div>
+</div>
+<div class="input_inputContainer__test" data-side="destination">
+  <div class="input_inputOutside__test"><input placeholder="到达机场"></div>
+</div>
+<input placeholder="出发日期" readonly value="2020-01-01"><input placeholder="返回日期" readonly value="2020-01-02">
+<div id="calendar"></div>
+<div class="select_container__test" id="ordinary">
+  <div class="select_title__test">乘客类型</div>
+  <div class="select_contentContainer__test"></div>
+  <div class="select_dropcontent__test" hidden></div>
+</div>
+<div class="select_container__test">
+  <div class="select_title__test">伤残军警乘客</div>
+  <div class="select_contentContainer__test" id="special">0残疾军人/伤残人民警察</div>
+</div>
+<div class="searchCore_searchButton__test">查询</div>
+<script>
+const scenario = __SCENARIO__;
+const departure = document.querySelector('input[placeholder="出发日期"]');
+document.body.dataset.submissions = "0";
+document.querySelector('[data-id="oneWay"]').onclick = e => {
+  document.querySelector('#tabCurrent').removeAttribute('id');
+  e.currentTarget.id = 'tabCurrent';
+  document.querySelector('input[placeholder="返回日期"]')?.remove();
+};
+const airports = {PEK:"北京首都国际机场", SHA:"上海虹桥机场", PVG:"上海浦东机场"};
+for (const root of document.querySelectorAll('[data-side]')) {
+  const input = root.querySelector('input');
+  input.onfocus = () => {
+    if (!root.querySelector('.input_imageMargin__test')) {
+      const label = document.createElement('span');
+      label.className = 'input_imageMargin__test';
+      label.textContent = root.dataset.side === "origin" ? "出发机场" : "到达机场";
+      root.prepend(label);
+    }
+    input.placeholder = "输入城市或机场三字码";
+  };
+  input.oninput = () => {
+    if (scenario === "no_candidates") return;
+    root.querySelector('ul')?.remove();
+    root.querySelector('.input_text__test')?.remove();
+    const list = document.createElement('ul');
+    // Deliberately reverse order and include unrelated candidates.
+    for (const code of ["PVG","SHA","PEK"]) {
+      if (scenario === "missing_airport" && code === "PEK") continue;
+      const item = document.createElement('li');
+      item.className = 'CitySelector_airportItem__test';
+      item.innerHTML = `<span>${airports[code]}</span><span class="CitySelector_code__test">${code}</span><span class="CitySelector_code__test">中国</span>`;
+      item.onclick = () => {
+        input.value = airports[code];
+        const selected = document.createElement('div');
+        selected.className = 'input_text__test';
+        selected.textContent = code;
+        input.parentElement.append(selected);
+        list.remove();
+        if (root.dataset.side === "origin") document.querySelector('[data-side="destination"] input').focus();
+      };
+      list.append(item);
+    }
+    (scenario === "portal_candidates" ? document.body : root).append(list);
+  };
+}
+let month = new Date(new Date().getFullYear(), new Date().getMonth() - 2, 1);
+function calendar() {
+  const root = document.getElementById('calendar');
+  root.replaceChildren();
+  for (let offset = 0; offset < 2; offset++) {
+    const date = new Date(month.getFullYear(), month.getMonth() + offset, 1);
+    const panel = document.createElement('div');
+    panel.className = 'styles_calendarPanel__test';
+    panel.innerHTML = `<span class="style_calendarYearBtn__test">${date.getFullYear()}年</span>
+      <span class="style_calendarMonthBtn__test">${date.getMonth()+1}月</span>`;
+    const nav = document.createElement('button');
+    nav.className = offset ? 'styles_calendarHeaderNextBtn__test' : 'styles_calendarHeaderPrevBtn__test';
+    nav.textContent = offset ? '>' : '<';
+    nav.onclick = () => { month.setMonth(month.getMonth() + (offset ? 1 : -1)); calendar(); };
+    panel.append(nav);
+    const table = document.createElement('table');
+    for (let day = 1; day <= new Date(date.getFullYear(), date.getMonth()+1, 0).getDate(); day++) {
+      const cell = table.insertRow().insertCell();
+      cell.className = 'styles_calendarCellOther__test';
+      const number = document.createElement('span');
+      number.className = 'styles_calendarInnerBodyDate__test';
+      number.textContent = day;
+      number.onclick = () => {
+        departure.value = `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(day).padStart(2,'0')}`;
+        if (scenario === 'wrong_date') departure.value = '2020-01-01';
+        root.replaceChildren();
+      };
+      cell.append(number);
+    }
+    panel.append(table);
+    root.append(panel);
+  }
+}
+departure.onclick = calendar;
+const counts = {成人:3,儿童:2,婴儿:1};
+const ordinary = document.getElementById('ordinary');
+const popup = ordinary.querySelector('.select_dropcontent__test');
+function summary() {
+  ordinary.querySelector('.select_contentContainer__test').textContent =
+    Object.entries(counts).map(([label,n]) => n+label).join('\n');
+}
+function counters() {
+  popup.replaceChildren();
+  for (const label of ["成人","儿童","婴儿"]) {
+    const row = document.createElement('div');
+    row.className = "select_stepContainer__test";
+    row.innerHTML = `<div class="select_labelWrap__test"><div>${label}</div><div>年龄说明</div></div>`;
+    const value = document.createElement('div');
+    value.className = "stepper_inputWrapper__test";
+    value.textContent = counts[label];
+    for (const sign of ["-","+"]) {
+      const btn = document.createElement('button');
+      btn.className = "stepper_stepperBtn__test";
+      btn.textContent = sign;
+      btn.disabled = sign === "-" && counts[label] <= (label === "成人" ? 1 : 0);
+      btn.onclick = () => { counts[label] += sign === "-" ? -1 : 1; counters(); };
+      row.append(btn);
+      if (sign === "-") row.append(value);
+    }
+    popup.append(row);
+  }
+  const confirm = document.createElement('button');
+  confirm.className = "select_primaryBtn__test";
+  confirm.textContent = "确定";
+  confirm.onclick = () => { summary(); popup.hidden = true; };
+  popup.append(confirm);
+}
+summary();
+ordinary.querySelector('.select_title__test').onclick = () => { popup.hidden = false; counters(); };
+if (scenario === "special") document.getElementById("special").textContent = "1残疾军人/伤残人民警察";
+document.querySelector('.searchCore_searchButton__test').onclick = () => {
+  document.body.dataset.submissions = String(+document.body.dataset.submissions + 1);
+  document.body.dataset.conditions = JSON.stringify({
+    origin:document.querySelector('[data-side="origin"] .input_text__test')?.textContent,
+    destination:document.querySelector('[data-side="destination"] .input_text__test')?.textContent,
+    date:departure.value, counts,
+  });
+  history.pushState({}, "", `/flight/oneway/pek-sha/${departure.value}`);
+  document.body.innerHTML = '<h1>选择航班（离线模拟）</h1>';
+};
+</script></body></html>

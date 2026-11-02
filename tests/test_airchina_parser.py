@@ -60,6 +60,7 @@ def test_columns_never_shift_when_other_cabins_are_missing(cabin, count, minimum
     ("stale_visible", True, "stale_results"),
     ("loading_visible", True, "results_loading"),
     ("notice_confirmation_visible", True, "manual_notice_confirmation_required"),
+    ("no_results_visible", True, "page_reports_no_results"),
     ("url", "https://evil.test/flight/oneway/pek-sha/2026-11-10", "url_mismatch"),
     ("url", "https://www.airchina.com.cn/flight/oneway/pek-sha/2026-11-11", "url_mismatch"),
     ("header_count", 2, "ambiguous_header"),
@@ -122,6 +123,15 @@ def test_calendar_prices_cannot_become_flight_fares():
     assert result["status"] == "inconclusive"
 
 
+def test_row_rejection_reason_is_enum_count_not_raw_content():
+    sample = fixture()
+    sample["rows"] = [sample["rows"][11]]
+    sample["rows"][0]["duration"] = "secret-page-content"
+    result = parse_reference_fares(sample, ROUTE)
+    assert result["row_rejection_reasons"] == {"unsupported_duration_or_overnight": 1}
+    assert "secret-page-content" not in json.dumps(result)
+
+
 def test_seat_count_does_not_become_price():
     sample = fixture()
     sample["rows"] = [sample["rows"][11]]
@@ -168,7 +178,8 @@ def test_probe_reports_reference_preview_without_enabling_price_storage(tmp_path
     sample = fixture()
     sample.update(url=page.url, date_text="2099年1月1日")
     # Synthetic live-state evidence, not a change to the historical fixture.
-    sample.update(stale_visible=False, loading_visible=False, notice_confirmation_visible=False)
+    sample.update(stale_visible=False, loading_visible=False, notice_confirmation_visible=False,
+                  no_results_visible=False)
     page.evaluate.return_value = sample
     path = asyncio.run(inspect_airchina_page(automation, future))
     report = json.loads(path.read_text())

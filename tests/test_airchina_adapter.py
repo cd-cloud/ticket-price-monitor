@@ -19,7 +19,7 @@ def snapshot():
     # Recorded public fares plus synthetic current request/guard evidence.
     path = Path(__file__).parent / "fixtures" / "airchina_expanded_economy.json"
     data = json.loads(path.read_text())
-    data.update(url=TARGET, date_text="2099年1月1日", stale_visible=False)
+    data.update(url=TARGET, date_text="2099年1月1日", stale_visible=False, no_results_visible=False)
     return data
 
 
@@ -33,16 +33,29 @@ def wait(page, **kwargs):
     return asyncio.run(wait_for_results(page, ROUTE, expected_url=TARGET, **kwargs))
 
 
-def test_wait_requires_two_identical_valid_projections():
+def test_wait_requires_two_matching_validated_fare_samples():
     data = snapshot()
     page = page_for(data, copy.deepcopy(data))
     report = wait(page)
     assert report["state"] == "reference_fares_observed"
     assert len(report["reference_preview"]["offers"]) == 16
-    assert report["wait_evidence"] == {
+    assert {key: report["wait_evidence"][key] for key in ("reason", "polls", "coverage_complete")} == {
         "reason": "stable_visible_results", "polls": 2, "coverage_complete": False,
     }
     assert not hasattr(page, "goto")
+    assert report["wait_evidence"]["stable_samples"] == 2
+
+
+def test_irrelevant_product_details_and_row_order_do_not_reset_list_stability():
+    a = snapshot()
+    b = copy.deepcopy(a)
+    b["rows"].reverse()
+    for row in b["rows"]:
+        row["products"] = [{"summaries": "changed animated product details"}]
+        row["expanded_cabins"] = ["business"]
+    report = wait(page_for(a, b))
+    assert report["state"] == "reference_fares_observed"
+    assert report["wait_evidence"]["polls"] == 2
 
 
 def test_same_count_but_changed_fare_resets_stability():
@@ -94,6 +107,70 @@ def test_stable_but_invalid_or_empty_evidence_not_ready(changes):
     assert report["state"] == "query_page_unverified"
     assert report["wait_evidence"]["reason"] == "result_wait_budget"
     assert not report["reference_preview"]["offers"]
+
+
+@pytest.mark.parametrize(("changes", "reason"), [
+    ({"date_text": None}, "visible_date_mismatch"),
+    ({"route_text": None}, "visible_route_mismatch"),
+    ({"price_notice": None}, "unknown_price_scope"),
+    ({"rows": []}, "no_supported_visible_offer"),
+    ({"no_results_visible": True}, "page_reports_no_results"),
+])
+def test_wait_preserves_precise_failure_without_raw_page_data(changes, reason):
+    data = {**snapshot(), **changes, "private_page_data": "secret-token"}
+    data["url"] += "?session=private-token"
+    report = wait(page_for(data, data), timeout_ms=500)
+    evidence = report["wait_evidence"]
+    assert evidence["last_observation"]["parser_reason"] == reason
+    assert evidence["last_observation"]["visible_rows"] == len(data["rows"])
+    assert report["reference_preview"]["offers"] == []
+    assert "secret-token" not in json.dumps(report)
+    assert "private-token" not in json.dumps(report)
+    assert "route_text" not in evidence["last_observation"]  # Presence only, never raw text.
+
+
+def test_invalid_context_resets_even_when_fares_match():
+    data = snapshot()
+    page = page_for(data, {**data, "date_text": "2099年1月2日"}, data, data)
+    report = wait(page)
+    assert report["wait_evidence"]["polls"] == 4
+
+
+def test_empty_state_is_not_negative_inventory_and_can_recover_without_navigation():
+    data = snapshot()
+    report = wait(page_for({**data, "no_results_visible": True, "rows": []}, data, data))
+    assert report["state"] == "reference_fares_observed"
+    assert report["wait_evidence"]["polls"] == 3
+    assert report["wait_evidence"]["transitions"][0]["parser_reason"] == "page_reports_no_results"
+    assert not report["wait_evidence"]["coverage_complete"]
+
+
+def test_diagnostics_persist_before_cancellation():
+    saved = []
+    page = page_for(snapshot(), asyncio.CancelledError())
+    with pytest.raises(asyncio.CancelledError):
+        wait(page, diagnostic_callback=saved.append)
+    assert saved[0]["last_observation"]["accepted_offers"] == 16
+    assert "offers" not in saved[0]
+
+
+def test_timeout_keeps_last_parsing_reason_and_bounded_transitions():
+    async def scenario():
+        samples = 0
+        async def evaluate(_):
+            nonlocal samples
+            samples += 1
+            if samples > 10:
+                await asyncio.sleep(5)
+            return {**snapshot(), "rows": [], "date_text": None if samples % 2 else "2099年1月1日"}
+        return await wait_for_results(
+            SimpleNamespace(evaluate=evaluate, wait_for_timeout=AsyncMock()), ROUTE,
+            expected_url=TARGET, timeout_ms=100, poll_ms=1,
+        )
+    report = asyncio.run(scenario())
+    assert report["wait_evidence"]["reason"] == "result_wait_timeout"
+    assert report["wait_evidence"]["last_observation"]["parser_reason"] == "no_supported_visible_offer"
+    assert len(report["wait_evidence"]["transitions"]) == 8
 
 
 def test_redirect_is_terminal_not_a_new_navigation():

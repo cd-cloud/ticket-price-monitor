@@ -66,5 +66,7 @@ jobs:
           node --check static/app.js
           node --check static/airchina_experiment.js
           node --check providers/airchina_dom.js
+          node --check providers/airchina_notices.js
+          node --check providers/airchina_form.js
       - name: Run frontend tests
         run: node --test tests/test_tail_ui.cjs

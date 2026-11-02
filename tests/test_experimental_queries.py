@@ -3,6 +3,7 @@ import asyncio
 import json
 import threading
 import time
+from datetime import date, timedelta
 from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
@@ -56,10 +57,18 @@ def env(tmp_path):
     lock = threading.Lock()
     control = SimpleNamespace(challenge=False, error=False, close=False, entered=False, hang=False, config=None)
     page = SimpleNamespace(url=TARGET, evaluate=AsyncMock(return_value=snapshot()),
-                           wait_for_timeout=AsyncMock())
+                           wait_for_timeout=AsyncMock(), is_closed=Mock(return_value=False))
+    from test_airchina_network_diagnostics import Page as EventPage, Request, Response
+    events = EventPage()
+    page.on, page.remove_listener = events.on, events.remove_listener
+    page.events = events
 
     async def navigate(*args, **kwargs):
         control.entered = True
+        request = Request()
+        events.emit("request", request)
+        events.emit("response", Response(request, 200))
+        events.emit("requestfinished", request)
         if control.error:
             raise RuntimeError("secret-key-should-never-be-written")
         while control.hang:
@@ -105,6 +114,56 @@ def test_success_shared_runtime_and_separate_storage(env):
     automation._close_context_quietly.assert_awaited_once_with("context")
     page.goto.assert_awaited_once()
     assert "secret" not in json.dumps(service.list())
+    assert final["diagnostics"]["last_observation"]["accepted_offers"] == 16
+    assert final["diagnostics"] == final["result"]["wait_evidence"]
+
+
+def test_profile_unavailable_is_actionable_without_query_or_retry(env):
+    from browser_session_manager import AirChinaSessionUnavailable
+    service, repo, control, page, automation, query = env
+    automation._new_page.side_effect = AirChinaSessionUnavailable()
+    final = wait(service, service.submit(REQUEST)["job_id"])
+    assert final["status"] == "failed"
+    assert final["error_type"] == "AirChinaSessionUnavailable"
+    assert "不会自动切换" in final["message"]
+    assert final["network_diagnostics"]["counts"] == {}
+    assert final["network_diagnostics"]["finished"]
+    page.goto.assert_not_awaited()
+    automation._new_page.assert_awaited_once()
+    assert repo.count_snapshots() == 0
+
+
+@pytest.mark.parametrize("ending", ["timeout", "cancel", "error"])
+def test_last_diagnostic_survives_total_timeout_cancel_and_failure(env, ending):
+    service, repo, control, page, automation, query = env
+    # First real parser sample fails; the next I/O hangs or raises. This exercises
+    # the actual callback chain, rather than returning a fabricated final report.
+    data = {**snapshot(), "date_text": None}
+    entered = threading.Event()
+    async def evaluate(_):
+        if not entered.is_set():
+            entered.set()
+            return data
+        if ending == "error":
+            raise RuntimeError("secret-page-material")
+        await asyncio.sleep(10)
+    page.evaluate.side_effect = evaluate
+    service.timeout_seconds = .3 if ending == "timeout" else 5
+    job = service.submit(REQUEST)
+    if ending == "cancel":
+        wait(service, job["job_id"], lambda j: j.get("diagnostics") is not None)
+        service.control(job["job_id"], "cancel")
+    final = wait(service, job["job_id"])
+    assert final["status"] == {"timeout": "timed_out", "cancel": "cancelled", "error": "failed"}[ending]
+    assert final["result"] is None
+    assert final["diagnostics"]["last_observation"]["parser_reason"] == "visible_date_mismatch"
+    audit = final["network_diagnostics"]
+    assert audit["attached"] and audit["finished"]
+    assert audit["counts"]["responses"] == 1
+    assert audit["outcome"] == ("error" if ending == "error" else "cancelled")
+    assert all(not handlers for handlers in page.events.handlers.values())
+    assert "secret-page-material" not in json.dumps(final)
+    assert repo.count_snapshots() == 0
 
 
 def test_manual_resume_keeps_page_and_lock(env):
@@ -123,13 +182,105 @@ def test_manual_resume_keeps_page_and_lock(env):
     page.goto.assert_awaited_once()
 
 
+@pytest.mark.parametrize("ending", ["continue", "cancel", "timeout", "stop"])
+def test_failed_form_manual_inspection_holds_then_disposes_without_retry(env, monkeypatch, ending):
+    from providers.airchina_form import FormEntry
+    service, repo, control, page, automation, query = env
+    calls = []
+    async def failed(self, _timeout):
+        calls.append(1)
+        self.publish("stopped", "form_wait_timeout", failed_stage="selecting_origin")
+        return {"state": "form_entry_unverified", "entry_evidence": self.evidence}
+    monkeypatch.setattr(FormEntry, "run", failed)
+    if ending == "timeout":
+        service.timeout_seconds = .4
+    job = service.submit({**REQUEST, "entry_mode": "form", "session_mode": "reuse",
+                          "interaction_mode": "stop" if ending == "stop" else "wait",
+                          "departure_date": (date.today() + timedelta(days=10)).isoformat()})
+    if ending != "stop":
+        waiting = wait(service, job["job_id"], lambda j: j["status"] == "waiting_user")
+        assert waiting["stage"] == "form_inspection"
+        assert waiting["entry_evidence"]["reason"] == "form_wait_timeout"
+        assert query.run_lock.locked() and not control.close
+        automation._close_context_quietly.assert_not_awaited()
+        if ending in {"continue", "cancel"}:
+            service.control(job["job_id"], ending)
+    final = wait(service, job["job_id"])
+    assert final["status"] == {"continue":"inconclusive", "cancel":"cancelled",
+                               "timeout":"timed_out", "stop":"inconclusive"}[ending]
+    assert final["session_evidence"]["state"] == "closed"
+    assert control.close and not query.run_lock.locked()
+    assert len(calls) == 1 and repo.count_snapshots() == 0
+    page.goto.assert_not_awaited()
+    page.evaluate.assert_not_awaited()
+
+
+@pytest.mark.parametrize("manual", [False, True])
+def test_form_entry_is_forwarded_once_and_manual_continue_never_resubmits(env, monkeypatch, manual):
+    from providers.airchina_form import FormEntry, validate_entry
+    service, repo, control, page, automation, query = env
+    departure = date.today() + timedelta(days=10)
+    request = {**REQUEST, "departure_date": departure.isoformat(), "entry_mode": "form"}
+    calls = []
+    async def entered(self, _timeout):
+        calls.append(self.route)
+        page.url = validate_entry(self.route, "form")
+        data = snapshot()
+        data.update(url=page.url, date_text=f"{departure.year}年{departure.month}月{departure.day}日")
+        page.evaluate.return_value = data
+        self.publish("result_page", "result_page_observed", submit_attempted=True, result_page_observed=True)
+        return {"state": "query_submitted", "entry_evidence": self.evidence}
+    monkeypatch.setattr(FormEntry, "run", entered)
+    control.challenge = manual
+    job = service.submit(request)
+    if manual:
+        wait(service, job["job_id"], lambda j: j["status"] == "waiting_user")
+        control.challenge = False
+        service.control(job["job_id"], "continue")
+    final = wait(service, job["job_id"])
+    assert final["status"] == "completed_reference"
+    assert final["request"]["entry_mode"] == "form"
+    assert final["entry_evidence"]["result_page_observed"]
+    assert len(calls) == 1
+    page.goto.assert_not_awaited()  # No second goto from the adapter.
+    assert repo.count_snapshots() == 0
+
+
+@pytest.mark.parametrize("ending", ["error", "timeout", "cancel"])
+def test_form_entry_audit_survives_failure_and_no_result(env, monkeypatch, ending):
+    from providers.airchina_form import FormEntry
+    service, repo, control, page, automation, query = env
+    async def entered(self, _timeout):
+        self.publish("submitting_form", "submit_attempted", submit_attempted=True)
+        if ending == "error":
+            raise RuntimeError("private-form-token")
+        await asyncio.sleep(10)
+    monkeypatch.setattr(FormEntry, "run", entered)
+    service.timeout_seconds = .2 if ending == "timeout" else 5
+    job = service.submit({**REQUEST, "departure_date": (date.today() + timedelta(days=10)).isoformat(),
+                          "entry_mode": "form"})
+    if ending == "cancel":
+        wait(service, job["job_id"], lambda j: j.get("entry_evidence") is not None)
+        service.control(job["job_id"], "cancel")
+    final = wait(service, job["job_id"])
+    assert final["status"] == {"error": "failed", "timeout": "timed_out", "cancel": "cancelled"}[ending]
+    assert final["entry_evidence"]["submit_attempted"]
+    assert not final["entry_evidence"]["result_page_observed"]
+    assert "private-form-token" not in json.dumps(final)
+    assert final["result"] is None
+    assert repo.count_snapshots() == 0
+
+
 def test_cancel_waiting_user_closes_context(env):
     service, repo, control, page, automation, query = env
     control.challenge = True
     job = service.submit(REQUEST)
     wait(service, job["job_id"], lambda j: j["status"] == "waiting_user")
     service.control(job["job_id"], "cancel")
-    assert wait(service, job["job_id"])["status"] == "cancelled"
+    final = wait(service, job["job_id"])
+    assert final["status"] == "cancelled"
+    assert final["access_events"][0]["state"] == "needs_verification"
+    assert final["access_events"][0]["action"] == "wait"
     assert control.close
     assert repo.count_snapshots() == 0
     automation._close_context_quietly.assert_awaited_once()
@@ -140,9 +291,215 @@ def test_total_timeout_includes_manual_wait(env):
     service.timeout_seconds = .2
     control.challenge = True
     job = service.submit(REQUEST)
-    assert wait(service, job["job_id"])["status"] == "timed_out"
+    final = wait(service, job["job_id"])
+    assert final["status"] == "timed_out"
+    assert final["access_events"][0]["state"] == "needs_verification"
     assert control.close
     assert repo.count_snapshots() == 0
+
+
+@pytest.mark.parametrize(("text", "state"), [
+    ("安全验证", "needs_verification"),
+    ("我知道了", "needs_notice_confirmation"),
+    ("访问过于频繁", "blocked"),
+    ("停留时间过长，请重新查询价格", "stale_results"),
+])
+def test_unattended_access_stop_releases_lock_and_preserves_reason(env, text, state):
+    service, repo, control, page, automation, query = env
+    page.locator.return_value.inner_text.side_effect = None
+    page.locator.return_value.inner_text.return_value = text
+    job = service.submit({**REQUEST, "interaction_mode": "stop"})
+    final = wait(service, job["job_id"])
+    service._thread.join(1)
+    assert final["status"] == "inconclusive"
+    assert final["stage"] == state
+    assert "无人值守模式已停止" in final["message"]
+    assert final["access_events"] == [{
+        "state": state, "phase": "result_page", "action": "stop",
+        "observed_at": final["access_events"][0]["observed_at"],
+    }]
+    assert not query.run_lock.locked()
+    automation._new_page.assert_awaited_once()
+    automation._close_context_quietly.assert_awaited_once()
+    page.goto.assert_awaited_once()
+    page.evaluate.assert_not_awaited()
+    assert repo.count_snapshots() == 0
+    with pytest.raises(RuntimeError):
+        service.control(job["job_id"], "continue")
+
+
+def test_unattended_does_not_block_valid_reference_reading(env):
+    service, repo, *_ = env
+    job = service.submit({**REQUEST, "interaction_mode": "stop"})
+    final = wait(service, job["job_id"])
+    assert final["status"] == "completed_reference"
+    assert final["access_events"] == []
+    assert repo.count_snapshots() == 0
+
+
+def test_two_explicit_tasks_reuse_session_but_query_and_validate_again(env):
+    service, repo, control, page, automation, query = env
+    request = {**REQUEST, "session_mode": "reuse", "interaction_mode": "stop"}
+    first = wait(service, service.submit(request)["job_id"])
+    service._thread.join(1)
+    assert not control.close
+    assert not query.run_lock.locked()  # idle is not a running query
+    second = wait(service, service.submit(request)["job_id"])
+    service._thread.join(1)
+    assert first["status"] == second["status"] == "completed_reference"
+    assert not first["session_evidence"]["reused"] and second["session_evidence"]["reused"]
+    assert first["session_evidence"]["generation"] == second["session_evidence"]["generation"]
+    assert second["session_evidence"]["use_number"] == 2
+    for job in (first, second):
+        audit = job["network_diagnostics"]
+        assert audit["attached"] and audit["finished"]
+        assert audit["counts"]["requests"] == audit["counts"]["responses"] == 1
+        assert audit["outcome"] == "reference_fares_observed"
+    assert all(not handlers for handlers in page.events.handlers.values())
+    automation._new_page.assert_awaited_once()
+    automation._close_context_quietly.assert_not_awaited()
+    assert page.goto.await_count == 2  # no cached-price shortcut
+    assert page.evaluate.await_count >= 4  # both tasks independently revalidate
+    assert repo.count_snapshots() == 0
+    def maintenance():
+        assert control.close and query.run_lock.locked()
+        return "maintenance"
+    assert service.without_browser_session(maintenance) == "maintenance"
+    assert control.close
+    automation._close_context_quietly.assert_awaited_once()
+
+
+@pytest.mark.parametrize("ending", ["challenge", "cancel", "timeout", "error"])
+def test_reuse_is_disposed_after_failure(env, ending):
+    service, repo, control, page, automation, query = env
+    request = {**REQUEST, "session_mode": "reuse"}
+    wait(service, service.submit(request)["job_id"])
+    service._thread.join(1)
+    control.challenge = True
+    if ending == "error":
+        control.error = True
+    if ending == "timeout":
+        service.timeout_seconds = .2
+    if ending == "challenge":
+        request["interaction_mode"] = "stop"
+    job = service.submit(request)
+    if ending == "cancel":
+        wait(service, job["job_id"], lambda j: j["status"] == "waiting_user")
+        with pytest.raises(RuntimeError):
+            service.without_browser_session()
+        service.control(job["job_id"], "cancel")
+    final = wait(service, job["job_id"])
+    service._thread.join(1)
+    assert final["status"] == {"challenge":"inconclusive", "cancel":"cancelled",
+                               "timeout":"timed_out", "error":"failed"}[ending]
+    assert final["session_evidence"]["state"] == "closed"
+    assert control.close and not query.run_lock.locked()
+    automation._new_page.assert_awaited_once()
+    assert page.goto.await_count == 2  # no automatic third query
+
+
+def test_application_shutdown_closes_retained_browser(env):
+    service, repo, control, page, automation, query = env
+    wait(service, service.submit({**REQUEST, "session_mode": "reuse"})["job_id"])
+    service._thread.join(1)
+    assert not control.close
+    service.close()
+    assert control.close
+    assert not service._session_runner._thread.is_alive()
+
+
+def test_results_entry_without_retained_page_fails_before_opening_browser(env):
+    service, repo, control, page, automation, query = env
+    job = service.submit({**REQUEST, "entry_mode": "results", "session_mode": "reuse",
+                          "interaction_mode": "stop",
+                          "departure_date": (date.today() + timedelta(days=10)).isoformat()})
+    final = wait(service, job["job_id"])
+    assert final["error_type"] == "RetainedSessionUnavailable"
+    assert "未新开浏览器" in final["message"]
+    automation._new_page.assert_not_awaited()
+    page.goto.assert_not_awaited()
+    assert not query.run_lock.locked() and repo.count_snapshots() == 0
+
+
+def test_results_entry_uses_retained_page_and_never_falls_back(env, monkeypatch):
+    from providers.airchina_requery import ResultsRequery
+    service, repo, control, page, automation, query = env
+    first = wait(service, service.submit({**REQUEST, "session_mode": "reuse"})["job_id"])
+    async def no_refresh(self, _timeout):
+        assert self.page is page
+        self.publish("stopped", "refresh_not_observed", submit_attempted=True, baseline_validated=True)
+        return {"state": "form_entry_unverified", "entry_evidence": self.evidence}
+    monkeypatch.setattr(ResultsRequery, "run", no_refresh)
+    job = service.submit({**REQUEST, "entry_mode": "results", "session_mode": "reuse",
+                          "interaction_mode": "stop",
+                          "departure_date": (date.today() + timedelta(days=10)).isoformat()})
+    final = wait(service, job["job_id"])
+    assert final["status"] == "inconclusive"
+    assert final["session_evidence"]["generation"] == first["session_evidence"]["generation"]
+    assert final["session_evidence"]["reused"] and final["session_evidence"]["state"] == "closed"
+    assert final["entry_evidence"]["reason"] == "refresh_not_observed"
+    automation._new_page.assert_awaited_once()
+    page.goto.assert_awaited_once()  # first task only
+    assert not query.run_lock.locked() and repo.count_snapshots() == 0
+
+
+def test_verification_appearing_during_list_reading_stops_without_retry(env):
+    service, repo, control, page, automation, query = env
+    page.evaluate.return_value = {**snapshot(), "verification_visible": True}
+    job = service.submit({**REQUEST, "interaction_mode": "stop"})
+    final = wait(service, job["job_id"])
+    service._thread.join(1)
+    assert final["status"] == "inconclusive"
+    assert final["access_events"][0]["state"] == "needs_verification"
+    assert final["access_events"][0]["phase"] == "reading_results"
+    page.goto.assert_awaited_once()
+    assert not query.run_lock.locked()
+    assert repo.count_snapshots() == 0
+
+
+def test_home_verification_preserves_pre_submit_stop(env, monkeypatch):
+    from providers.airchina_form import FormEntry
+    service, repo, control, page, automation, query = env
+    async def stopped(self, _timeout):
+        self.publish("stopped", "verification", failed_stage="opening_home")
+        return {"state": "needs_verification", "entry_evidence": self.evidence}
+    monkeypatch.setattr(FormEntry, "run", stopped)
+    job = service.submit({**REQUEST, "interaction_mode": "stop", "entry_mode": "form",
+                          "departure_date": (date.today() + timedelta(days=10)).isoformat()})
+    final = wait(service, job["job_id"])
+    assert final["status"] == "inconclusive"
+    assert final["access_events"][0]["phase"] == "home_form"
+    assert not final["entry_evidence"]["submit_attempted"]
+    page.goto.assert_not_awaited()
+    page.evaluate.assert_not_awaited()
+
+
+def test_access_history_survives_error_after_manual_resume(env):
+    service, repo, control, page, automation, query = env
+    control.challenge = True
+    job = service.submit(REQUEST)
+    waiting = wait(service, job["job_id"], lambda j: j["status"] == "waiting_user")
+    assert waiting["request"]["interaction_mode"] == "wait"  # legacy API default
+    page.locator.return_value.inner_text.side_effect = RuntimeError("private-session-token")
+    service.control(job["job_id"], "continue")
+    final = wait(service, job["job_id"])
+    assert final["status"] == "failed"
+    assert final["access_events"] == waiting["access_events"]
+    assert "private-session-token" not in json.dumps(final)
+
+
+def test_access_history_survives_restart_without_replay(env):
+    service, repo, control, page, automation, query = env
+    events = [{"state": "needs_verification", "phase": "result_page", "action": "wait",
+               "observed_at": repo.now_iso()}]
+    repo.save_experimental_query({
+        "job_id": "orphan-access", "status": "waiting_user", "updated_at": repo.now_iso(),
+        "access_events": events,
+    })
+    recovered = ExperimentalQueryService(query_service=query, repository=repo, run_lock=query.run_lock)
+    assert recovered.get("orphan-access")["status"] == "interrupted"
+    assert recovered.get("orphan-access")["access_events"] == events
+    page.goto.assert_not_awaited()
 
 
 def test_timeout_during_navigation_closes_context(env):
@@ -181,6 +538,9 @@ def test_wrong_task_controls_and_terminal_resume_rejected(env):
     {"origin": "BJS"}, {"origin": "PEK?secret=x"}, {"destination": "PEK"},
     {"cabin": "first"}, {"flight_no": 123}, {"flight_no": "book"},
     {"departure_date": "2000-01-01"}, {"departure_date": None},
+    {"interaction_mode": None}, {"interaction_mode": True}, {"interaction_mode": []},
+    {"interaction_mode": {}}, {"interaction_mode": "solve"},
+    {"session_mode": None}, {"session_mode": True}, {"session_mode": []}, {"session_mode": "rotate"},
 ])
 def test_invalid_input_never_opens_browser(env, changes):
     service, repo, control, page, *_ = env
@@ -254,3 +614,6 @@ def test_api_and_web_entry_with_no_real_browser(tmp_path, monkeypatch):
         assert client.post(f"/api/experiments/airchina/{job_id}/continue").status_code == 409
         assert client.get("/api/experiments/airchina/unknown").status_code == 404
         assert client.post("/api/experiments/airchina", json=REQUEST, headers={"Origin": "https://evil.test"}).status_code == 403
+        assert client.post("/api/experiments/airchina/session/close").json() == {"closed": True}
+        assert client.post("/api/experiments/airchina/session/close",
+                           headers={"Origin": "https://evil.test"}).status_code == 403

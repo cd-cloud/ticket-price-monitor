@@ -27,7 +27,11 @@
     blocked_visible: /访问过于频繁|访问异常|访问被拒绝/.test(body),
     stale_visible: /停留时间过长/.test(body) && /价格/.test(body),
     loading_visible: /正在加载中，请稍候/.test(body),
-    notice_confirmation_visible: /确认，查看下一个提示/.test(body),
+    // Observed empty-state copy, not calendar prices or proof of no inventory.
+    no_results_visible: /查询无结果[～~]?\s*可尝试更换日期或稍后重试/.test(body),
+    notice_confirmation_visible: all(document, '[class*="dialog_mainContent__"]')
+      .some(el => all(el, '[class*="model_header__"]').length > 0
+        && all(el, '[class*="model_body__"]').length > 0),
     header_count: headers.length,
     route_text: header ? text(one(header, '[class*="style_cityTest__"]')) : null,
     date_text: header ? read(header, "style_dateBox__") : null,

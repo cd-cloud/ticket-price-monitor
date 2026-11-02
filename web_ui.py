@@ -108,6 +108,15 @@ def create_app(config_path: str | None = None) -> FastAPI:
         except RuntimeError:
             raise HTTPException(status_code=409, detail="已有查询正在运行或服务正在关闭，请稍后再试。")
 
+    @app.post("/api/experiments/airchina/session/close")
+    async def close_airchina_session() -> dict:
+        try:
+            return await asyncio.to_thread(service.experimental_queries.without_browser_session)
+        except RuntimeError:
+            raise HTTPException(status_code=409, detail="已有查询运行或服务正在关闭，未关闭会话。")
+        except Exception:
+            raise HTTPException(status_code=500, detail="会话清理未确认，请重启应用；未自动查询。")
+
     @app.get("/api/experiments/airchina/{job_id}")
     async def airchina_experiment(job_id: str) -> dict:
         try:
@@ -146,11 +155,14 @@ def create_app(config_path: str | None = None) -> FastAPI:
     @app.post("/api/browser-profiles/{provider}/switch")
     async def switch_browser_profile(provider: str, payload: dict = Body(...)) -> dict:
         try:
-            return service.switch_browser_profile(provider, profile=str(payload.get("profile") or ""))
+            return await asyncio.to_thread(service.switch_browser_profile, provider,
+                                           profile=str(payload.get("profile") or ""))
         except KeyError:
             raise HTTPException(status_code=404, detail="Provider not found")
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
+        except RuntimeError:
+            raise HTTPException(status_code=409, detail="已有查询运行或会话尚未关闭，未切换档案。")
 
     @app.post("/api/browser-profiles/{provider}/reset-recovery")
     async def reset_recovery_profile(provider: str) -> dict:

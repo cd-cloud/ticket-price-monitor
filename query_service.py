@@ -100,7 +100,10 @@ class QueryService:
 
     async def inspect_airchina_experiment(
         self, route, *, flight_no, progress, manual_handler, cancel_event,
-        timeout_seconds=240,
+        timeout_seconds=240, auto_confirm_notices=False, notice_callback=None, diagnostic_callback=None,
+        entry_mode="direct", entry_callback=None,
+        session_mode="fresh", session_pool=None, session_callback=None,
+        network_callback=None,
     ):
         """Experimental task manager owns the shared run_lock.
 
@@ -113,6 +116,11 @@ class QueryService:
         from providers import airchina
 
         airchina.validate_inspection(route, flight_no=flight_no)
+        airchina.validate_entry(route, entry_mode)
+        if session_mode not in ("fresh", "reuse") or (session_mode == "reuse" and session_pool is None):
+            raise ValueError("会话复用需要国航实验的专用浏览器服务。")
+        if entry_mode == "results" and (session_mode != "reuse" or manual_handler is not None):
+            raise ValueError("结果页续查仅支持短时复用、遇阻即停。")
         self.refresh_config()
         config = replace(self.get_config(), headless=False)
         provider = config.providers.get("airchina")
@@ -120,16 +128,72 @@ class QueryService:
             raise ValueError("配置中缺少 airchina；请参考示例配置。")
 
         async def execute():
-            progress("starting_browser")
-            async with self.automation_factory(config, {}) as automation:
-                page, context = await automation._new_page(provider)
+            from providers.airchina_network_diagnostics import NetworkDiagnostics
+            audit = NetworkDiagnostics(network_callback)
+            outcome = "error"
+
+            def tracked_progress(stage):
+                audit.mark(stage)
+                progress(stage)
+
+            def tracked_entry(evidence):
+                audit.mark(evidence.get("stage"))
+                if entry_callback:
+                    entry_callback(evidence)
+
+            async def tracked_manual(state):
+                audit.mark("waiting_user")
+                await manual_handler(state)
+                audit.mark("result_page")
+
+            async def inspect(automation, page, context):
+                nonlocal outcome
+                audit.set_environment(automation, context)
+                audit.attach(page)
                 try:
-                    return await airchina.inspect(
+                    report = await airchina.inspect(
                         ProviderRuntime(automation), provider, route, page,
-                        flight_no=flight_no, progress=progress, manual_handler=manual_handler,
+                        flight_no=flight_no, progress=tracked_progress,
+                        manual_handler=tracked_manual if manual_handler else None,
+                        auto_confirm_notices=auto_confirm_notices, notice_callback=notice_callback,
+                        diagnostic_callback=diagnostic_callback,
+                        entry_mode=entry_mode, entry_callback=tracked_entry,
                     )
+                    outcome = report["state"]
+                    return report
                 finally:
-                    await automation._close_context_quietly(context)
+                    # Browser shutdown aborts outstanding resources. Do not
+                    # misreport these cleanup effects as query network failures.
+                    audit.detach()
+
+            try:
+                tracked_progress("starting_browser")
+                if session_pool is not None:
+                    async with session_pool.lease(
+                        config, provider, self.automation_factory, mode=session_mode, callback=session_callback,
+                        **({"require_existing": True} if entry_mode == "results" else {}),
+                    ) as lease:
+                        report = await inspect(lease.automation, lease.page, lease.context)
+                        # Only a completed, strictly validated reference read can
+                        # retain the session. Challenge/empty/stale/error never do.
+                        lease.keep = (not cancel_event.is_set() and report["state"] in {
+                            "reference_fares_observed", "fare_products_observed",
+                        })
+                        return report
+                async with self.automation_factory(config, {}) as automation:
+                    page, context = await automation._new_page(provider)
+                    try:
+                        return await inspect(automation, page, context)
+                    finally:
+                        await automation._close_context_quietly(context)
+            except asyncio.CancelledError:
+                outcome = "cancelled"
+                raise
+            except Exception:
+                outcome = "error"
+                raise
+            finally:
+                audit.close(outcome)
 
         async def watch_cancel(task):
             while not cancel_event.is_set():
