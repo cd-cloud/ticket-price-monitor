@@ -32,6 +32,11 @@
       value: input ? input.value : null,
       code: root ? text(one(root, '[class*="input_text__"]')) : null,
       diagnostics: {
+        root_count: es.length,
+        input_count: root ? all(root, 'input').length : 0,
+        picker_ready: !!root && !!input && document.activeElement === input &&
+          all(root, '[class*="CitySelector_cityPickerContainer__"]').length === 1 &&
+          all(root, 'li[class*="CitySelectorContent_contentCitysItem__"], li[class*="CitySelector_airportItem__"]').length > 0,
         input_matches: input && typeof code === "string" ? input.value === code : null,
         input_focused: input ? document.activeElement === input : null,
         input_enabled: input ? !disabled(input) && !input.readOnly : null,

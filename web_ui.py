@@ -97,7 +97,20 @@ def create_app(config_path: str | None = None) -> FastAPI:
 
     @app.get("/api/experiments/airchina")
     async def airchina_experiments(limit: int = Query(20, ge=1, le=100)) -> dict:
-        return {"jobs": await asyncio.to_thread(service.experimental_queries.list, limit)}
+        return {"jobs": await asyncio.to_thread(service.experimental_queries.list, limit),
+                "query_policy": await asyncio.to_thread(lambda: service.query_service.airchina_query_gate().status())}
+
+    @app.post("/api/experiments/airchina/policy/resume")
+    async def resume_airchina_policy(payload: dict = Body(...)) -> dict:
+        try:
+            if set(payload) != {"confirmed"} or payload["confirmed"] is not True:
+                raise ValueError()
+            return await asyncio.to_thread(
+                lambda: service.query_service.airchina_query_gate().resume(confirmed=True))
+        except ValueError:
+            raise HTTPException(status_code=400, detail="需要明确确认已人工检查访问状态。")
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
 
     @app.post("/api/experiments/airchina", status_code=202)
     async def submit_airchina_experiment(payload: dict = Body(...)) -> dict:

@@ -13,6 +13,7 @@ from dotenv import load_dotenv
 
 from airport_aliases import CLEAN_AIRPORT_ALIAS_CODE_MAP
 from providers.registry import provider_definition
+from browser_environment import BrowserEnvironment, parse_browser_environment
 
 
 ROOT = Path(__file__).resolve().parent
@@ -405,6 +406,7 @@ class ProviderConfig:
     timezone: str
     browser_backend: str | None = None
     browser_backend_fallbacks: list[str] | None = None
+    browser_environment: BrowserEnvironment | None = None
 
 
 @dataclass(slots=True)
@@ -589,6 +591,20 @@ class ConfigManager:
                 or _locale_from_accept_language(extra_headers.get("Accept-Language"))
                 or default_locale
             )
+            environment_raw = provider_raw.get("browser_environment")
+            if isinstance(environment_raw, dict):
+                environment_raw = {"locale": provider_locale,
+                                   "timezone_id": str(provider_raw.get("timezone", default_timezone)),
+                                   **environment_raw}
+            environment = parse_browser_environment(environment_raw)
+            if environment is not None and name != "airchina":
+                raise ValueError("当前浏览器环境配置仅支持国航实验。")
+            # The browser generates locale/UA headers consistently with context
+            # emulation; hand-written versions can contradict those settings.
+            if environment is not None:
+                reserved = {"user-agent", "accept-language", "sec-ch-ua",
+                            "sec-ch-ua-mobile", "sec-ch-ua-platform"}
+                extra_headers = {k: v for k, v in extra_headers.items() if k.lower() not in reserved}
             providers[name] = ProviderConfig(
                 name=name,
                 enabled=bool(provider_raw.get("enabled", True)),
@@ -607,6 +623,7 @@ class ConfigManager:
                 timezone=str(provider_raw.get("timezone", default_timezone)),
                 browser_backend=str(provider_raw.get("browser_backend", "")).strip().lower() or None,
                 browser_backend_fallbacks=_parse_fallbacks(provider_raw.get("browser_backend_fallbacks")),
+                browser_environment=environment,
             )
 
         routes = [

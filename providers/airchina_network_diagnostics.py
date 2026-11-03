@@ -1,7 +1,9 @@
 """Bounded passive metadata audit, not an API client or a response-body parser.
 
 Attach before navigation; detach at task end even when the page is retained.
-Never read headers, bodies, cookies, storage or console logs. A bounded script
+Never read bulk headers, bodies, cookies, storage or console logs. When a
+rate-limit callback is supplied, only first-party HTTP 429 Retry-After is read.
+A bounded script
 error message is classified in memory only; no original text/stack is retained.
 Requests already in flight at attachment are deliberately ignored.
 """
@@ -43,8 +45,10 @@ class NetworkDiagnostics:
     MAX_PENDING = 256
     MAX_EVENTS = 100
 
-    def __init__(self, callback=None, *, clock=time.monotonic):
+    def __init__(self, callback=None, *, clock=time.monotonic, rate_limit_callback=None):
         self.callback, self.clock = callback, clock
+        self.rate_limit_callback = rate_limit_callback
+        self.rate_limit_tasks = set()
         self.started = clock()
         self.phase = "starting_browser"
         self.outcome = "unknown"
@@ -194,6 +198,37 @@ class NetworkDiagnostics:
         self.counts["responses"] += 1
         self.append({**row, "event": "response", "event_phase": self.phase,
                      "status": status, "elapsed_ms": max(0, self.elapsed() - row["at_ms"])})
+        if status == 429 and row["scope"] != "external" and self.rate_limit_callback:
+            self.rate_limit_callback(None)
+            # Pause immediately even if the single allowlisted header cannot
+            # be read. Never fetch all headers, cookies or response bodies.
+            if len(self.rate_limit_tasks) < 8:
+                task = asyncio.create_task(self._retry_after(response))
+                self.rate_limit_tasks.add(task)
+            else:
+                self.audit_incomplete = True
+
+    async def _retry_after(self, response):
+        from airchina_query_gate import retry_after_seconds
+        try:
+            async with asyncio.timeout(1):
+                value = await response.header_value("retry-after")
+            seconds = retry_after_seconds(value)
+            if seconds is not None:
+                self.rate_limit_callback(seconds)
+        except Exception:
+            self.audit_incomplete = True
+
+    async def finish_rate_limits(self):
+        tasks, self.rate_limit_tasks = self.rate_limit_tasks, set()
+        if tasks:
+            try:
+                await asyncio.gather(*tasks)
+            finally:
+                for task in tasks:
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
 
     def end_request(self, request, event, failure=None):
         row = self.pending.pop(request, None)

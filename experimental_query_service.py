@@ -16,6 +16,7 @@ from browser_session_manager import AirChinaSessionUnavailable
 ACTIVE = {"queued", "running", "waiting_user", "cancelling"}
 ACCESS_STATES = {"needs_verification", "needs_notice_confirmation", "blocked", "stale_results", "unexpected_page"}
 STAGES = {
+    "waiting_query_gate": "等待国航统一查询队列或最小查询间隔；尚未提交官网查询。",
     "queued": "任务已接收。",
     "starting_browser": "正在打开项目浏览器（不是应用内浏览器）。",
     "navigating": "正在打开国航查询页。",
@@ -101,6 +102,12 @@ class ExperimentalQueryService:
         if "airchina" not in self.query_service.get_config().providers:
             raise ValueError("配置中缺少 airchina；请参考示例配置，不需要启用正式查询。")
         with self._guard:
+            if not self._closing and self._control:
+                current = self.get(self._control[0])
+                if (current["request"] == normalized and current["status"] in
+                        {"queued", "running", "waiting_user"}):
+                    # Same UI request joins the existing task, not a new worker.
+                    return current
             if self._closing or not self.run_lock.acquire(blocking=False):
                 raise RuntimeError("已有查询正在运行或应用正在关闭，请稍后再试。")
             now = datetime.now(timezone.utc)
@@ -257,6 +264,7 @@ class ExperimentalQueryService:
                     auto_confirm_notices=auto_confirm,
                     flight_no=flight_no,
                     entry_mode=entry_mode,
+                    reference_cache=session_mode != "fresh" and entry_mode != "results",
                 )
                 await source.query_by_route_async(
                     route.origin,

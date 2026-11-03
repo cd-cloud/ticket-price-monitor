@@ -13,6 +13,11 @@
   重启后使用固定持久档案，也可显式恢复仅本机加密的登录态备份；不导出明文 Cookie/token，
   不用于跳过验证码。是否减少真实验证码仍需人工对照验证，不代表已解决无人值守查价。
   与携程查询机制的对照及限制见 [国航实验架构](docs/AIRCHINA_EXPERIMENT.md)。
+  新增[国航查询保护](docs/AIRCHINA_QUERY_POLICY.md)：共享运行目录串行准入、重复任务合并、
+  120 秒参考缓存、30 秒启动间隔和遇验证/限流后的持久暂停；人工确认才恢复，
+  不保证免验证码。缓存明确标注原采集时间，不作为实时票价。
+  可选[浏览器环境模拟与网络切换](docs/AIRCHINA_BROWSER_ENVIRONMENT.md)：显式配置视口、
+  语言、时区及代理，隔离档案与备份；默认关闭，不自动轮换或解除暂停。
 
 - 已完整迁移 [FlyClaw](https://github.com/AI4MSE/FlyClaw) 固定提交的 CLI、数据源、配置和缓存，
   并保留 Apache-2.0 许可证。`flyclaw_cli.py` 可直接执行；国航作为独立 Source 复用同一

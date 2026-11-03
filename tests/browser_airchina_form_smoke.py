@@ -17,7 +17,9 @@ async def run():
     template = (ROOT / "tests/fixtures/airchina_form_mock.html").read_text()
     async with async_playwright() as p:
         browser = await p.chromium.launch(channel="chrome", headless=True)
-        for scenario in ("success", "special", "missing_airport", "wrong_date", "portal_candidates", "no_candidates"):
+        for scenario in ("success", "autofocus_destination", "delayed_picker", "delayed_candidates", "picker_not_ready",
+                         "verification_candidates", "blocked_candidates",
+                         "special", "missing_airport", "wrong_date", "portal_candidates", "no_candidates"):
             context = await browser.new_context()
             requests = []
             async def intercept(route):
@@ -33,7 +35,7 @@ async def run():
             count = await page.locator('body').get_attribute('data-submissions')
             assert not errors, errors
             assert len(requests) == 1, requests  # One homepage, then in-page transition.
-            if scenario == "success":
+            if scenario in {"success", "autofocus_destination", "delayed_picker", "delayed_candidates"}:
                 assert result["state"] == "query_submitted", result
                 assert count == "1"
                 conditions = json.loads(await page.locator('body').get_attribute('data-conditions'))
@@ -41,8 +43,12 @@ async def run():
                                       "counts": {"成人": 1, "儿童": 0, "婴儿": 0}}
                 assert all(result["entry_evidence"]["checks"].values())
                 assert result["entry_evidence"]["result_page_observed"]
+                assert await page.locator('body').get_attribute('data-input-events') == "2"
             else:
-                assert result["state"] == "form_entry_unverified", result
+                assert result["state"] == {
+                    "verification_candidates": "needs_verification",
+                    "blocked_candidates": "blocked",
+                }.get(scenario, "form_entry_unverified"), result
                 assert count == "0"
                 assert not result["entry_evidence"]["submit_attempted"]
                 assert result["entry_evidence"]["failed_stage"] == {
@@ -50,7 +56,14 @@ async def run():
                     "missing_airport": "selecting_origin",
                     "wrong_date": "selecting_date",
                     "portal_candidates": "selecting_origin", "no_candidates": "selecting_origin",
+                    "picker_not_ready": "selecting_origin", "verification_candidates": "selecting_origin",
+                    "blocked_candidates": "selecting_origin",
                 }[scenario]
+                if scenario == "picker_not_ready":
+                    assert result["entry_evidence"]["reason"] == "airport_waiting_picker_timeout", result
+                    assert await page.locator('body').get_attribute('data-input-events') is None
+                if scenario in {"verification_candidates", "blocked_candidates"}:
+                    assert await page.locator('body').get_attribute('data-input-events') == "1"
                 if scenario in {"missing_airport", "portal_candidates", "no_candidates"}:
                     e = result["entry_evidence"]
                     assert e["reason"] == "airport_waiting_candidates_timeout", e

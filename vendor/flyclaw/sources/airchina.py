@@ -25,6 +25,7 @@ class AirChinaSource:
         entry_mode: str = "form",
         config_path: str | None = None,
         max_airport_pairs: int = 4,
+        reference_cache: bool = True,
     ):
         self.timeout = timeout
         self.query_service = query_service
@@ -45,6 +46,7 @@ class AirChinaSource:
         self.last_report = None
         self.last_query = None
         self.max_airport_pairs = max_airport_pairs
+        self.reference_cache = reference_cache
         self._query_lock = threading.Lock()
 
     def query_by_flight(self, flight_number: str) -> list[dict]:

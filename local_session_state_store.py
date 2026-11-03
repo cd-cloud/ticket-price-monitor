@@ -66,7 +66,11 @@ class LocalSessionStateStore:
     def __init__(self, config_manager, provider: str = "airchina"):
         self.config_manager = config_manager
         self.provider = provider
-        self.path = config_manager.load().runtime_dir / "browser_sessions" / f"{provider}.enc.json"
+        from browser_environment import environment_key
+        config = config_manager.load()
+        self.environment_key = environment_key(getattr(config, "providers", {}).get(provider))
+        suffix = f"-env-{self.environment_key}" if self.environment_key else ""
+        self.path = config.runtime_dir / "browser_sessions" / f"{provider}{suffix}.enc.json"
 
     def status(self) -> dict:
         status = {
@@ -97,6 +101,8 @@ class LocalSessionStateStore:
             "saved_at": saved_at,
             "ciphertext": token.decode("ascii"),
         }
+        if self.environment_key:
+            envelope["environment_key"] = self.environment_key
         self.path.parent.mkdir(parents=True, exist_ok=True)
         descriptor, temporary = tempfile.mkstemp(prefix=f".{self.provider}-", suffix=".tmp", dir=self.path.parent)
         try:
@@ -141,6 +147,7 @@ class LocalSessionStateStore:
             if envelope.get("version") != 1:
                 raise SessionStateError("invalid_version")
             if envelope.get("provider") != self.provider \
+                    or envelope.get("environment_key", "") != self.environment_key \
                     or not isinstance(envelope.get("saved_at"), str) \
                     or not isinstance(envelope.get("ciphertext"), str):
                 raise SessionStateError("invalid_backup")

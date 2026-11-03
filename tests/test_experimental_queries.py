@@ -93,6 +93,11 @@ def env(tmp_path):
 
     query = QueryService(config_manager=manager, repository=repo, run_lock=lock,
                          get_config=lambda: config, refresh_config=lambda: None, automation_factory=factory)
+    # These are browser lifecycle tests: execute every requested sample without
+    # wall-clock throttling. Dedicated policy tests exercise real TTL/spacing.
+    from airchina_query_gate import AirChinaQueryGate
+    gate = AirChinaQueryGate(config.runtime_dir, min_interval=0, ttl=0)
+    query.airchina_query_gate = lambda: gate
     service = ExperimentalQueryService(query_service=query, repository=repo, run_lock=lock, timeout_seconds=5)
     yield service, repo, control, page, automation, query
     control.hang = False
@@ -116,6 +121,70 @@ def test_success_shared_runtime_and_separate_storage(env):
     assert "secret" not in json.dumps(service.list())
     assert final["diagnostics"]["last_observation"]["accepted_offers"] == 16
     assert final["diagnostics"] == final["result"]["wait_evidence"]
+
+
+def test_policy_cache_returns_original_observation_without_browser(env):
+    service, repo, control, page, automation, query = env
+    gate = query.airchina_query_gate()
+    gate.ttl = 120
+    request = {**REQUEST, "session_mode": "reuse", "interaction_mode": "stop"}
+    first = wait(service, service.submit(request)["job_id"])
+    service._thread.join(1)
+    second = wait(service, service.submit(request)["job_id"])
+    assert second["status"] == "completed_reference"
+    assert second["result"]["query_policy"]["source"] == "cache"
+    assert second["result"]["query_policy"]["observed_at"] == first["result"]["query_policy"]["observed_at"]
+    assert second["network_diagnostics"] is None
+    assert second["session_evidence"] is None
+    assert page.goto.await_count == 1
+    assert not repo.count_snapshots()
+
+
+def test_blocked_provider_applies_to_next_route_without_opening_browser(env):
+    service, repo, control, page, automation, query = env
+    control.challenge = True
+    first = wait(service, service.submit({**REQUEST, "interaction_mode": "stop"})["job_id"])
+    assert first["stage"] == "needs_verification"
+    service._thread.join(1)
+    second = wait(service, service.submit({**REQUEST, "destination": "PVG"})["job_id"])
+    assert second["stage"] == "provider_paused"
+    assert second["result"]["query_policy"]["source"] == "paused"
+    assert page.goto.await_count == 1
+
+
+def test_http_429_stops_current_wait_and_closes_browser(env):
+    from test_airchina_network_diagnostics import Request, Response
+    service, repo, control, page, automation, query = env
+    async def rate_limit(*args, **kwargs):
+        control.entered = True
+        req = Request()
+        response = Response(req, 429)
+        response.header_value = AsyncMock(return_value="60")
+        page.events.emit("request", req)
+        page.events.emit("response", response)
+        await asyncio.sleep(10)
+    page.goto.side_effect = rate_limit
+    final = wait(service, service.submit(REQUEST)["job_id"])
+    assert final["stage"] == "provider_paused"
+    assert query.airchina_query_gate().status()["retry_after_seconds"] > 0
+    automation._close_context_quietly.assert_awaited_once()
+    assert control.close
+
+
+def test_policy_resume_api_requires_confirmation_and_respects_wait(tmp_path):
+    application = create_app(str(config_file(tmp_path)))
+    with TestClient(application) as client:
+        from airchina_query_gate import AirChinaQueryGate
+        cfg = ConfigManager(config_file(tmp_path)).load()
+        gate = AirChinaQueryGate(cfg.runtime_dir)
+        gate.pause("needs_verification")
+        assert client.get("/api/experiments/airchina").json()["query_policy"]["paused"]
+        url = "/api/experiments/airchina/policy/resume"
+        assert client.post(url, json={"confirmed": False}).status_code == 400
+        assert client.post(url, json={"confirmed": True}).json()["paused"] is False
+        gate.pause("rate_limited", retry_after=120)
+        assert client.post(url, json={"confirmed": True}).status_code == 409
+        assert gate.status()["paused"]
 
 
 def test_profile_unavailable_is_actionable_without_query_or_retry(env):
@@ -172,8 +241,7 @@ def test_manual_resume_keeps_page_and_lock(env):
     job = service.submit(REQUEST)
     wait(service, job["job_id"], lambda j: j["status"] == "waiting_user")
     assert query.run_lock.locked()
-    with pytest.raises(RuntimeError):
-        service.submit(REQUEST)
+    assert service.submit(REQUEST)["job_id"] == job["job_id"]
     assert asyncio.run(query.run_once())["running"]
     page.evaluate.assert_not_awaited()
     control.challenge = False
@@ -691,6 +759,7 @@ def test_verification_cleared_without_fares_retains_and_reuses_session(env, monk
     assert first["session_evidence"]["retention_reason"] == "manual_verification_cleared"
     assert not control.close
 
+    query.airchina_query_gate().resume(confirmed=True)
     second = wait(service, service.submit(request)["job_id"])
     service._thread.join(1)
     assert second["session_evidence"]["reused"]

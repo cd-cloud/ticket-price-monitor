@@ -70,6 +70,7 @@ async def query_airchina_source(source, origin: str, destination: str, date: str
         session_pool=source.session_pool,
         session_callback=source.session_callback,
         network_callback=source.network_callback,
+        reference_cache=source.reference_cache,
     )
     source.last_report = report
     records = flyclaw_records_from_report(report, route)
@@ -222,6 +223,7 @@ def flyclaw_records_from_report(report: dict, route: RouteQuery) -> list[dict]:
             "cabin": route.cabin,
             "trip_type": "one_way",
             "source": "airchina",
+            "query_policy": deepcopy(report.get("query_policy", {})),
             "segments": [segment],
             "layover_cities": [],
             "layover_minutes": [],

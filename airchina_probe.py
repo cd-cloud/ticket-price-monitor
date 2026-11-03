@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import json
+import asyncio
+import threading
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -15,6 +17,38 @@ from providers import airchina
 async def inspect_airchina_page(
     automation, route: RouteQuery, *, manual_wait_seconds: int = 0,
     capture_visible_page: bool = False, flight_no: str | None = None,
+) -> Path:
+    """Explicit CLI probe bypasses price cache, never global pause or spacing."""
+    from airchina_query_gate import AirChinaQueryGate
+    airchina.validate_inspection(route, flight_no=flight_no, manual_wait_seconds=manual_wait_seconds)
+    gate = AirChinaQueryGate(automation.app_config.runtime_dir)
+    captured = None
+
+    async def execute():
+        nonlocal captured
+        captured = await _inspect_airchina_page(
+            automation, route, manual_wait_seconds=manual_wait_seconds,
+            capture_visible_page=capture_visible_page, flight_no=flight_no,
+            gate=gate,
+        )
+        return json.loads(captured.read_text(encoding="utf-8"))
+
+    key = gate.key(route, flight_no=flight_no, entry_mode="probe", session_mode="fresh",
+                   manual=bool(manual_wait_seconds), notices=False)
+    async with asyncio.timeout(390):
+        report = await gate.run(key, execute, cancel_event=threading.Event(),
+                                progress=lambda _: None, cache_allowed=False)
+    if captured is None:
+        folder = automation.app_config.runtime_dir / "airchina_probes" / uuid4().hex
+        folder.mkdir(parents=True, exist_ok=False)
+        captured = folder / "report.json"
+    captured.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    return captured
+
+
+async def _inspect_airchina_page(
+    automation, route: RouteQuery, *, manual_wait_seconds: int = 0,
+    capture_visible_page: bool = False, flight_no: str | None = None, gate=None,
 ) -> Path:
     """One navigation, one browser context, no query/backend retry.
 
@@ -31,6 +65,9 @@ async def inspect_airchina_page(
     # enabled=False remains intentional: explicit diagnostic use is not query
     # admission. Never modify the user's provider configuration.
     page, context = await automation._new_page(provider)
+    from providers.airchina_network_diagnostics import NetworkDiagnostics
+    audit = NetworkDiagnostics(rate_limit_callback=lambda seconds: gate.pause("rate_limited", retry_after=seconds))
+    audit.attach(page)
     report = {
         "provider": "airchina", "stage": "P0_probe",
         "requested": {
@@ -51,6 +88,7 @@ async def inspect_airchina_page(
             report.update(await airchina.inspect(
                 ProviderRuntime(automation), provider, route, page,
                 flight_no=flight_no, manual_wait_seconds=manual_wait_seconds,
+                access_callback=gate.pause,
             ))
         except Exception as exc:
             # Exception messages may include tokenized URLs. Persist only class.
@@ -78,7 +116,11 @@ async def inspect_airchina_page(
         path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
         return path
     finally:
-        await automation._close_context_quietly(context)
+        try:
+            audit.detach()
+            await audit.finish_rate_limits()
+        finally:
+            await automation._close_context_quietly(context)
 
 
 async def run_airchina_probe(config_manager, args) -> int:

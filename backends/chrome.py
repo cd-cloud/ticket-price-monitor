@@ -97,6 +97,8 @@ class SystemChromeBackend(BrowserBackend):
         timezone_id: str | None = None,
         **kwargs,
     ) -> BrowserContext:
+        from browser_environment import launch_options
+        environment_options = launch_options(kwargs)
         if self._playwright is None or self._chrome_path is None or self._profile_root is None:
             raise RuntimeError("BrowserBackend is not started")
 
@@ -116,6 +118,7 @@ class SystemChromeBackend(BrowserBackend):
                 extra_http_headers=extra_http_headers,
                 locale=locale,
                 timezone_id=timezone_id,
+                **environment_options,
                 args=[
                     "--disable-blink-features=AutomationControlled",
                     "--no-default-browser-check",

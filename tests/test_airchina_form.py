@@ -221,7 +221,7 @@ def test_calendar_navigation_stops_after_twelve_flips():
     assert sum(call.args == (button,) for call in entry.click.await_args_list) == 12
 
 
-@pytest.mark.parametrize("step", ["filling_input", "waiting_candidates", "clicking_candidate", "confirming_selection"])
+@pytest.mark.parametrize("step", ["opening_picker", "waiting_picker", "filling_input", "waiting_candidates", "clicking_candidate", "confirming_selection"])
 def test_airport_timeout_records_specific_step_and_sanitized_snapshot(step):
     from unittest.mock import Mock
     entry, page, submit, data = fake_entry()
@@ -239,19 +239,18 @@ def test_airport_timeout_records_specific_step_and_sanitized_snapshot(step):
     page.locator = Mock(return_value=Mock())
     entry.airport_root = lambda _: root
     entry.airport = FormEntry.airport.__get__(entry)
-    if step == "filling_input":
+    async def wait(predicate, reason, **kwargs):
+        await entry.read()
+        if entry.airport_step == step:
+            raise TimeoutError("SECRET")
+        return data
+    entry.wait = wait
+    if step == "opening_picker":
+        field.click.side_effect = TimeoutError("SECRET")
+    elif step == "filling_input":
         field.fill.side_effect = TimeoutError("SECRET")
-    elif step == "waiting_candidates":
-        option.wait_for.side_effect = TimeoutError("SECRET")
     elif step == "clicking_candidate":
         option.click.side_effect = TimeoutError("SECRET")
-    else:
-        original_wait = entry.wait
-        async def wait(predicate, reason, **kwargs):
-            if reason == "airport_selection_unconfirmed":
-                raise TimeoutError("SECRET")
-            return await original_wait(predicate, reason, **kwargs)
-        entry.wait = wait
     # Homepage trip selector still uses the normal safety check.
     control = AsyncMock()
     control.count.return_value = 1
@@ -265,6 +264,8 @@ def test_airport_timeout_records_specific_step_and_sanitized_snapshot(step):
     submit.click.assert_not_awaited()
     if step == "waiting_candidates":
         option.click.assert_not_awaited()  # never widen scope to global match
+    if step in {"opening_picker", "waiting_picker"}:
+        field.fill.assert_not_awaited()
 
 
 def test_airport_projection_allowlist_caps_counts_and_drops_raw_text():
@@ -278,3 +279,21 @@ def test_airport_projection_allowlist_caps_counts_and_drops_raw_text():
     assert observation["page_candidates"] == 100
     assert observation["page_exact"] is None and observation["input_matches"] is None
     assert "SECRET" not in str(entry.evidence)
+
+
+@pytest.mark.parametrize(("flag", "state"), [
+    ("verification", "needs_verification"), ("blocked", "blocked"),
+])
+def test_final_airport_timeout_snapshot_preserves_access_block(flag, state):
+    entry, page, submit, data = fake_entry()
+    async def timed_out(_name):
+        entry.airport_side, entry.airport_step = "origin", "waiting_candidates"
+        data[flag] = True
+        raise TimeoutError("SECRET")
+    entry.airport = timed_out
+    result = asyncio.run(entry.run(1000))
+    assert result["state"] == state
+    assert result["entry_evidence"]["reason"] == flag
+    assert not result["entry_evidence"]["submit_attempted"]
+    assert "SECRET" not in str(result)
+    submit.click.assert_not_awaited()

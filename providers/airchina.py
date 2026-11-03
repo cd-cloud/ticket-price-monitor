@@ -40,7 +40,7 @@ async def query(runtime, provider, route, page, response_store):
 
 async def inspect(runtime, provider, route, page, *, flight_no=None, manual_wait_seconds=0,
                   progress=None, manual_handler=None, auto_confirm_notices=False, notice_callback=None,
-                  diagnostic_callback=None, entry_mode="direct", entry_callback=None):
+                  diagnostic_callback=None, entry_mode="direct", entry_callback=None, access_callback=None):
     """Navigate once, classify, wait for stable evidence, optionally expand ONE cabin.
 
     Caller owns context lifetime and local report persistence. Runtime is the
@@ -55,6 +55,8 @@ async def inspect(runtime, provider, route, page, *, flight_no=None, manual_wait
     verification_cleared = False
 
     def finish(result):
+        if access_callback and result.get("state") in {"needs_verification", "blocked"}:
+            access_callback(result["state"])
         return {**result, "notices": notices.entries, "entry_mode": entry_mode,
                 "entry_evidence": entry_evidence, "verification_cleared": verification_cleared}
     if progress:
@@ -89,6 +91,8 @@ async def inspect(runtime, provider, route, page, *, flight_no=None, manual_wait
         await page.wait_for_timeout(3000)
     text = await page.locator("body").inner_text(timeout=5000)
     report = classify_page(page.url, text, target, http_status=status)
+    if access_callback and report["state"] in {"needs_verification", "blocked"}:
+        access_callback(report["state"])
     if manual_wait_seconds and report["state"] in {
         "needs_verification", "needs_notice_confirmation", "query_page_unverified",
     }:

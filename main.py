@@ -71,6 +71,8 @@ def build_parser() -> argparse.ArgumentParser:
     schedule_cmd.add_argument("--interval-minutes", type=int)
 
     subparsers.add_parser("report", help="Generate CSV and markdown report from SQLite")
+    subparsers.add_parser("airchina-environment-check",
+                         help="Validate and print sanitized local browser/network settings; no browser or query")
 
     export_cmd = subparsers.add_parser("export-csv", help="Export snapshots to CSV")
     export_cmd.add_argument("--output", help="Custom output path")
@@ -109,6 +111,18 @@ def main() -> int:
     if args.command == "airchina-probe":
         from airchina_probe import run_airchina_probe
         return asyncio.run(run_airchina_probe(config_manager, args))
+
+    if args.command == "airchina-environment-check":
+        import json
+        from browser_environment import BrowserEnvironmentError, environment_summary
+        try:
+            config = config_manager.load()
+        except BrowserEnvironmentError as exc:
+            print(str(exc))
+            return 2
+        print(json.dumps(environment_summary(config.providers.get("airchina")),
+                         ensure_ascii=False, indent=2))
+        return 0
 
     app = FlightPriceApplication(config_manager)
 

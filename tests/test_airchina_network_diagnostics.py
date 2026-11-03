@@ -9,6 +9,63 @@ import pytest
 from providers.airchina_network_diagnostics import NetworkDiagnostics
 
 
+def test_first_party_429_only_reads_retry_after_and_pauses_immediately():
+    async def run():
+        calls, headers = [], []
+        audit = NetworkDiagnostics(rate_limit_callback=calls.append)
+        page = Page()
+        audit.attach(page)
+        request = Request()
+        response = Response(request, 429)
+        async def header_value(name):
+            headers.append(name)
+            return "60"
+        response.header_value = header_value
+        page.emit("request", request)
+        page.emit("response", response)
+        assert calls == [None]
+        audit.detach()
+        await audit.finish_rate_limits()
+        assert calls == [None, 60]
+        assert headers == ["retry-after"]
+        audit.close("blocked")
+        assert "SECRET" not in json.dumps(audit.snapshot())
+    asyncio.run(run())
+
+
+def test_third_party_429_and_first_party_401_do_not_open_circuit():
+    async def run():
+        calls = []
+        audit = NetworkDiagnostics(rate_limit_callback=calls.append)
+        page = Page()
+        audit.attach(page)
+        for url, status in [("https://example.com/x", 429), (Request.url, 401)]:
+            request = Request()
+            request.url = url
+            page.emit("request", request)
+            page.emit("response", Response(request, status))
+        await audit.finish_rate_limits()
+        audit.close("reference_fares_observed")
+        assert calls == []
+    asyncio.run(run())
+
+
+def test_missing_retry_after_still_pauses():
+    async def run():
+        calls = []
+        audit = NetworkDiagnostics(rate_limit_callback=calls.append)
+        page = Page()
+        audit.attach(page)
+        request = Request()
+        page.emit("request", request)
+        page.emit("response", Response(request, 429))
+        await audit.finish_rate_limits()
+        assert calls == [None]
+        assert audit.audit_incomplete
+        audit.close("blocked")
+    asyncio.run(run())
+
+
 class Page:
     def __init__(self):
         self.handlers = {}

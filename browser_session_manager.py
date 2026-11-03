@@ -20,6 +20,7 @@ from browser_session_policy import (
     session_artifact_for_backend,
 )
 from config_manager import AppConfig, ProviderConfig
+from browser_environment import environment_key
 
 
 LOGGER = logging.getLogger(__name__)
@@ -29,7 +30,7 @@ class AirChinaSessionUnavailable(RuntimeError):
     """Fixed public message; never include backend errors, URLs or profile data."""
     def __init__(self):
         super().__init__(
-            "国航所选浏览器或档案不可用；请正常退出占用该档案的项目 Chrome，并检查档案配置。"
+            "国航所选浏览器、环境或档案不可用；请正常退出占用该档案的项目 Chrome，并检查环境、代理及档案配置。"
             "本次未发起查询，不会自动切换备用档案或浏览器后端，也不会删除锁文件。"
         )
 
@@ -122,7 +123,13 @@ class BrowserSessionManager:
             raise RuntimeError("BrowserSessionManager is not started")
 
         errors: list[str] = []
+        environment = getattr(provider, "browser_environment", None)
+        options = environment.context_options() if environment is not None else {}
+        locale = options.pop("locale", provider.locale)
+        timezone_id = options.pop("timezone_id", provider.timezone)
         candidates = [backend_name] if backend_name else self.backend_names_for_provider(provider)
+        if environment is not None and (provider.name != "airchina" or candidates != ["chrome"]):
+            raise AirChinaSessionUnavailable()
         for candidate_name in candidates:
             if not candidate_name:
                 continue
@@ -150,9 +157,10 @@ class BrowserSessionManager:
                 context = await backend.new_context(
                     storage_state=session_metadata.storage_state_path,
                     extra_http_headers=provider.extra_headers or None,
-                    locale=provider.locale,
-                    timezone_id=provider.timezone,
+                    locale=locale,
+                    timezone_id=timezone_id,
                     profile_name=profile_name,
+                    **({"browser_environment_options": options} if environment is not None else {}),
                 )
                 self._context_session_metadata[id(context)] = session_metadata
                 self._context_profile_names[id(context)] = profile_name
@@ -223,7 +231,8 @@ class BrowserSessionManager:
     def profile_name_for_backend(provider: ProviderConfig, backend_name: str | None) -> str:
         backend = str(backend_name or "").strip().lower()
         if backend == "chrome":
-            return f"{provider.name}-{CHROME_PROFILE_VERSION}"
+            suffix = f"-env-{environment_key(provider)}" if environment_key(provider) else ""
+            return f"{provider.name}-{CHROME_PROFILE_VERSION}{suffix}"
         return provider.name
 
     def session_artifact_for_context(

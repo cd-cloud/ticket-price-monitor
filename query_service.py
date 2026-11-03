@@ -104,6 +104,7 @@ class QueryService:
         entry_mode="direct", entry_callback=None,
         session_mode="fresh", session_pool=None, session_callback=None,
         network_callback=None,
+        reference_cache=None,
     ):
         """Experimental task manager owns the shared run_lock.
 
@@ -133,10 +134,22 @@ class QueryService:
         provider = config.providers.get("airchina")
         if provider is None:
             raise ValueError("配置中缺少 airchina；请参考示例配置。")
+        gate = self.airchina_query_gate()
+        from browser_environment import environment_key
+        key = gate.key(route, flight_no=flight_no, entry_mode=entry_mode,
+                       session_mode=session_mode, manual=manual_handler is not None,
+                       notices=auto_confirm_notices, environment=environment_key(provider))
+        rate_limited = asyncio.Event()
+
+        def on_rate_limit(seconds):
+            gate.pause("rate_limited", retry_after=seconds)
+            rate_limited.set()
 
         async def execute():
             from providers.airchina_network_diagnostics import NetworkDiagnostics
-            audit = NetworkDiagnostics(network_callback)
+            audit = NetworkDiagnostics(
+                network_callback, rate_limit_callback=on_rate_limit,
+            )
             outcome = "error"
 
             def tracked_progress(stage):
@@ -149,6 +162,8 @@ class QueryService:
                     entry_callback(evidence)
 
             async def tracked_manual(state):
+                if state in {"needs_verification", "blocked"}:
+                    gate.pause(state)
                 audit.mark("waiting_user")
                 await manual_handler(state)
                 audit.mark("result_page")
@@ -165,6 +180,7 @@ class QueryService:
                         auto_confirm_notices=auto_confirm_notices, notice_callback=notice_callback,
                         diagnostic_callback=diagnostic_callback,
                         entry_mode=entry_mode, entry_callback=tracked_entry,
+                        access_callback=gate.pause,
                     )
                     outcome = report["state"]
                     return report
@@ -172,6 +188,7 @@ class QueryService:
                     # Browser shutdown aborts outstanding resources. Do not
                     # misreport these cleanup effects as query network failures.
                     audit.detach()
+                    await audit.finish_rate_limits()
 
             try:
                 tracked_progress("starting_browser")
@@ -217,20 +234,36 @@ class QueryService:
                 audit.close(outcome)
 
         async def watch_cancel(task):
-            while not cancel_event.is_set():
+            while not cancel_event.is_set() and not rate_limited.is_set():
                 await asyncio.sleep(.1)
             task.cancel()
 
         async with asyncio.timeout(timeout_seconds):
-            task = asyncio.create_task(execute())
+            task = asyncio.create_task(gate.run(
+                key, execute, cancel_event=cancel_event, progress=progress,
+                # Explicit experiment controls must actually exercise a browser:
+                # never turn "fresh" or same-document requery into a cache read.
+                cache_allowed=entry_mode != "results" and (
+                    session_mode != "fresh" if reference_cache is None else reference_cache is True),
+            ))
             watcher = asyncio.create_task(watch_cancel(task))
             try:
                 if cancel_event.is_set():
                     task.cancel()
-                return await task
+                try:
+                    return await task
+                except asyncio.CancelledError:
+                    if rate_limited.is_set() and not cancel_event.is_set():
+                        return gate.paused_report(gate.status())
+                    raise
             finally:
                 watcher.cancel()
                 await asyncio.gather(watcher, return_exceptions=True)
+
+    def airchina_query_gate(self):
+        from airchina_query_gate import AirChinaQueryGate
+        # Shared by independent CLI/UI processes using the same runtime folder.
+        return AirChinaQueryGate(self.get_config().runtime_dir)
 
     async def run_route_once(
         self,

@@ -132,9 +132,9 @@ class FormEntry:
             return
         raw = data.get(self.airport_side, {}).get("diagnostics") or {}
         observation = {"side": self.airport_side, "step": self.airport_step}
-        for key in ("input_matches", "input_focused", "input_enabled", "selected_matches", "counts_capped"):
+        for key in ("input_matches", "input_focused", "input_enabled", "selected_matches", "counts_capped", "picker_ready"):
             observation[key] = raw.get(key) if type(raw.get(key)) is bool else None
-        for key in ("scoped_candidates", "page_candidates", "scoped_exact", "page_exact"):
+        for key in ("root_count", "input_count", "scoped_candidates", "page_candidates", "scoped_exact", "page_exact"):
             value = raw.get(key)
             observation[key] = min(value, 100) if type(value) is int and value >= 0 else None
         for key in ("verification", "blocked", "stale"):
@@ -175,10 +175,21 @@ class FormEntry:
         self.airport_checkpoint("locating_input")
         code = getattr(self.route, name).upper()
         root = self.airport_root(name)
-        await self.read()
+        sample = await self.read()
         field = root.locator('input:visible')
         if await root.count() != 1 or await field.count() != 1:
             raise FormStop("ambiguous_airport_input")
+        # Visible server-rendered inputs are not proof that the city data and
+        # focus handlers are ready. Open once, then observe public controls.
+        # Do not rewrite/retry input or broaden the candidate scope on failure.
+        # Selecting origin can auto-focus/open destination. Do not click an
+        # already-ready picker again (the site's click handler can toggle it).
+        if sample.get(name, {}).get("diagnostics", {}).get("picker_ready") is not True:
+            self.airport_checkpoint("opening_picker")
+            await self.click(field)
+        self.airport_checkpoint("waiting_picker")
+        await self.wait(lambda s: s.get(name, {}).get("diagnostics", {}).get("picker_ready") is True,
+                        "airport_waiting_picker_timeout")
         self.airport_checkpoint("filling_input")
         await field.fill(code, timeout=3000)
         self.airport_checkpoint("waiting_candidates")
@@ -188,7 +199,10 @@ class FormEntry:
         option = root.locator('li[class*="CitySelector_airportItem__"]:visible').filter(
             has=self.page.locator('[class*="CitySelector_code__"]').filter(has_text=re.compile("^" + code + "$")),
         )
-        await option.wait_for(state="visible", timeout=10000)
+        # Poll the same read-only projection so challenges/restrictions during
+        # asynchronous candidate loading terminate the task immediately.
+        await self.wait(lambda s: s.get(name, {}).get("diagnostics", {}).get("scoped_exact") == 1,
+                        "airport_waiting_candidates_timeout")
         self.airport_checkpoint("clicking_candidate")
         await self.click(option)
         self.airport_checkpoint("confirming_selection")
@@ -324,7 +338,10 @@ class FormEntry:
                 try:
                     async with asyncio.timeout(1):
                         await self.read()
-                except (FormStop, TimeoutError, BrowserTimeout):
+                except FormStop as exc:
+                    self.publish("stopped", exc.reason, failed_stage=self.evidence["stage"])
+                    return {"state": exc.state, "entry_evidence": deepcopy(self.evidence)}
+                except (TimeoutError, BrowserTimeout):
                     pass
             reason = ("airport_" + self.airport_step + "_timeout" if self.airport_side
                       else "submit_outcome_unknown" if self.evidence["submit_attempted"] else "form_wait_timeout")

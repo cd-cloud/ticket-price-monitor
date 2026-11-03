@@ -26,6 +26,10 @@ async def run(output):
             jobs, actions, errors = [], [], []
             session_actions = []
             session = {"state": "closed", "reused": False, "backup": {"available": False}}
+            policy = {"paused": False, "pause_reason": None, "active": False, "retry_after_seconds": 0,
+                      "min_interval_seconds": 30, "cache_ttl_seconds": 120,
+                      "browser_runs": 1, "cache_hits": 0}
+            policy_actions = []
             offline = False
             async with async_playwright() as p:
                 browser = await p.chromium.launch(channel="chrome", headless=True)
@@ -44,7 +48,11 @@ async def run(output):
                                 if session["state"] == "opening":
                                     session.update(state="waiting_user")
                                 return await route.fulfill(json=copy.deepcopy(session))
-                            return await route.fulfill(json={"jobs": jobs})
+                            return await route.fulfill(json={"jobs": jobs, "query_policy": policy})
+                        if url.path.endswith("/policy/resume"):
+                            policy_actions.append(json.loads(request.post_data))
+                            policy.update(paused=False, pause_reason=None)
+                            return await route.fulfill(json=policy)
                         if request.method == "DELETE" and url.path.endswith("/session/backup"):
                             session_actions.append(url.path)
                             session["backup"] = {"available": False}
@@ -162,6 +170,25 @@ async def run(output):
                 await expect(page.locator("#airchinaExperimentNotices pre")).to_be_visible()
                 assert len(actions) == 2
                 await page.screenshot(path=str(output / "airchina-reference-offline.png"), full_page=True)
+                jobs[0]["result"]["query_policy"] = {
+                    "source": "cache", "observed_at": "2026-11-03T03:00:00+00:00",
+                    "age_seconds": 30, "ttl_seconds": 120,
+                }
+                policy.update(paused=True, pause_reason="needs_verification", cache_hits=1)
+                await page.locator("#airchinaExperimentRefresh").click()
+                await expect(page.locator("#airchinaExperimentResults")).to_contain_text("缓存参考（未重新查价）")
+                await expect(page.locator("#airchinaQueryPolicy")).to_contain_text("已暂停：验证码")
+                await expect(page.locator("#airchinaQueryResume")).to_be_enabled()
+                page.once("dialog", lambda dialog: dialog.accept())
+                await page.locator("#airchinaQueryResume").click()
+                await expect(page.locator("#airchinaQueryResume")).to_be_hidden()
+                assert policy_actions == [{"confirmed": True}]
+                assert len(actions) == 2  # Resume never submits a query.
+                policy.update(paused=True, pause_reason="rate_limited", retry_after_seconds=60)
+                await page.locator("#airchinaExperimentRefresh").click()
+                await expect(page.locator("#airchinaQueryResume")).to_be_disabled()
+                await page.screenshot(path=str(output / "airchina-policy-offline.png"), full_page=True)
+                policy.update(paused=False, pause_reason=None, retry_after_seconds=0)
                 await page.set_viewport_size({"width": 390, "height": 844})
                 await page.wait_for_timeout(200)
                 await page.locator("#airchinaExperimentResults").scroll_into_view_if_needed()

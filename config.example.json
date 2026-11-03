@@ -134,6 +134,7 @@
     },
     "airchina": {
       "enabled": false,
+      "browser_environment": null,
       "login_url": "https://www.airchina.com.cn/zh-CN",
       "search_url_template": "https://www.airchina.com.cn/flight/oneway/{origin}-{destination}/{departure_date}",
       "storage_state_file": "./runtime/airchina_state.json",

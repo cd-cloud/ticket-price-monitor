@@ -237,6 +237,8 @@
           <span>就绪后保存本机加密登录态备份（需已配置项目主密钥，不导出 Cookie/token）</span>
         </label>
         <p id="airchinaSessionStatus" role="status">正在读取会话状态。</p>
+        <p id="airchinaQueryPolicy" role="status">正在读取国航查询保护状态。</p>
+        <button id="airchinaQueryResume" type="button" class="secondary" hidden>已人工检查，解除国航查询暂停</button>
         <form id="airchinaExperimentForm" class="route-form">
           <label>出发机场码<input name="origin" placeholder="PEK" maxlength="3" pattern="[A-Za-z]{3}" required /></label>
           <label>到达机场码<input name="destination" placeholder="SHA" maxlength="3" pattern="[A-Za-z]{3}" required /></label>

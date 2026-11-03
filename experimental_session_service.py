@@ -156,6 +156,11 @@ class ExperimentalSessionService:
             provider = config.providers.get("airchina")
             if provider is None:
                 raise SessionStateError("provider_missing")
+            from browser_environment import environment_key
+            if environment_key(provider) != getattr(self.store, "environment_key", ""):
+                # The store is bound at service creation. Never restore/save an
+                # old environment's backup into a newly configured context.
+                raise SessionStateError("environment_changed_restart_required")
             async with pool.lease(
                 config,
                 provider,

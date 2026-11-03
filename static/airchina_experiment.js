@@ -74,6 +74,8 @@
     retained_results_mismatch:"保留页不是同条件的有效参考列表",
     results_form_not_ready:"结果页查询表单未就绪",
     airport_filling_input_timeout:"机场输入未完成",
+    airport_opening_picker_timeout:"机场选择器未能展开",
+    airport_waiting_picker_timeout:"机场选择器尚未就绪，未填写机场码",
     airport_waiting_candidates_timeout:"未等到容器内精确匹配的机场候选项",
     airport_clicking_candidate_timeout:"机场候选项点击未完成",
     airport_confirming_selection_timeout:"点击后未确认机场选中",
@@ -120,6 +122,7 @@
     };
     const backupStates = {
       encryption_unavailable:"未配置项目主密钥，未保存明文备份", invalid_backup:"备份无法校验",
+      environment_changed_restart_required:"浏览器环境已变化，请关闭会话并重启服务后使用对应环境的备份",
       invalid_version:"备份版本不支持", backup_failed:"备份写入失败",
     };
     const backup = sessionInfo.backup || {};
@@ -129,6 +132,9 @@
         ? "；备份存在，但未配置项目主密钥，不能恢复"
         : backup.available ? `；本机加密备份：${backup.saved_at ? new Date(backup.saved_at).toLocaleString() : "已保存"}` : "；无本机备份";
     sessionStatus.textContent = `${states[sessionInfo.state] || sessionInfo.state || "状态未知"}${sessionInfo.reused ? " · 正在复用同一页面" : ""}${sessionInfo.retention_reason ? ` · ${sessionInfo.retention_reason}` : ""}${backupText}。登录态和验证码是否有效以官网实际响应为准。`;
+    if (sessionInfo.error_code === "environment_changed_restart_required") {
+      sessionStatus.textContent += ` ${backupStates.environment_changed_restart_required}。`;
+    }
   }
 
   async function refreshSession() {
@@ -215,6 +221,15 @@
       results.appendChild(box);
     }
     const report = job.result || {};
+    if (report.query_policy) {
+      const policy = report.query_policy;
+      const info = document.createElement("p");
+      info.textContent = policy.source === "cache"
+        ? `缓存参考（未重新查价）· 原采集时间：${new Date(policy.observed_at).toLocaleString()} · 命中时距采集 ${policy.age_seconds} 秒 · 缓存有效期 ${policy.ttl_seconds} 秒。当前展示可能已过期，请勿视作实时票价。`
+        : policy.source === "paused" ? "国航查询保护已暂停；本次没有打开浏览器或提交查询。"
+        : `本次执行官网查询流程 · 结果记录时间：${new Date(policy.observed_at).toLocaleString()}${policy.paused_after_query ? " · 后续国航查询已暂停，需人工确认恢复。" : ""}`;
+      results.appendChild(info);
+    }
     const network = job.network_diagnostics;
     if (network?.schema === "airchina_network_diagnostics_v1") {
       const box = document.createElement("div");
@@ -297,7 +312,8 @@
       summary.textContent = `表单入口：${entry.result_page_observed ? "已到达预期结果页（非查价成功）" : entry.submit_attempted ? "已尝试提交，未确认到达结果页；不会重提" : "尚未提交"} · 阶段：${entryStages[entry.stage] || entry.stage} · 原因：${entryReasons[entry.reason] || entry.reason}${entry.failed_stage ? ` · 停止于：${entryStages[entry.failed_stage] || entry.failed_stage}` : ""}`;
       results.appendChild(summary);
       if (entry.airport_step) {
-        const steps = {locating_input:"定位输入框", filling_input:"填写机场码",
+        const steps = {locating_input:"定位输入框", opening_picker:"展开机场选择器",
+          waiting_picker:"等待机场选择器就绪", filling_input:"填写机场码",
           waiting_candidates:"等待精确候选项", clicking_candidate:"点击候选项",
           confirming_selection:"核对选中状态", selection_confirmed:"已确认选中"};
         const a = entry.airport_observation || {};
@@ -306,6 +322,9 @@
         const p = document.createElement("p");
         p.textContent = `机场诊断：${a.side === "origin" ? "出发" : a.side === "destination" ? "到达" : "未知"} · 最后步骤：${steps[entry.airport_step] || "未知"}；最近采样步骤：${steps[a.step] || "未知"}。输入等于目标机场码：${bool(a.input_matches)}；焦点在输入框：${bool(a.input_focused)}；可编辑：${bool(a.input_enabled)}；已选中目标：${bool(a.selected_matches)}。候选（容器内/整页）：${count(a.scoped_candidates)}/${count(a.page_candidates)}；精确匹配：${count(a.scoped_exact)}/${count(a.page_exact)}。计数截断：${bool(a.counts_capped)}；验证提示：${bool(a.verification)}；访问限制：${bool(a.blocked)}；弹窗：${bool(a.dialog_present)}。仅统计已知结构，整页匹配仅用于诊断，不扩大点击范围。`;
         results.appendChild(p);
+        const readiness = document.createElement("p");
+        readiness.textContent = `机场控件就绪诊断：匹配容器 ${count(a.root_count)} 个；可见输入框 ${count(a.input_count)} 个；选择器已展开且有候选数据：${bool(a.picker_ready)}。只观察页面公开控件，不读取内部状态。`;
+        results.appendChild(readiness);
       }
       if (entry.mode === "results") {
         const detail = document.createElement("p");
@@ -380,6 +399,15 @@
     try {
       const data = await request(base);
       if (version !== generation) return;
+      const gate = data.query_policy;
+      const policyText = document.getElementById("airchinaQueryPolicy");
+      const policyResume = document.getElementById("airchinaQueryResume");
+      if (gate && policyText && policyResume) {
+        const reason = {needs_verification:"验证码", blocked:"访问受限", rate_limited:"服务端限流", interrupted:"上次查询异常中断"};
+        policyText.textContent = `${gate.paused ? `已暂停：${reason[gate.pause_reason] || "需人工检查"}` : "查询保护已启用"} · 同一运行目录串行查询 · 最小启动间隔 ${gate.min_interval_seconds} 秒 · 缓存 ${gate.cache_ttl_seconds} 秒 · 查询流程启动 ${gate.browser_runs} 次 / 缓存命中 ${gate.cache_hits} 次${gate.retry_after_seconds ? ` · 至少还需等待 ${gate.retry_after_seconds} 秒` : ""}。流程启动次数不等于官网成功提交次数；这些是本地保护参数，不是官网免验证规则。`;
+        policyResume.hidden = !gate.paused;
+        policyResume.disabled = Boolean(gate.active || gate.retry_after_seconds || busy);
+      }
       jobs = data.jobs;
       uncertain = false;
       if (!jobs.some(j => j.job_id === selected)) selected = jobs[0]?.job_id || "";
@@ -438,6 +466,17 @@
     render(jobs.find(j => j.job_id === selected));
   });
   document.getElementById("airchinaExperimentRefresh").addEventListener("click", refresh);
+  document.getElementById("airchinaQueryResume")?.addEventListener("click", async () => {
+    if (busy || !window.confirm("确认已人工检查国航访问状态？解除本地暂停不保证验证码已消失，也不会自动提交查询。")) return;
+    busy = true;
+    try {
+      await request(`${base}/policy/resume`, {method:"POST", headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({confirmed:true})});
+    } catch (exc) {
+      error.textContent = `恢复未确认：${exc.message}。请刷新状态。`;
+    } finally { busy = false; }
+    await refresh();
+  });
   closeSession.addEventListener("click", () => sessionAction("/session/close", {method:"POST"}));
   prepareSession.addEventListener("click", () => sessionAction("/session/prepare", {method:"POST"}));
   restoreSession.addEventListener("click", () => sessionAction("/session/restore", {method:"POST"}));

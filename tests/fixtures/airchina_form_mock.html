@@ -32,6 +32,16 @@ document.querySelector('[data-id="oneWay"]').onclick = e => {
 const airports = {PEK:"北京首都国际机场", SHA:"上海虹桥机场", PVG:"上海浦东机场"};
 for (const root of document.querySelectorAll('[data-side]')) {
   const input = root.querySelector('input');
+  if (scenario === "autofocus_destination") input.onclick = () => {
+    if (root.dataset.autoOpened === "yes") throw new Error("Clicked already-open destination");
+  };
+  const ready = () => {
+    if (scenario === "picker_not_ready") return;
+    const picker = document.createElement('div');
+    picker.className = "CitySelector_cityPickerContainer__test";
+    picker.innerHTML = '<ul><li class="CitySelectorContent_contentCitysItem__test">北京首都</li></ul>';
+    root.append(picker);
+  };
   input.onfocus = () => {
     if (!root.querySelector('.input_imageMargin__test')) {
       const label = document.createElement('span');
@@ -40,8 +50,21 @@ for (const root of document.querySelectorAll('[data-side]')) {
       root.prepend(label);
     }
     input.placeholder = "输入城市或机场三字码";
+    if (scenario === "delayed_picker") setTimeout(ready, 600);
+    else ready();
   };
   input.oninput = () => {
+    document.body.dataset.inputEvents = String(+(document.body.dataset.inputEvents || 0) + 1);
+    if (!root.querySelector('.CitySelector_cityPickerContainer__test')) {
+      throw new Error("Input before city picker initialized");
+    }
+    root.querySelector('.CitySelector_cityPickerContainer__test')?.remove();
+    if (scenario === "verification_candidates" || scenario === "blocked_candidates") {
+      const warning = document.createElement('div');
+      warning.textContent = scenario === "verification_candidates" ? "请完成验证" : "访问被拒绝";
+      document.body.append(warning);
+      return;
+    }
     if (scenario === "no_candidates") return;
     root.querySelector('ul')?.remove();
     root.querySelector('.input_text__test')?.remove();
@@ -59,11 +82,16 @@ for (const root of document.querySelectorAll('[data-side]')) {
         selected.textContent = code;
         input.parentElement.append(selected);
         list.remove();
-        if (root.dataset.side === "origin") document.querySelector('[data-side="destination"] input').focus();
+        if (root.dataset.side === "origin") {
+          const destination = document.querySelector('[data-side="destination"]');
+          destination.querySelector('input').focus();
+          destination.dataset.autoOpened = "yes";
+        }
       };
       list.append(item);
     }
-    (scenario === "portal_candidates" ? document.body : root).append(list);
+    if (scenario === "delayed_candidates") setTimeout(() => root.append(list), 600);
+    else (scenario === "portal_candidates" ? document.body : root).append(list);
   };
 }
 let month = new Date(new Date().getFullYear(), new Date().getMonth() - 2, 1);
