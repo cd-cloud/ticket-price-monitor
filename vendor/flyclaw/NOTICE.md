@@ -13,5 +13,8 @@ adaptations:
   embedded signing credentials and device-fingerprint context are not used by default.
 - `sources/airchina.py` is a local addition. It reuses the host project's Air China
   reference-fare adapter and never upgrades starting fares to final or bookable quotes.
+  Local changes on 2026-11-03 add bounded city expansion, cabin aliases, shared
+  deadlines and coverage diagnostics. See `../../docs/AIRCHINA_FLYCLAW_PARITY.md`
+  for explicit gaps; Air China round-trip/connecting journeys are not implemented.
 - Optional `--compare` modules referenced by upstream but absent from its repository
   remain unavailable and are not represented as verified functionality.

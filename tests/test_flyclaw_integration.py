@@ -117,8 +117,8 @@ def test_airchina_source_rejects_unsupported_query():
     source = AirChinaSource(query_service=object())
     with pytest.raises(ValueError, match="one-way"):
         asyncio.run(source.query_by_route_async("PEK", "SHA", "2026-12-13", return_date="2026-12-20"))
-    with pytest.raises(ValueError, match="direct"):
-        asyncio.run(source.query_by_route_async("PEK", "SHA", "2026-12-13", stops=1))
+    with pytest.raises(ValueError, match="Stops"):
+        asyncio.run(source.query_by_route_async("PEK", "SHA", "2026-12-13", stops=3))
     with pytest.raises(ValueError, match="one adult"):
         asyncio.run(source.query_by_route_async("PEK", "SHA", "2026-12-13", adults=2))
 
@@ -137,8 +137,7 @@ def test_search_source_limits_tasks_to_airchina(monkeypatch):
     captured = {}
 
     def execute(tasks, *_args, **_kwargs):
-        captured["tasks"] = tasks
-        return []
+        pytest.fail("Air China-only search must not leave a background query thread.")
 
     def query(origin, destination, date, timeout, **_kwargs):
         captured["query"] = (origin, destination, date, timeout)
@@ -150,8 +149,59 @@ def test_search_source_limits_tasks_to_airchina(monkeypatch):
         "search", "--from", "PEK", "--to", "SHA", "--date", "2026-12-13", "--source", "airchina",
     ])
     flyclaw_module.cmd_search(args)
-    assert [task[0] for task in captured["tasks"]] == ["AirChina"]
-    name, function, args_tuple = captured["tasks"][0]
-    assert name == "AirChina" and args_tuple == ()
-    function()
     assert captured["query"] == ("PEK", "SHA", "2026-12-13", 240)
+
+
+@pytest.mark.parametrize("extra", [
+    ["--return", "2026-12-20"], ["--children", "1"], ["--infants", "1"], ["--adults", "2"],
+])
+def test_airchina_cli_never_silently_drops_trip_or_passengers(monkeypatch, extra):
+    query = Mock()
+    monkeypatch.setattr(flyclaw_module, "_query_airchina_route", query)
+    args = flyclaw_module.build_parser().parse_args([
+        "search", "--from", "PEK", "--to", "SHA", "--date", "2026-12-13", "--source", "airchina",
+        *extra,
+    ])
+    with pytest.raises(ValueError):
+        flyclaw_module.cmd_search(args)
+    query.assert_not_called()
+
+
+def test_airchina_cli_passes_city_input_and_explicit_timeout(monkeypatch):
+    query = Mock(return_value=[])
+    monkeypatch.setattr(flyclaw_module, "_query_airchina_route", query)
+    monkeypatch.setattr(flyclaw_module.route_cache, "save", lambda: None)
+    args = flyclaw_module.build_parser().parse_args([
+        "search", "--from", "北京", "--to", "上海", "--date", "2026-12-13",
+        "--source", "airchina", "--timeout", "35", "--cabin", "premium", "--stops", "any",
+    ])
+    flyclaw_module.cmd_search(args)
+    assert query.call_args.args == ("北京", "上海", "2026-12-13", 35)
+    assert query.call_args.kwargs["cabin"] == "premium"
+    assert query.call_args.kwargs["stops"] == "any"
+    assert query.call_args.kwargs["return_date"] is None
+
+
+def test_reference_table_displays_actual_currency():
+    text = flyclaw_module._format_table([
+        {"flight_number": "CA1549", "price": 600, "currency": "CNY", "reference_only": True},
+    ])
+    assert "CNY 600" in text
+    assert "$600" not in text
+
+
+def test_airchina_cli_preserves_distinct_airport_pairs_and_reports_uncertainty(monkeypatch, capsys):
+    records = [
+        {"flight_number": "CA1549", "origin_iata": "PEK", "destination_iata": end,
+         "price": 600, "currency": "CNY", "reference_only": True, "source": "airchina"}
+        for end in ("SHA", "PVG")
+    ]
+    monkeypatch.setattr(flyclaw_module, "_query_airchina_route", lambda *a, **kw: records)
+    monkeypatch.setattr(flyclaw_module.route_cache, "save", lambda: None)
+    monkeypatch.setattr(flyclaw_module.route_cache, "update_from_records", lambda r: None)
+    args = flyclaw_module.build_parser().parse_args([
+        "search", "--from", "PEK", "--to", "上海", "--date", "2026-12-13",
+        "--source", "airchina", "--output", "json", "--currency", "original",
+    ])
+    flyclaw_module.cmd_search(args)
+    assert len(json.loads(capsys.readouterr().out)) == 2

@@ -24,6 +24,7 @@ class AirChinaSource:
         flight_no: str | None = None,
         entry_mode: str = "form",
         config_path: str | None = None,
+        max_airport_pairs: int = 4,
     ):
         self.timeout = timeout
         self.query_service = query_service
@@ -42,8 +43,14 @@ class AirChinaSource:
         self.entry_mode = entry_mode
         self.config_path = config_path
         self.last_report = None
+        self.last_query = None
+        self.max_airport_pairs = max_airport_pairs
+        self._query_lock = threading.Lock()
 
     def query_by_flight(self, flight_number: str) -> list[dict]:
+        self.last_query = {"state": "unsupported", "reason": "route_and_date_required",
+                           "coverage_complete": False}
+        self.last_report = None
         return []
 
     def query_by_route(
@@ -59,6 +66,12 @@ class AirChinaSource:
         limit: int | None = None,
         timeout: int | None = None,
     ) -> list[dict]:
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            pass
+        else:
+            raise RuntimeError("Use await query_by_route_async() inside an event loop.")
         return asyncio.run(self.query_by_route_async(
             origin,
             destination,
@@ -72,6 +85,21 @@ class AirChinaSource:
         ))
 
     async def query_by_route_async(
+        self, origin: str, destination: str, date: str, *,
+        return_date: str | None = None, adults: int = 1, cabin: str = "economy",
+        stops: int | str = 0, limit: int | None = None, timeout: int | None = None,
+    ) -> list[dict]:
+        if not self._query_lock.acquire(blocking=False):
+            raise RuntimeError("An Air China query is already active on this source.")
+        try:
+            return await self._query_by_route_async(
+                origin, destination, date, return_date=return_date, adults=adults,
+                cabin=cabin, stops=stops, limit=limit, timeout=timeout,
+            )
+        finally:
+            self._query_lock.release()
+
+    async def _query_by_route_async(
         self,
         origin: str,
         destination: str,
@@ -84,25 +112,28 @@ class AirChinaSource:
         limit: int | None = None,
         timeout: int | None = None,
     ) -> list[dict]:
-        if return_date:
-            raise ValueError("Air China source currently supports one-way queries only.")
-        if adults != 1:
-            raise ValueError("Air China source currently requires exactly one adult.")
-        if stops != 0:
-            raise ValueError("Air China source currently supports direct flights only.")
-        if cabin not in {"economy", "business"}:
-            raise ValueError("Air China source currently supports economy or business cabin.")
+        # No stale successful report may survive a rejected/failed new query.
+        self.last_report = None
+        self.last_query = {"state": "validating", "coverage_complete": False}
+        from providers.airchina_source_contract import plan_query
+        try:
+            plan = plan_query(
+                origin, destination, date, return_date=return_date, adults=adults,
+                cabin=cabin, stops=stops, limit=limit,
+                timeout=self.timeout if timeout is None else timeout,
+                max_airport_pairs=self.max_airport_pairs, entry_mode=self.entry_mode,
+                flight_no=self.flight_no,
+            )
+        except ValueError:
+            self.last_query = {"state": "invalid_request", "coverage_complete": False}
+            raise
         if self.query_service is None:
             from providers.airchina_direct import build_query_service
-            self.query_service = build_query_service(self.config_path)
-        if timeout is not None:
-            self.timeout = timeout
-        from providers.airchina_direct import query_airchina_source
-        return await query_airchina_source(
-            self,
-            origin,
-            destination,
-            date,
-            cabin=cabin,
-            limit=limit,
-        )
+            try:
+                self.query_service = build_query_service(self.config_path)
+            except Exception:
+                self.last_query = {"state": "error", "reason": "configuration_unavailable",
+                                   "coverage_complete": False}
+                raise ValueError("Air China configuration could not be loaded.") from None
+        from providers.airchina_direct import query_airchina_plan
+        return await query_airchina_plan(self, plan)

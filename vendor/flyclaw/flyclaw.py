@@ -347,7 +347,7 @@ def _format_table(records: list[dict], verbose: bool = False) -> str:
         price_label = "(round-trip)" if trip_type == "round_trip" else ""
         if price is not None:
             if rec.get("reference_only"):
-                extras.append(f"Reference fare: ${price} (per adult, excl. tax)")
+                extras.append(f"Reference fare: {rec.get('currency') or 'unknown'} {price} (per adult, excl. tax)")
             else:
                 extras.append(f"Price: ${price} {price_label}".strip())
         if stops is not None:
@@ -548,14 +548,20 @@ def _query_fliggy_route(
 def _query_airchina_route(
     origin: str, dest: str, date: str, timeout: int, *,
     adults: int = 1, cabin: str = "economy", stops: int | str = 0,
-    limit: int | None = None,
+    limit: int | None = None, return_date: str | None = None,
 ) -> list[dict]:
     from sources.airchina import AirChinaSource
     src = AirChinaSource(timeout=timeout)
-    return src.query_by_route(
+    records = src.query_by_route(
         origin, dest, date,
-        adults=adults, cabin=cabin, stops=stops, limit=limit,
+        adults=adults, cabin=cabin, stops=stops, limit=limit, return_date=return_date,
     )
+    audit = src.last_query or {}
+    if audit.get("stop_reason"):
+        logger.warning("Air China query stopped: %s; airport coverage incomplete", audit["stop_reason"])
+    if stops != 0:
+        logger.warning("Air China currently verifies direct flights only; connecting coverage is unavailable.")
+    return records
 
 
 def _query_sk_route(origin: str, dest: str, date: str, timeout: int,
@@ -1083,6 +1089,13 @@ def _validate_search_args(args):
 def cmd_search(args):
     """Handle 'search' subcommand: search by route."""
     _validate_search_args(args)
+    if args.source == "airchina":
+        if not args.date:
+            raise ValueError("Air China requires --date.")
+        if args.return_date:
+            raise ValueError("Air China supports one-way only; --return is not silently ignored.")
+        if args.adults != 1 or args.children or args.infants:
+            raise ValueError("Air China requires exactly one adult, no children/infants.")
 
     # Resolve airport codes from user input (city-level: may return multiple)
     conf = cfg.get_config()
@@ -1195,33 +1208,49 @@ def cmd_search(args):
     ac_cfg = sources_cfg.get("airchina", {})
     if (args.source == "airchina" or ac_cfg.get("enabled", False)) and args.date:
         import functools
-        ac_task = functools.partial(
-            _query_airchina_route,
-            origins[0], dests[0], args.date, ac_cfg.get("timeout", 240),
-            adults=args.adults, cabin=args.cabin, stops=stops_val, limit=effective_limit,
-        )
-        if args.source == "airchina":
-            tasks = [("AirChina", lambda t=ac_task: t(), ())]
+        if args.return_date or args.adults != 1 or args.children or args.infants:
+            logger.warning("Air China skipped: unsupported trip/passenger request.")
         else:
-            tasks.append(("AirChina", lambda t=ac_task: t(), ()))
+            ac_timeout = getattr(args, "timeout", None) or ac_cfg.get("timeout", 240)
+            if args.source != "airchina":
+                ac_timeout = min(ac_timeout, global_timeout)
+            ac_task = functools.partial(
+                _query_airchina_route,
+                args.from_station, args.to_station, args.date, ac_timeout,
+                adults=args.adults, cabin=args.cabin, stops=stops_val, limit=effective_limit,
+                return_date=args.return_date,
+            )
+            if args.source == "airchina":
+                tasks = [("AirChina", lambda t=ac_task: t(), ())]
+            else:
+                tasks.append(("AirChina", lambda t=ac_task: t(), ()))
 
     task_names = [t[0] for t in tasks]
     ss_cfg = conf["query"].get("sufficient_source", "")
     sufficient = [ss_cfg] if ss_cfg else None
-    results = _execute_concurrent_queries(
-        tasks, global_timeout, return_time,
-        sufficient_sources=sufficient,
-    )
+    if args.source == "airchina":
+        # The source owns its total deadline and cleans up the browser before
+        # returning. A thread-pool smart return must not leave it querying unseen.
+        results = tasks[0][1]()
+    else:
+        results = _execute_concurrent_queries(
+            tasks, global_timeout, return_time,
+            sufficient_sources=sufficient,
+        )
 
     # Degradation warnings
-    failures = _classify_source_failures(task_names, results)
-    _print_degradation_warnings(failures)
+    if args.source != "airchina":
+        failures = _classify_source_failures(task_names, results)
+        _print_degradation_warnings(failures)
+    elif not results:
+        print("[Note] 国航未取得可验证参考票价；不代表无票或网络故障。", file=sys.stderr)
 
     # Update route cache from results
     route_cache.update_from_records(results)
     route_cache.save()
 
-    merged = _merge_records(results)
+    # A flight-number-only merge would collapse distinct city-search itineraries.
+    merged = [dict(r) for r in results] if args.source == "airchina" else _merge_records(results)
 
     if not getattr(args, "show_codeshare", False):
         merged = _deduplicate_codeshares(merged)
@@ -1251,7 +1280,8 @@ def cmd_search(args):
     if args.output == "json":
         print(json.dumps(merged, indent=2, ensure_ascii=False, default=str))
     else:
-        print(_format_table(merged, verbose=args.verbose))
+        print("No verified Air China reference fares." if args.source == "airchina" and not merged
+              else _format_table(merged, verbose=args.verbose))
 
     # Cross-verification via fast-flights (optional) — uses full_merged
     if getattr(args, "compare", False):
