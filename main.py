@@ -73,6 +73,10 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("report", help="Generate CSV and markdown report from SQLite")
     subparsers.add_parser("airchina-environment-check",
                          help="Validate and print sanitized local browser/network settings; no browser or query")
+    audit_cmd = subparsers.add_parser("airchina-environment-audit",
+        help="Compare configured and observed browser properties on a synthetic local page; no airline/proxy access")
+    audit_cmd.add_argument("--headless", action="store_true",
+                           help="Use headless Chrome; report records this difference from headed experiments")
 
     export_cmd = subparsers.add_parser("export-csv", help="Export snapshots to CSV")
     export_cmd.add_argument("--output", help="Custom output path")
@@ -123,6 +127,16 @@ def main() -> int:
         print(json.dumps(environment_summary(config.providers.get("airchina")),
                          ensure_ascii=False, indent=2))
         return 0
+
+    if args.command == "airchina-environment-audit":
+        from browser_environment import BrowserEnvironmentError
+        from browser_environment_audit import run_audit
+        try:
+            config = config_manager.load()
+        except BrowserEnvironmentError as exc:
+            print(str(exc))
+            return 2
+        return asyncio.run(run_audit(config, headless=args.headless))
 
     app = FlightPriceApplication(config_manager)
 

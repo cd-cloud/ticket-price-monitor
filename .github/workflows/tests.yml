@@ -68,5 +68,6 @@ jobs:
           node --check providers/airchina_dom.js
           node --check providers/airchina_notices.js
           node --check providers/airchina_form.js
+          node --check browser_fingerprint.js
       - name: Run frontend tests
         run: node --test tests/test_tail_ui.cjs

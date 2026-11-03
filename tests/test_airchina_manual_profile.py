@@ -14,13 +14,17 @@ from config_manager import ConfigManager
 from test_experimental_queries import config_file
 
 
-@pytest.mark.parametrize("profile", ["airchina-v2", "airchina-v2-recovery-2"])
-def test_manual_open_and_next_query_select_same_airchina_profile(tmp_path, monkeypatch, profile):
+@pytest.mark.parametrize("suffix", ["", "-recovery-2"])
+@pytest.mark.parametrize("fixed_enabled", [False, True])
+def test_manual_open_and_next_query_select_same_airchina_profile(tmp_path, monkeypatch, suffix, fixed_enabled):
     config = replace(ConfigManager(config_file(tmp_path)).load(), browser_backend="chrome",
                      browser_backend_fallbacks=[])
     provider = config.providers["airchina"]
+    if not fixed_enabled:
+        provider.browser_environment = None
     assert not provider.enabled
     manager = BrowserSessionManager(config)
+    profile = manager.profile_name_for_backend(provider, "chrome") + suffix
     manager.set_chrome_profile_preference("airchina", forced_profile=profile)
     service = BrowserProfileService(config=config, repository=SimpleNamespace(
         fetch_tail_discovery_attempts=Mock(return_value=[]), fetch_snapshots=Mock(return_value=[])))
@@ -76,7 +80,8 @@ def test_unavailable_manual_profile_never_selects_recovery_or_fallback(tmp_path,
                      browser_backend_fallbacks=["playwright"])
     provider = config.providers["airchina"]
     manager = BrowserSessionManager(config)
-    path = manager.persistent_profile_path_for_backend(provider, "chrome", "airchina-v2")
+    profile = manager.profile_name_for_backend(provider, "chrome")
+    path = manager.persistent_profile_path_for_backend(provider, "chrome", profile)
     path.mkdir(parents=True)
     if fault == "socket_lock":
         (path / "SingletonSocket").write_text("owned")
@@ -86,14 +91,14 @@ def test_unavailable_manual_profile_never_selects_recovery_or_fallback(tmp_path,
         (path / "Default").mkdir()
         (path / "Default" / "Preferences").write_text("malformed")
     else:
-        manager._write_profile_state({"airchina": {"chrome": {"polluted_profiles": {"airchina-v2": {}}}}})
+        manager._write_profile_state({"airchina": {"chrome": {"polluted_profiles": {profile: {}}}}})
     backend = SimpleNamespace(ensure_backend=AsyncMock())
     manager._backend_manager = backend
-    assert manager.selected_chrome_profile_name(provider, "chrome") == "airchina-v2"
+    assert manager.selected_chrome_profile_name(provider, "chrome") == profile
     with pytest.raises(AirChinaSessionUnavailable, match="不会自动切换"):
         asyncio.run(manager.new_page(provider))
     backend.ensure_backend.assert_not_awaited()
-    assert not (path.parent / "airchina-v2-recovery").exists()
+    assert not (path.parent / f"{profile}-recovery").exists()
     if fault == "socket_lock":
         assert (path / "SingletonSocket").read_text() == "owned"
     elif fault == "dangling_lock":

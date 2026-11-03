@@ -134,7 +134,13 @@
     },
     "airchina": {
       "enabled": false,
-      "browser_environment": null,
+      "browser_environment": {
+        "fingerprint": {
+          "mode": "fixed-v1",
+          "hardware_concurrency": 8,
+          "device_memory": 8
+        }
+      },
       "login_url": "https://www.airchina.com.cn/zh-CN",
       "search_url_template": "https://www.airchina.com.cn/flight/oneway/{origin}-{destination}/{departure_date}",
       "storage_state_file": "./runtime/airchina_state.json",

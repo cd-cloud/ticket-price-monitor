@@ -28,7 +28,7 @@ def config(tmp_path, environment=None):
     return ConfigManager(path)
 
 
-def test_default_preserves_headers_profile_and_no_options(tmp_path):
+def test_explicit_null_preserves_headers_profile_and_no_options(tmp_path):
     c = config(tmp_path).load()
     p = c.providers["airchina"]
     assert p.browser_environment is None

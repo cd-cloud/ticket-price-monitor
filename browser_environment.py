@@ -9,6 +9,36 @@ import os
 import re
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from browser_fingerprint import validate_fingerprint, fingerprint_summary, SCRIPT_DIGEST
+
+
+# Versioned presets deliberately omit UA/platform overrides. They keep the
+# installed Chrome identity rather than claiming an unrelated OS/version.
+PRESETS = {
+    "desktop-cn-v1": {
+        "viewport": {"width": 1440, "height": 900},
+        "screen": {"width": 1920, "height": 1080},
+        "device_scale_factor": 1, "locale": "zh-CN",
+        "timezone_id": "Asia/Shanghai", "color_scheme": "light", "has_touch": False,
+    },
+    "desktop-gb-v1": {
+        "viewport": {"width": 1440, "height": 900},
+        "screen": {"width": 1920, "height": 1080},
+        "device_scale_factor": 1, "locale": "en-GB",
+        "timezone_id": "Europe/London", "color_scheme": "light", "has_touch": False,
+    },
+}
+
+
+def expand_environment_preset(raw):
+    if not isinstance(raw, dict):
+        return raw
+    if "preset" not in raw:
+        return deepcopy(raw)
+    name = raw["preset"]
+    if not isinstance(name, str) or name not in PRESETS:
+        raise BrowserEnvironmentError()
+    return {**deepcopy(PRESETS[name]), **deepcopy({k: v for k, v in raw.items() if k != "preset"})}
 
 
 class BrowserEnvironmentError(ValueError):
@@ -43,8 +73,10 @@ def environment_summary(provider):
         "screen": options.get("screen"),
         "device_scale_factor": options.get("device_scale_factor"),
         "color_scheme": options.get("color_scheme"),
+        "has_touch": options.get("has_touch"),
         "custom_user_agent": bool(options.get("user_agent")),
         "automatic_rotation": False,
+        "fingerprint": fingerprint_summary(options.get("fingerprint")),
     }
 
 
@@ -53,14 +85,14 @@ def parse_browser_environment(raw):
     if raw is None:
         return None
     try:
-        return _parse(raw)
+        return _parse(expand_environment_preset(raw))
     except (ValueError, TypeError, KeyError, ZoneInfoNotFoundError, OverflowError):
         raise BrowserEnvironmentError() from None
 
 
 def _parse(raw):
     allowed = {"viewport", "screen", "device_scale_factor", "user_agent",
-               "locale", "timezone_id", "color_scheme", "network"}
+               "locale", "timezone_id", "color_scheme", "has_touch", "network", "fingerprint"}
     if not isinstance(raw, dict) or set(raw) - allowed:
         raise ValueError()
     options = {}
@@ -100,6 +132,13 @@ def _parse(raw):
         if raw["color_scheme"] not in ("light", "dark", "no-preference"):
             raise ValueError()
         options["color_scheme"] = raw["color_scheme"]
+    if "has_touch" in raw:
+        if type(raw["has_touch"]) is not bool:
+            raise ValueError()
+        options["has_touch"] = raw["has_touch"]
+    fingerprint = validate_fingerprint(raw.get("fingerprint"))
+    if fingerprint is not None:
+        options["fingerprint"] = fingerprint
     network = raw.get("network", {"mode": "system"})
     if not isinstance(network, dict):
         raise ValueError()
@@ -138,15 +177,18 @@ def _parse(raw):
         raise ValueError()
     # Includes resolved credentials to invalidate retained sessions when changed.
     # Only this opaque digest is used in local cache/profile namespace keys.
-    key = hashlib.sha256(json.dumps(options, sort_keys=True).encode()).hexdigest()[:24]
+    identity = {**options, "_fingerprint_script": SCRIPT_DIGEST} if fingerprint else options
+    key = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()[:24]
     return BrowserEnvironment(options, key)
 
 
 def launch_options(kwargs):
-    """Explicit allowlist; never forward arbitrary launch flags or init scripts."""
+    """Explicit allowlist; fingerprint is handled separately before navigation."""
     options = kwargs.get("browser_environment_options") or {}
     allowed = {"viewport", "screen", "device_scale_factor", "user_agent",
-               "color_scheme", "proxy"}
+               "color_scheme", "has_touch", "proxy", "fingerprint"}
     if not isinstance(options, dict) or set(options) - allowed:
         raise BrowserEnvironmentError()
-    return deepcopy(options)
+    options = deepcopy(options)
+    validate_fingerprint(options.pop("fingerprint", None))
+    return options

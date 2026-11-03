@@ -51,6 +51,7 @@ class SystemChromeBackend(BrowserBackend):
         self._contexts: dict[int, BrowserContext] = {}
         self._profile_locks: dict[str, asyncio.Lock] = {}
         self._context_profiles: dict[int, str] = {}
+        self._fingerprint_new_pages: set[int] = set()
 
     async def start(self, headless: bool, browser_channel: str | None, **kwargs) -> None:
         chrome_path = _find_system_chrome()
@@ -86,6 +87,7 @@ class SystemChromeBackend(BrowserBackend):
         self._chrome_path = None
         self._profile_root = None
         self._context_profiles.clear()
+        self._fingerprint_new_pages.clear()
         self._profile_locks.clear()
 
     async def new_context(
@@ -98,7 +100,9 @@ class SystemChromeBackend(BrowserBackend):
         **kwargs,
     ) -> BrowserContext:
         from browser_environment import launch_options
+        from browser_fingerprint import fingerprint_script
         environment_options = launch_options(kwargs)
+        script = fingerprint_script((kwargs.get("browser_environment_options") or {}).get("fingerprint"))
         if self._playwright is None or self._chrome_path is None or self._profile_root is None:
             raise RuntimeError("BrowserBackend is not started")
 
@@ -110,6 +114,7 @@ class SystemChromeBackend(BrowserBackend):
 
         # Persistent contexts store cookies/localStorage in user_data_dir, so
         # Playwright storage_state JSON is intentionally ignored here.
+        context = None
         try:
             context = await self._playwright.chromium.launch_persistent_context(
                 user_data_dir=str(profile_dir),
@@ -125,15 +130,36 @@ class SystemChromeBackend(BrowserBackend):
                     "--no-first-run",
                 ],
             )
-        except Exception:
+            if script:
+                await context.add_init_script(script=script)
+        except BaseException:
+            # Never return an unpatched context after failed installation.
+            # If close fails, track it and retain the lock for stop() cleanup.
+            if context is not None:
+                try:
+                    await context.close()
+                except BaseException:
+                    self._contexts[id(context)] = context
+                    self._context_profiles[id(context)] = profile_name
+                    raise
             lock.release()
             raise
         self._contexts[id(context)] = context
         self._context_profiles[id(context)] = profile_name
+        if script:
+            self._fingerprint_new_pages.add(id(context))
         return context
 
     async def new_page(self, context: BrowserContext) -> Page:
         pages = context.pages
+        if id(context) in self._fingerprint_new_pages:
+            # Context init scripts do not retroactively patch restored pages.
+            # A fresh page ensures even the first task sees a patched document.
+            page = await context.new_page()
+            for old_page in pages:
+                await old_page.close()
+            self._fingerprint_new_pages.discard(id(context))
+            return page
         if pages:
             page = pages[0]
             for extra_page in pages[1:]:
@@ -154,6 +180,7 @@ class SystemChromeBackend(BrowserBackend):
         finally:
             context_id = id(context)
             self._contexts.pop(context_id, None)
+            self._fingerprint_new_pages.discard(context_id)
             profile_name = self._context_profiles.pop(context_id, None)
             if profile_name:
                 lock = self._profile_locks.get(profile_name)

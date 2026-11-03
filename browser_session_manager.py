@@ -128,8 +128,12 @@ class BrowserSessionManager:
         locale = options.pop("locale", provider.locale)
         timezone_id = options.pop("timezone_id", provider.timezone)
         candidates = [backend_name] if backend_name else self.backend_names_for_provider(provider)
-        if environment is not None and (provider.name != "airchina" or candidates != ["chrome"]):
-            raise AirChinaSessionUnavailable()
+        if environment is not None:
+            if provider.name != "airchina" or not candidates or candidates[0] != "chrome":
+                raise AirChinaSessionUnavailable()
+            # The app defaults include a Playwright fallback. Fixed environments
+            # must use the primary Chrome only, never another identity on failure.
+            candidates = ["chrome"]
         for candidate_name in candidates:
             if not candidate_name:
                 continue

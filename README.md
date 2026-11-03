@@ -17,7 +17,12 @@
   120 秒参考缓存、30 秒启动间隔和遇验证/限流后的持久暂停；人工确认才恢复，
   不保证免验证码。缓存明确标注原采集时间，不作为实时票价。
   可选[浏览器环境模拟与网络切换](docs/AIRCHINA_BROWSER_ENVIRONMENT.md)：显式配置视口、
-  语言、时区及代理，隔离档案与备份；默认关闭，不自动轮换或解除暂停。
+  语言、时区及代理，隔离档案与备份；代理默认不覆盖，不自动轮换或解除暂停。
+  提供两个固定桌面预设和 `airchina-environment-audit` 本地一致性检测：
+  用临时 Chrome 对比配置/实际值并生成 HTML 报告，不查询官网，不代表免验证码。
+  国航默认启用固定 CPU 8 核 / 设备内存 8 GiB 暴露值（`fingerprint.mode=fixed-v1`）；
+  WebGL 标识覆盖仍需显式配置，不默认伪造 GPU。可用 `browser_environment: null`
+  完全关闭；只覆盖新文档 Window/iframe，Worker 等指纹面不变，不保证绕过验证。
 
 - 已完整迁移 [FlyClaw](https://github.com/AI4MSE/FlyClaw) 固定提交的 CLI、数据源、配置和缓存，
   并保留 Apache-2.0 许可证。`flyclaw_cli.py` 可直接执行；国航作为独立 Source 复用同一

@@ -13,7 +13,8 @@ from dotenv import load_dotenv
 
 from airport_aliases import CLEAN_AIRPORT_ALIAS_CODE_MAP
 from providers.registry import provider_definition
-from browser_environment import BrowserEnvironment, parse_browser_environment
+from browser_environment import BrowserEnvironment, parse_browser_environment, expand_environment_preset
+from browser_fingerprint import default_fingerprint
 
 
 ROOT = Path(__file__).resolve().parent
@@ -591,8 +592,14 @@ class ConfigManager:
                 or _locale_from_accept_language(extra_headers.get("Accept-Language"))
                 or default_locale
             )
-            environment_raw = provider_raw.get("browser_environment")
+            # Missing settings enable fixed CPU/memory for Air China only.
+            # An explicit null environment opts out entirely; a null fingerprint
+            # keeps display/network settings without injecting a fingerprint.
+            environment_raw = provider_raw.get("browser_environment", {} if name == "airchina" else None)
+            environment_raw = expand_environment_preset(environment_raw)
             if isinstance(environment_raw, dict):
+                if name == "airchina" and "fingerprint" not in environment_raw:
+                    environment_raw = {**environment_raw, "fingerprint": default_fingerprint()}
                 environment_raw = {"locale": provider_locale,
                                    "timezone_id": str(provider_raw.get("timezone", default_timezone)),
                                    **environment_raw}

@@ -52,7 +52,7 @@ async def run():
     backend = SystemChromeBackend()
     try:
         with tempfile.TemporaryDirectory() as tmp:
-            await backend.start(True, None, profile_root=Path(tmp))
+            await backend.start(True, None, user_data_dir=Path(tmp))
             for server, label, marker in [(one, "Network A", "A"), (two, "Network B", "B"), (one, "Network A", "A")]:
                 os.environ["SMOKE_LOCAL_PROXY"] = f"http://127.0.0.1:{server.server_port}"
                 environment = parse_browser_environment({
