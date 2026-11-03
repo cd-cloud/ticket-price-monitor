@@ -11,9 +11,16 @@
   const resume = document.getElementById("airchinaExperimentContinue");
   const cancel = document.getElementById("airchinaExperimentCancel");
   const closeSession = document.getElementById("airchinaSessionClose");
+  const prepareSession = document.getElementById("airchinaSessionPrepare");
+  const restoreSession = document.getElementById("airchinaSessionRestore");
+  const readySession = document.getElementById("airchinaSessionReady");
+  const cancelPrepare = document.getElementById("airchinaSessionCancelPrepare");
+  const deleteBackup = document.getElementById("airchinaSessionBackupDelete");
+  const backupInput = document.getElementById("airchinaSessionBackup");
   const sessionStatus = document.getElementById("airchinaSessionStatus");
   const submit = form.querySelector("[type=submit]");
   const active = new Set(["queued", "running", "waiting_user", "cancelling"]);
+  const preparationActive = new Set(["preparing", "opening", "in_use", "waiting_user", "validating", "cancelling"]);
   const labels = {
     queued: "已排队", running: "读取中", waiting_user: "等待你处理",
     cancelling: "取消中", cancelled: "已取消", timed_out: "已超时", failed: "失败",
@@ -48,11 +55,13 @@
     loading_visible:"加载中", no_results_visible:"查询无结果"};
   const entryLabels = {direct:"直达结果页", form:"官网表单", results:"结果页续查"};
   const interactionLabels = {stop:"无人值守，遇阻即停", wait:"等待人工"};
-  const sessionLabels = {fresh:"每任务重启", reuse:"短时复用"};
+  const engineLabels = {native:"原生国航实验", flyclaw:"FlyClaw 国航 Source"};
+  const sessionLabels = {fresh:"每任务重启", reuse:"短时复用", persistent:"常驻会话"};
   const entryStages = {opening_home:"打开官网", filling_form:"填写表单",
     selecting_origin:"选择出发机场", selecting_destination:"选择到达机场",
     selecting_date:"选择日期", selecting_passengers:"设置人数", checking_form:"核对条件",
     submitting_form:"提交查询", result_page:"到达结果页", stopped:"已停止",
+    waiting_verification:"等待人工验证", verification_cleared:"验证已解除",
     checking_retained_results:"检查保留的旧列表", opening_results_form:"展开页内查询表单",
     observing_refresh:"观察列表刷新"};
   const entryReasons = {not_submitted:"尚未提交", submit_attempted:"已开始一次提交尝试",
@@ -60,6 +69,7 @@
     form_wait_timeout:"等待控件或条件确认超时", form_conditions_mismatch:"表单条件不匹配",
     form_changed_before_submit:"提交前条件发生变化", date_unavailable:"日期不可选择",
     unknown_home_dialog:"首页存在未识别弹窗", verification:"需要验证", blocked:"访问受限",
+    verification_cleared:"人工验证已解除，不代表报价有效",
     passenger_control_disabled:"人数控件不可操作", calendar_navigation_limit:"已达到翻月上限",
     retained_results_mismatch:"保留页不是同条件的有效参考列表",
     results_form_not_ready:"结果页查询表单未就绪",
@@ -72,6 +82,7 @@
     refresh_not_observed:"未观察到列表刷新，不能把旧票价作为新结果",
     visible_refresh_observed:"已观察到列表刷新过程（不证明服务端重新查价）"};
   let jobs = [], selected = "", generation = 0, busy = false, uncertain = true, timer;
+  let sessionInfo = {state:"closed", backup:{}}, sessionBusy = false, sessionTimer, queryRunning = false;
   submit.disabled = closeSession.disabled = true;
   const base = "/api/experiments/airchina";
   const today = new Date();
@@ -86,6 +97,70 @@
       if (!response.ok) throw new Error(typeof body.detail === "string" ? body.detail : "请求失败，请刷新任务记录。");
       return body;
     } finally { clearTimeout(deadline); }
+  }
+
+  let sessionVersion = 0;
+
+  function renderSessionControls() {
+    const preparing = preparationActive.has(sessionInfo.state);
+    const disabled = busy || uncertain || sessionBusy || queryRunning || preparing;
+    prepareSession.disabled = restoreSession.disabled = disabled;
+    const backupUnavailable = !sessionInfo.backup?.available || sessionInfo.backup?.encryption_available === false;
+    restoreSession.disabled = disabled || backupUnavailable;
+    deleteBackup.disabled = sessionBusy || queryRunning || preparing || !sessionInfo.backup?.available;
+    readySession.hidden = sessionInfo.state !== "waiting_user";
+    cancelPrepare.hidden = !preparing || sessionInfo.state === "cancelling";
+    closeSession.disabled = busy || uncertain || sessionBusy || queryRunning || preparing;
+    submit.disabled = busy || uncertain || sessionBusy || queryRunning || preparing;
+    const states = {
+      closed:"会话已关闭", preparing:"正在准备项目 Chrome", opening:"正在打开项目 Chrome",
+      waiting_user:"请在项目 Chrome 中完成登录或验证",
+      validating:"正在确认页面状态", ready:"会话可复用", retained:"会话可复用", in_use:"会话正在查询",
+      cancelling:"正在取消准备", error:"会话准备失败",
+    };
+    const backupStates = {
+      encryption_unavailable:"未配置项目主密钥，未保存明文备份", invalid_backup:"备份无法校验",
+      invalid_version:"备份版本不支持", backup_failed:"备份写入失败",
+    };
+    const backup = sessionInfo.backup || {};
+    const backupText = backup.error_code
+      ? `；备份：${backupStates[backup.error_code] || backup.error_code}`
+      : backup.available && backup.encryption_available === false
+        ? "；备份存在，但未配置项目主密钥，不能恢复"
+        : backup.available ? `；本机加密备份：${backup.saved_at ? new Date(backup.saved_at).toLocaleString() : "已保存"}` : "；无本机备份";
+    sessionStatus.textContent = `${states[sessionInfo.state] || sessionInfo.state || "状态未知"}${sessionInfo.reused ? " · 正在复用同一页面" : ""}${sessionInfo.retention_reason ? ` · ${sessionInfo.retention_reason}` : ""}${backupText}。登录态和验证码是否有效以官网实际响应为准。`;
+  }
+
+  async function refreshSession() {
+    const version = ++sessionVersion;
+    clearTimeout(sessionTimer);
+    try {
+      const data = await request(`${base}/session`);
+      if (version !== sessionVersion) return;
+      sessionInfo = data;
+      renderSessionControls();
+    } catch (exc) {
+      if (version === sessionVersion) sessionStatus.textContent = `会话状态读取失败：${exc.message}；不会自动重复提交。`;
+    } finally {
+      if (version === sessionVersion && preparationActive.has(sessionInfo.state)) {
+        sessionTimer = setTimeout(refreshSession, 1500);
+      }
+    }
+  }
+
+  async function sessionAction(path, options = {}) {
+    if (sessionBusy) return;
+    sessionBusy = true;
+    renderSessionControls();
+    try {
+      sessionInfo = await request(`${base}${path}`, options);
+      await refreshSession();
+    } catch (exc) {
+      sessionStatus.textContent = `${exc.message} 请先刷新会话状态，勿重复提交。`;
+    } finally {
+      sessionBusy = false;
+      renderSessionControls();
+    }
   }
 
   function render(job) {
@@ -116,14 +191,14 @@
       }
     }
     const running = jobs.some(j => active.has(j.status)) || (job && active.has(job.status));
-    submit.disabled = busy || uncertain || running;
-    closeSession.disabled = busy || uncertain || running;
+    queryRunning = Boolean(running);
+    renderSessionControls();
     resume.hidden = !job || job.status !== "waiting_user";
     resume.textContent = job?.stage === "form_inspection" ? "结束检查并关闭" : "我已手动处理，继续读取";
     cancel.hidden = !job || !active.has(job.status);
     resume.disabled = cancel.disabled = busy || uncertain || job?.status === "cancelling";
     if (!job) { status.textContent = "尚未选择任务。"; return; }
-    status.textContent = `${labels[job.status] || job.status} · ${job.request.origin} → ${job.request.destination} · ${job.request.departure_date} · ${entryLabels[job.request.entry_mode || "direct"] || "未知入口"} · ${interactionLabels[job.request.interaction_mode || "wait"] || "未知处理方式"} · ${sessionLabels[job.request.session_mode || "fresh"] || "未知会话模式"}\n${job.message}\n更新时间：${new Date(job.updated_at).toLocaleString()}${active.has(job.status) ? `；截止：${new Date(job.deadline_at).toLocaleTimeString()}` : ""}`;
+    status.textContent = `${labels[job.status] || job.status} · ${job.request.origin} → ${job.request.destination} · ${job.request.departure_date} · ${engineLabels[job.request.query_engine || "native"] || "未知引擎"} · ${entryLabels[job.request.entry_mode || "direct"] || "未知入口"} · ${interactionLabels[job.request.interaction_mode || "wait"] || "未知处理方式"} · ${sessionLabels[job.request.session_mode || "fresh"] || "未知会话模式"}\n${job.message}\n更新时间：${new Date(job.updated_at).toLocaleString()}${active.has(job.status) ? `；截止：${new Date(job.deadline_at).toLocaleTimeString()}` : ""}`;
     if (job.access_events?.length) {
       const box = document.createElement("div");
       box.className = "airchina-diagnostics";
@@ -209,7 +284,11 @@
       const reasons = {first_use:"尚无可复用会话", fresh_requested:"选择每任务重启",
         same_page_context:"复用同一页面与上下文", configuration_changed:"配置改变，重新打开",
         expired:"会话过期，重新打开", page_closed:"页面已关闭，重新打开"};
-      p.textContent = `会话记录：${sessionLabels[session.mode] || "未知模式"} · ${session.reused ? "本次已复用" : "本次新建"} · ${reasons[session.reason] || "原因未知"} · ${states[session.state] || "状态未知"}${session.use_number ? ` · 本会话第 ${session.use_number} 次任务` : ""}。这是任务记录，不保证浏览器目前仍打开，也不代表验证状态有效。`;
+      const retentionLabels = {
+        reference_validated:"可靠参考结果", manual_verification_cleared:"人工验证已解除",
+        access_validated:"访问状态可复用", manual_session_prepared:"人工准备登录态",
+      };
+      p.textContent = `会话记录：${sessionLabels[session.mode] || "未知模式"} · ${session.reused ? "本次已复用" : "本次新建"} · ${reasons[session.reason] || "原因未知"} · ${states[session.state] || "状态未知"}${session.use_number ? ` · 本会话第 ${session.use_number} 次任务` : ""}${session.retention_reason ? ` · 保留原因：${retentionLabels[session.retention_reason] || session.retention_reason}` : ""}。这是任务记录，不保证浏览器目前仍打开，也不代表验证状态或票价有效。`;
       results.appendChild(p);
     }
     const entry = job.entry_evidence || report.entry_evidence;
@@ -359,22 +438,20 @@
     render(jobs.find(j => j.job_id === selected));
   });
   document.getElementById("airchinaExperimentRefresh").addEventListener("click", refresh);
-  closeSession.addEventListener("click", async () => {
-    if (busy || uncertain) return;
-    busy = true;
-    closeSession.disabled = submit.disabled = true;
-    sessionStatus.textContent = "";
-    try {
-      await request(`${base}/session/close`, {method:"POST"});
-      sessionStatus.textContent = "空闲浏览器已关闭；没有清除持久档案，也没有重新查询。";
-    } catch (exc) {
-      sessionStatus.textContent = `未确认关闭：${exc.message} 不会自动重试。`;
-    } finally {
-      busy = false;
-      await refresh();
+  closeSession.addEventListener("click", () => sessionAction("/session/close", {method:"POST"}));
+  prepareSession.addEventListener("click", () => sessionAction("/session/prepare", {method:"POST"}));
+  restoreSession.addEventListener("click", () => sessionAction("/session/restore", {method:"POST"}));
+  readySession.addEventListener("click", () => sessionAction("/session/ready", {
+    method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({backup:backupInput.checked}),
+  }));
+  cancelPrepare.addEventListener("click", () => sessionAction("/session/cancel-prepare", {method:"POST"}));
+  deleteBackup.addEventListener("click", () => {
+    if (window.confirm("只删除本机加密登录态备份，不关闭浏览器、不清除 Chrome 持久档案。确定删除？")) {
+      sessionAction("/session/backup", {method:"DELETE"});
     }
   });
   resume.addEventListener("click", () => mutate(`${base}/${encodeURIComponent(selected)}/continue`));
   cancel.addEventListener("click", () => mutate(`${base}/${encodeURIComponent(selected)}/cancel`));
   refresh();
+  refreshSession();
 })();

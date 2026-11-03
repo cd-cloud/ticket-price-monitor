@@ -225,32 +225,42 @@
       <section id="airchinaExperimentPanel" class="panel">
         <h2>国航实验查询</h2>
         <p>仅单程、明确机场、1 成人。结果是<strong>每成人不含税参考票价</strong>，不进入正式报价、最低价排名或甩尾比价。</p>
+        <div class="actions">
+          <button id="airchinaSessionPrepare" type="button" class="primary">准备登录态</button>
+          <button id="airchinaSessionRestore" type="button" class="secondary">恢复本机备份</button>
+          <button id="airchinaSessionReady" type="button" class="primary" hidden>我已完成登录和验证</button>
+          <button id="airchinaSessionCancelPrepare" type="button" class="secondary" hidden>取消准备</button>
+          <button id="airchinaSessionClose" type="button" class="secondary">关闭会话</button>
+          <button id="airchinaSessionBackupDelete" type="button" class="ghost danger">删除备份</button>
+        </div>
+        <label class="inline-toggle"><input id="airchinaSessionBackup" type="checkbox" checked />
+          <span>就绪后保存本机加密登录态备份（需已配置项目主密钥，不导出 Cookie/token）</span>
+        </label>
+        <p id="airchinaSessionStatus" role="status">正在读取会话状态。</p>
         <form id="airchinaExperimentForm" class="route-form">
           <label>出发机场码<input name="origin" placeholder="PEK" maxlength="3" pattern="[A-Za-z]{3}" required /></label>
           <label>到达机场码<input name="destination" placeholder="SHA" maxlength="3" pattern="[A-Za-z]{3}" required /></label>
           <label>出发日期<input name="departure_date" type="date" required /></label>
           <label>舱等<select name="cabin"><option value="economy">经济舱</option><option value="business">公务舱</option></select></label>
-          <label>查询入口<select name="entry_mode"><option value="direct">直达结果页（原模式 / 对照）</option><option value="form">官网表单（实验）</option><option value="results">结果页续查（同条件实验，不回首页）</option></select></label>
-          <label>遇阻处理<select name="interaction_mode"><option value="stop">无人值守：遇到验证或未知提示即停止</option><option value="wait">等待人工：在同一页面处理后继续</option></select></label>
-          <label>浏览器会话<select name="session_mode"><option value="reuse">短时复用（实验）</option><option value="fresh">每任务重启（对照，不清除持久档案）</option></select></label>
+          <label>查询引擎<select name="query_engine"><option value="native" selected>原生国航实验</option><option value="flyclaw">FlyClaw 国航 Source</option></select></label>
+          <label>查询入口<select name="entry_mode"><option value="direct">直达结果页（对照）</option><option value="form" selected>官网表单（推荐）</option><option value="results">结果页续查（同条件实验，不回首页）</option></select></label>
+          <label>遇阻处理<select name="interaction_mode"><option value="stop">无人值守：遇到验证或未知提示即停止</option><option value="wait" selected>等待人工：在同一页面处理后继续</option></select></label>
+          <label>浏览器会话<select name="session_mode"><option value="persistent" selected>常驻会话（推荐，应用运行期间复用）</option><option value="reuse">短时复用（10 分钟空闲 / 30 分钟总寿命）</option><option value="fresh">每任务重启（对照，不清除持久档案）</option></select></label>
           <label>指定航班（可选）<input name="flight_no" placeholder="CA1549；留空只读列表" pattern="[A-Za-z]{2}[0-9]{3,4}" /></label>
           <label class="inline-toggle"><input name="auto_confirm_notices" type="checkbox" checked />
             <span>自动确认查询通知，并记录内容（不含验证码、登录、个人声明、预订或支付）</span>
           </label>
           <div class="actions"><button type="submit" class="primary">开始实验查询</button></div>
         </form>
-        <p>将打开本机项目浏览器，不复用当前应用内标签。总时限 4 分钟（含人工等待）；已授权的查询通知先记录后确认。默认无人值守，遇到验证或未知提示即结束并释放查询锁，不自动重试；可选择等待人工继续。不会自动处理验证码或预订。</p>
-        <p>表单模式仅支持未来 365 天内的日期；选择普通 1 成人，不支持特殊乘客。舱等在结果解析时筛选，不声称官网已应用舱等筛选。表单失败不会自动改走直达或重新提交；等待人工模式下，控件超时、条件或提交结果未确认时保留窗口供检查，点击“结束检查并关闭”、取消或达到原任务截止时间后关闭。检查期间请勿手动提交；结束检查不会重查或读取票价。提交前遇到验证/未知弹窗仍停止本次任务。</p>
-        <p>短时复用仅在取得可靠参考结果后保留同一页面和浏览器上下文：空闲最多 10 分钟、总寿命最多 30 分钟（任务中不强行关闭，结束后检查）。每次仍需手动发起并重新校验查询，不复用旧价格；验证未通过、失败、取消或超时即关闭。不能保证减少验证码。</p>
-        <p>结果页续查：须先通过官网表单取得并保留同航线、日期、普通 1 成人的成功结果页，再选择此入口。仅支持“短时复用＋无人值守”。不回首页、不刷新、不改条件；只展开官网“重新查询”并提交一次。未观察到列表清空或加载过程则不读取旧票价；观察到页面刷新过程也不证明服务器重新查价或库存有效。</p>
-        <p>手动访问状态：Chrome 使用项目自己的国航持久档案，不是应用内浏览器或个人 Chrome 的档案。“每任务重启”不会主动清除该档案；“短时复用”额外保留成功查询的同一页面。若需手动初始化，请通过“浏览器档案”打开国航所选档案，完成后正常关闭该项目窗口，再发起实验；不要同时打开两个使用同一档案的浏览器。保存状态不保证免验证。</p>
+        <p>建议先点击“准备登录态”，在同一个项目 Chrome 中手动登录或完成验证，再点击“我已完成登录和验证”。准备阶段只打开官网，不查询航班；查询总时限 4 分钟（含人工等待），不会自动处理验证码或预订。</p>
+        <p>常驻会话在应用运行期间跨任务复用同一页面和上下文；空结果或解析不确定不等于会话失效。验证未解除、访问受限、取消、超时、配置变化或显式关闭仍会销毁会话。应用重启后使用固定国航持久档案，也可显式恢复本机加密备份；均不保证免验证。</p>
+        <p>表单模式仅支持未来 365 天内的日期和普通 1 成人。已位于官网首页时不重复导航；提交前验证可在等待人工模式下继续同一表单，不重复提交。控件失败、提交结果未知、取消或超时仍不自动重试。</p>
+        <p>结果页续查仍须先取得并保留同条件的成功参考列表，仅支持“短时复用＋无人值守”；不会为了复用会话而接受旧票价。关闭会话不会删除持久档案或加密备份，删除备份需单独点击。</p>
         <p id="airchinaExperimentError" role="alert"></p>
         <div class="actions">
           <label>任务记录<select id="airchinaExperimentJobs" aria-label="国航实验任务记录"></select></label>
           <button id="airchinaExperimentRefresh" type="button" class="secondary">刷新记录</button>
-          <button id="airchinaSessionClose" type="button" class="secondary">关闭空闲浏览器</button>
         </div>
-        <p id="airchinaSessionStatus" role="status"></p>
         <div id="airchinaExperimentStatus" role="status" aria-live="polite">尚未选择任务。</div>
         <div class="actions">
           <button id="airchinaExperimentContinue" type="button" class="primary" hidden>我已手动处理，继续读取</button>

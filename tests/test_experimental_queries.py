@@ -617,3 +617,150 @@ def test_api_and_web_entry_with_no_real_browser(tmp_path, monkeypatch):
         assert client.post("/api/experiments/airchina/session/close").json() == {"closed": True}
         assert client.post("/api/experiments/airchina/session/close",
                            headers={"Origin": "https://evil.test"}).status_code == 403
+
+
+def wait_session(service, expected):
+    end = time.monotonic() + 5
+    while time.monotonic() < end:
+        current = service.session_status()
+        if current["state"] == expected:
+            return current
+        time.sleep(.01)
+    raise AssertionError(f"session did not reach {expected}: {current}")
+
+
+def test_prepare_ready_and_close_persistent_session(env):
+    service, repo, control, page, automation, query = env
+    service.prepare_browser_session()
+    waiting = wait_session(service, "waiting_user")
+    assert waiting["mode"] == "persistent"
+    assert query.run_lock.locked()
+    service.browser_session_ready(backup=False)
+    ready = wait_session(service, "ready")
+    assert ready["retention_reason"] == "manual_session_prepared"
+    assert not query.run_lock.locked()
+    automation._new_page.assert_awaited_once()
+    automation._close_context_quietly.assert_not_awaited()
+    assert repo.count_snapshots() == 0
+    service.without_browser_session()
+    assert wait_session(service, "closed")
+    automation._close_context_quietly.assert_awaited_once_with("context")
+
+
+def test_restore_failure_remains_visible_until_explicit_close(env, monkeypatch):
+    from local_session_state_store import SessionStateError
+
+    service, *_ = env
+    monkeypatch.setattr(
+        service.experimental_sessions.store,
+        "load",
+        Mock(side_effect=SessionStateError("invalid_backup")),
+    )
+    service.prepare_browser_session(restore=True)
+    failure = wait_session(service, "error")
+    assert failure["error_code"] == "invalid_backup"
+    service.without_browser_session()
+    assert wait_session(service, "closed")
+
+
+@pytest.mark.parametrize("mode", ["reuse", "persistent"])
+def test_verification_cleared_without_fares_retains_and_reuses_session(env, monkeypatch, mode):
+    service, repo, control, page, automation, query = env
+
+    async def empty_wait(*_args, **_kwargs):
+        return {
+            "state": "query_page_unverified",
+            "wait_evidence": {},
+            "reference_preview": {
+                "status": "unverified", "reason": "page_reports_no_results", "offers": [],
+                "quote_saved": False, "parser_ready": False, "coverage_complete": False,
+            },
+        }
+
+    monkeypatch.setattr("providers.airchina.wait_for_results", empty_wait)
+    request = {**REQUEST, "session_mode": mode, "interaction_mode": "wait"}
+    control.challenge = True
+    first_id = service.submit(request)["job_id"]
+    wait(service, first_id, lambda job: job["status"] == "waiting_user")
+    control.challenge = False
+    service.control(first_id, "continue")
+    first = wait(service, first_id)
+    service._thread.join(1)
+    assert first["status"] == "inconclusive"
+    assert first["session_evidence"]["state"] == "retained"
+    assert first["session_evidence"]["retention_reason"] == "manual_verification_cleared"
+    assert not control.close
+
+    second = wait(service, service.submit(request)["job_id"])
+    service._thread.join(1)
+    assert second["session_evidence"]["reused"]
+    assert second["session_evidence"]["generation"] == first["session_evidence"]["generation"]
+    automation._new_page.assert_awaited_once()
+    assert repo.count_snapshots() == 0
+
+
+def test_session_api_prepare_restore_ready_cancel_and_delete(tmp_path, monkeypatch):
+    from experimental_session_service import ExperimentalSessionService
+
+    calls = []
+
+    def prepare(self, *, restore=False):
+        calls.append(("restore" if restore else "prepare", restore))
+        return {"state": "preparing", "restore_requested": restore, "backup": {}}
+
+    def ready(self, *, backup=False):
+        calls.append(("ready", backup))
+        return {"state": "validating", "backup": {}}
+
+    monkeypatch.setattr(ExperimentalSessionService, "prepare", prepare)
+    monkeypatch.setattr(ExperimentalSessionService, "ready", ready)
+    monkeypatch.setattr(ExperimentalSessionService, "status", lambda self: {"state": "closed", "backup": {}})
+    monkeypatch.setattr(ExperimentalSessionService, "cancel", lambda self: calls.append(("cancel", None)) or {"state": "cancelling"})
+    monkeypatch.setattr(ExperimentalSessionService, "delete_backup", lambda self: calls.append(("delete", None)) or {"available": False})
+
+    with TestClient(create_app(str(config_file(tmp_path)))) as client:
+        assert client.get("/api/experiments/airchina/session").status_code == 200
+        assert client.post("/api/experiments/airchina/session/prepare").status_code == 202
+        assert client.post("/api/experiments/airchina/session/restore").status_code == 202
+        assert client.post("/api/experiments/airchina/session/ready", json={"backup": True}).status_code == 200
+        assert client.post("/api/experiments/airchina/session/cancel-prepare").status_code == 200
+        assert client.delete("/api/experiments/airchina/session/backup").json() == {"available": False}
+        assert client.post("/api/experiments/airchina/session/prepare",
+                           headers={"Origin": "https://evil.test"}).status_code == 403
+    assert calls == [("prepare", False), ("restore", True), ("ready", True), ("cancel", None), ("delete", None)]
+
+
+def test_flyclaw_query_engine_uses_source_with_existing_task_lifecycle(env, monkeypatch):
+    service, repo, control, page, automation, query = env
+    captured = {}
+
+    class Source:
+        def __init__(self, query_service, **options):
+            captured.update(options)
+            captured["query_service"] = query_service
+            self.last_report = None
+
+        async def query_by_route_async(self, *_args, **_kwargs):
+            self.last_report = {
+                "state": "reference_fares_observed",
+                "message": "FlyClaw 国航参考票价",
+                "reference_preview": {"offers": []},
+            }
+            return []
+
+    monkeypatch.setattr("providers.airchina_direct.create_airchina_source", Source)
+    job_id = service.submit({
+        **REQUEST,
+        "departure_date": (date.today() + timedelta(days=10)).isoformat(),
+        "query_engine": "flyclaw",
+        "entry_mode": "form",
+    })["job_id"]
+    final = wait(service, job_id)
+    assert final["status"] == "completed_reference"
+    assert final["request"]["query_engine"] == "flyclaw"
+    assert final["result"]["message"] == "FlyClaw 国航参考票价"
+    assert captured["query_service"] is query
+    assert captured["entry_mode"] == "form"
+    assert captured["session_mode"] == "fresh"
+    assert repo.count_snapshots() == 0
+    page.goto.assert_not_awaited()

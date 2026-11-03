@@ -2,69 +2,97 @@
 
 更新日期：2026-10-30。此功能不是正式报价/甩尾适配已验收。
 
-## 六层链路
+## 会话与查询链路
 
 ```text
 网页「国航实验」 / JSON API
-  → ExperimentalQueryService（后台任务、公共 run_lock、人工继续、取消）
+  → ExperimentalSessionService（准备、就绪、恢复、删除备份，公共 run_lock）
+  → ExperimentalQueryService（后台任务、人工继续、取消）
       → ExperimentalSessionRunner（专用线程/长驻事件循环，浏览器对象不跨循环）
-      → ExperimentalBrowserSession（可选短时同页复用，有限寿命）
+      → ExperimentalBrowserSession（fresh / reuse / persistent）
   → QueryService.inspect_airchina_experiment（总时限、浏览器生命周期）
   → BrowserAutomation / BrowserSessionManager / ProviderRuntime（公共设施）
   → providers/airchina.py（一次导航及查询编排）
-      → airchina_form.py / airchina_form.js（可选首页表单，一次提交，不回退直达）
+      → airchina_form.py / airchina_form.js（官网表单，一次提交，不回退直达）
       → airchina_page.py（入口校验、验证码/限制/过期/提示状态）
       → airchina_result_wait.py（有界等待，两次经校验的票价证据一致）
       → airchina_parser.py / airchina_products.py（航班/舱位/产品绑定）
       → airchina_result.py（参考结果组装，不生成正式 price）
   → PriceRepository.experimental_query_jobs（独立任务/参考结果记录）
+  → LocalSessionStateStore（可选，仅本机加密登录态备份）
 ```
 
-没有另复制一套浏览器引擎、SQLite 连接或公共查询锁。实验查询与普通查询、
-甩尾任务互斥；不读取任何平台的加密凭据或 Fliggy key。
+没有另复制一套浏览器引擎、SQLite 连接或公共查询锁。实验查询、会话准备与普通查询、
+甩尾任务互斥；不读取平台账号密码或 Fliggy key。只有用户显式选择加密备份时，
+才使用项目已有的 `FLIGHT_TRACKER_MASTER_KEY` 和 salt 机制。
 参考结果不写入 `price_snapshots` / 甩尾结果，不参与报表、比价、路线学习和负缓存。
 加载/过期/人工提示不可作为有效列表；若产品读取阶段失败，丢弃此前列表预览，
 不让早先读到的价格继续冒充本次有效结果。
+
+## FlyClaw Source 接入
+
+项目完整保留 FlyClaw 固定提交的文件树、CLI、5 个数据源、配置和缓存，许可证及来源见
+`vendor/flyclaw/NOTICE.md`。根目录 `flyclaw_cli.py` 直接调用上游 CLI；
+`vendor/flyclaw/sources/airchina.py` 是本地新增的第 6 个 Source，复用上游
+`query_by_route` 和标准航段记录。`providers/airchina_direct.py` 把同一记录映射到现有
+实验任务，不让 CLI 和网页各自维护一套国航解析器。
+
+网页/API 新增 `query_engine=native|flyclaw`，默认 `native` 保持原行为。选择 `flyclaw`
+仍复用上述公共查询锁、会话、人工继续、通知和独立实验存储。国航没有官方 API 授权时，
+Source 继续使用官网浏览器通道；它只改变 Provider 编排和结果规范，不消除验证码。
+输出保留 `price_kind=starting_fare`、`tax_included=false`、`reference_only=true`，
+合并价格时要求币种、计价单位、税费和报价种类一致。
+
+CLI 示例：`python flyclaw_cli.py search --from PEK --to SHA --date 2026-12-13 --source airchina`。
+请改用实际未来日期。上游可选 compare 所需模块未随仓库提供，不能作为已验证能力。
 
 ## 用法与生命周期
 
 网页入口为顶部的「国航实验」。配置需包含 `airchina` 项，但保持
 `enabled=false`，不需要启用普通监控。仅接受明确机场、未来单程日期、
 1 成人、经济/公务舱；可选指定航班产品，否则只读列表。
-总时限 240 秒，包含浏览器启动、人工等待与读取；取消/超时后关闭上下文。
-网页新任务默认 `session_mode=reuse`；API 省略仍为 `fresh`（每任务关闭），
-二者都使用原有持久档案机制，不把“重启对照”理解为清空 Cookie 的全新身份。
-网页默认勾选“自动确认查询通知，并记录内容”；可取消勾选。
-API 必须显式传入 `auto_confirm_notices: true`，省略默认保持人工模式；
-历史任务不因升级自动获得此授权。CLI 保持人工模式。
-已授权的查询通知先持久化正文再确认；不处理验证码、登录授权、个人声明、
-预订/支付、过期刷新或未知弹窗。网页新任务默认 `interaction_mode=stop`：
-出现验证或未知提示后结束任务、关闭上下文并释放锁，不自动重试，不判为无票。
-显式选择 `interaction_mode=wait` 时，需要人工的结果页场景停在 `waiting_user`，用户在
-**项目浏览器**处理后点击继续，读取同一个页面，不重新搜索。
-最多接受 3 次人工继续。
-API 省略 `interaction_mode` 保持旧的 `wait` 语义；新网页明确提交 `stop`，
-不会改变历史任务模式。表单提交前遇阻仍直接结束，不提供重新提交式“继续”。
-应用关闭会请求取消；重新启动会把遗留活动任务标为 `interrupted`，
-不会假装恢复旧浏览器会话，也不会自动重新提交。
-部署范围是现有单进程本地应用；不提供跨进程分布式互斥。
+查询总时限 240 秒，包含浏览器启动、人工等待与读取；会话准备单独限时 15 分钟。
 
-API：
+网页默认使用 `entry_mode=form`、`interaction_mode=wait`、`session_mode=persistent`；
+API 省略时仍保留旧的 `direct / wait / fresh` 默认值。`fresh` 每任务关闭，
+`reuse` 保持空闲最多 10 分钟、总寿命最多 30 分钟；`persistent` 在同一应用生命周期内
+跨任务复用同一浏览器、上下文和页面，不再按票价是否有效决定会话去留。
+空结果或解析不确定不等于会话失效；验证未解除、访问受限、取消、超时、页面失效、
+配置变化或显式关闭仍会清理。应用重启后使用固定 `airchina-v2` 持久档案，
+不把旧内存中的就绪状态当作仍有效，也不会自动重新提交。
 
-- `POST /api/experiments/airchina`：白名单字段
-  `origin / destination / departure_date / cabin / flight_no / auto_confirm_notices / entry_mode / interaction_mode / session_mode`，
-  返回 202 和任务 ID；自动确认参数只接受 JSON 布尔值。
-- `interaction_mode` 仅接受 `stop` / `wait`；不是自动解验证码授权。
-- `session_mode` 仅接受 `fresh` / `reuse`。
-- `GET /api/experiments/airchina`：最近任务；
-  `GET /api/experiments/airchina/{id}`：详情。
-- `POST /api/experiments/airchina/{id}/continue`：当前任务等待人工处理时有效。
-- `POST /api/experiments/airchina/{id}/cancel`：取消当前任务。
-- `POST /api/experiments/airchina/session/close`：关闭空闲浏览器，不清除持久档案；
-  有任意查询运行时拒绝，不取消别人的任务，也不重发搜索。
-- 共用现有本地 Origin 校验及可选 UI token 校验；忙时 409。
-- `completed_reference` 仅表示参考票价，不是完整报价成功；
-  `inconclusive` 不是“无票”。断网不自动重复 POST，须刷新确认服务端状态。
+国航实验固定使用有界面的项目系统 Chrome，不自动切换 Playwright、recovery 档案或 CDP。
+网页默认勾选“自动确认查询通知，并记录内容”；API 必须显式传入
+`auto_confirm_notices: true`。通知确认不涵盖验证码、登录授权、个人声明、预订/支付、
+过期刷新或未知弹窗。等待人工模式下，结果页最多接受 3 次人工继续；
+提交前表单验证允许一次同页续查，均不自动处理验证码或重新搜索。
+
+## 会话准备与本机加密备份
+
+- `POST /api/experiments/airchina/session/prepare`：打开或复用项目 Chrome，
+  只进入国航首页，不提交航班查询；用户在项目浏览器中自行登录或完成验证。
+- `POST /api/experiments/airchina/session/ready`，请求体可选 `{"backup": true}`：
+  用户明确确认后重新检查官方 HTTPS 页面和可见访问状态；标记会话可复用，
+  不宣称登录或验证码永久有效。选择备份时，会话状态只在内存中读取并立即加密。
+- `GET /api/experiments/airchina/session`：返回脱敏会话状态及备份元数据，
+  不返回 Cookie、token、完整 URL 或账号信息。
+- `POST /api/experiments/airchina/session/restore`：显式恢复本机加密备份并进入准备流程；
+  仍需用户确认就绪，不提交航班查询，不跳过验证码。
+- `POST /api/experiments/airchina/session/cancel-prepare`：取消准备并清理。
+- `POST /api/experiments/airchina/session/close`：关闭浏览器，不删除持久档案或备份。
+- `DELETE /api/experiments/airchina/session/backup`：独立删除加密备份，不关闭浏览器。
+
+备份位于 `runtime/browser_sessions/airchina.enc.json`，使用 Fernet 加密、原子替换，
+并尽可能设置仅当前用户可读写权限。只保留国航白名单域的 Cookie 和 localStorage；
+恢复前再次校验，损坏、密钥变化、版本不支持或跨域数据均失败关闭。
+未配置主密钥时不写明文备份，固定 Chrome 档案和常驻会话仍可使用。
+关闭浏览器不等于删除备份，恢复登录态也不等于绕过网站验证。
+
+普通实验 API 保持：`POST /api/experiments/airchina` 返回 202 和任务 ID；
+`interaction_mode` 为 `stop / wait`，`session_mode` 为 `fresh / reuse / persistent`。
+任务列表、详情、继续和取消路径不变。所有会话及查询接口共用本地 Origin 校验、
+可选 UI token 校验；运行冲突返回 409。`completed_reference` 仅表示参考票价，
+`inconclusive` 不是“无票”。断网不自动重复 POST，须刷新确认服务端状态。
 
 CLI 诊断仍可用，输出仍在忽略的 `runtime/airchina_probes` 中；
 网页任务不依赖这些文件，不记录整页文本、截图、网络响应或任意异常消息。
@@ -166,7 +194,8 @@ CA1549：3 条通知均自动确认。列表阶段 29.8 秒、60 次采样，最
 
 `FormEntry` 使用官网已观察的可见控件执行：
 
-1. 只导航首页一次，等待查询组件；选择单程，确认返回日期控件消失。
+1. 已位于预期官网首页时不重复 `goto`；其他情况只导航首页一次。等待查询组件后选择单程，
+   确认返回日期控件消失。
 2. 依次输入机场代码，点击代码精确匹配的候选项；SHA 模糊结果中出现 PVG
    等候选时不能按第一项选择。选定后必须读到独立机场代码，不能只相信输入文字。
 3. 通过只读日期框的真实日历选择日期，核对年份、月份、日期；最多 12 次翻月，
@@ -179,8 +208,9 @@ CA1549：3 条通知均自动确认。列表阶段 29.8 秒、60 次采样，最
 
 浏览器控件操作不使用 force、JS 写输入值、内部状态、Cookie 复制或接口重放。
 表单阶段受 `min(provider.timeout_ms, 60000)` 毫秒约束（示例配置 45 秒），
-整个任务仍受 240 秒约束。提交前出现验证码/未知弹窗则停止本次任务；
-已进入结果页后的验证仍可沿用现有人工继续机制，不重提表单。
+整个任务仍受 240 秒约束。提交前且尚未点击查询时出现验证码，等待人工模式下允许一次
+同页续查：用户处理后重新读取当前页面，确认验证解除再继续，不重新导航或重复提交；
+未知弹窗、验证未解除及无人值守模式仍停止。结果页验证沿用现有人工继续机制，不重提表单。
 结果页地址匹配只证明已导航，不证明报价成功；SPA 不把首页 HTTP 200
 当作航班查询成功。超时、取消、失败、空结果均不会自动换入口或重试。
 
@@ -273,12 +303,15 @@ unexpected_page`，相同阶段、状态、动作的连续记录去重，不保�
 普通携程、飞猪、甩尾查询不切换到该线程。任务仍由共享 `run_lock` 串行准入。
 
 - `fresh`：每任务重建浏览器/上下文，完成后关闭；可作为对照。
-- `reuse`：只有本次成功取得经校验的参考票价或产品后，才保留同一
-  `automation/context/page`。人工验证后成功读取也适用；验证码本身没有自动操作。
+- `reuse`：成功取得经校验的参考票价或产品，或人工验证已解除且最终仍位于安全的
+  预期结果页时，保留同一 `automation/context/page`；验证码本身没有自动操作。
 - 空闲 600 秒自动关闭；会话从建立起最多保留 1800 秒。活跃任务不被空闲
   回收打断，总寿命到期时在任务结束后关闭，不延长下一次保留期。
-- 取消、总超时、异常、验证未通过、空结果、过期结果等均关闭，不保留可疑
-  会话继续搜索。清理结果不确定时禁止再次创建会话，要求重启应用。
+- `persistent`：应用运行期间跨任务保留，安全空结果、解析不确定及人工验证解除后
+  无可靠票价均不再单独触发销毁；另支持 `manual_session_prepared` 保留原因。
+- 取消、总超时、异常、验证未通过、访问受限、页面偏离或过期结果等均关闭，不保留可疑
+  会话继续搜索。普通空结果在 `fresh/reuse` 下仍关闭；清理结果不确定时禁止再次创建会话，
+  要求重启应用。
 - 浏览器设置、provider 配置或档案偏好文件改变，或用户关闭了页面，
   下次显式任务先清理原对象再新建；不自动尝试第二次查询。
 - 应用退出关闭保留的上下文及线程；应用重启不能恢复旧 page 对象。

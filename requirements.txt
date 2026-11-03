@@ -7,6 +7,10 @@ tabulate>=0.9.0
 fastapi>=0.115.0
 uvicorn>=0.30.6
 jinja2>=3.1.4
+PyYAML>=6.0
+curl_cffi>=0.5.0
+flights>=0.7.0
+requests>=2.28.0
 
 # Optional stealth backends (choose one or keep default playwright):
 # rebrowser-playwright>=1.48.0

@@ -70,11 +70,13 @@ class FormStop(Exception):
 
 
 class FormEntry:
-    def __init__(self, page, route, *, callback=None, progress=None):
+    def __init__(self, page, route, *, callback=None, progress=None, manual_handler=None):
         self.page, self.route = page, route
         self.target = validate_entry(route, "form")
         self.form_url = HOME_URL
         self.callback, self.progress = callback, progress
+        self.manual_handler = manual_handler
+        self._verification_resumed = False
         self.airport_side = None
         self.airport_step = None
         self.evidence = {
@@ -103,6 +105,18 @@ class FormEntry:
             return data
         if not same_page(data.get("url"), self.form_url):
             raise FormStop("unexpected_form_page", "unexpected_page")
+        if (
+            data.get("verification") is True
+            and self.manual_handler is not None
+            and not self.evidence["submit_attempted"]
+            and not self._verification_resumed
+        ):
+            self._verification_resumed = True
+            self.publish("waiting_verification", "verification")
+            await self.manual_handler("needs_verification")
+            data = await self.read(submitted=submitted)
+            self.publish("verification_cleared", "verification_cleared", verification_cleared=True)
+            return data
         for key, state in (("blocked", "blocked"), ("verification", "needs_verification"),
                            ("stale", "stale_results")):
             if data.get(key) is True:
@@ -259,10 +273,13 @@ class FormEntry:
         try:
             async with asyncio.timeout(min(timeout_ms, 60000) / 1000):
                 self.publish("opening_home")
-                response = await self.page.goto(HOME_URL, wait_until="domcontentloaded", timeout=timeout_ms)
-                status = getattr(response, "status", None)
-                if status is not None and status >= 400:
-                    raise FormStop("home_http_error", "blocked" if status in {401, 403, 429, 432} else "form_entry_unverified")
+                if same_page(getattr(self.page, "url", ""), HOME_URL):
+                    await self.read()
+                else:
+                    response = await self.page.goto(HOME_URL, wait_until="domcontentloaded", timeout=timeout_ms)
+                    status = getattr(response, "status", None)
+                    if status is not None and status >= 400:
+                        raise FormStop("home_http_error", "blocked" if status in {401, 403, 429, 432} else "form_entry_unverified")
                 await self.wait(lambda s: s.get("one_way_count") == 1 and
                                 all(s.get(n, {}).get("input_count") == 1 for n in ("origin", "destination")) and
                                 s.get("submit_count") == 1 and s.get("passengers") is not None,

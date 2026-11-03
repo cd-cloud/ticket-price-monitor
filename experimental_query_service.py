@@ -32,7 +32,7 @@ STAGES = {
 
 def validate_payload(payload):
     allowed = {"origin", "destination", "departure_date", "cabin", "flight_no", "auto_confirm_notices", "entry_mode",
-               "interaction_mode", "session_mode"}
+               "interaction_mode", "session_mode", "query_engine"}
     if not isinstance(payload, dict) or set(payload) - allowed:
         raise ValueError("只接受机场、出发日期、舱等和可选航班号；不支持往返、多程或凭据字段。")
     for key in ("origin", "destination", "departure_date"):
@@ -63,13 +63,17 @@ def validate_payload(payload):
     if interaction_mode not in ("stop", "wait"):
         raise ValueError("遇阻处理只支持 stop（直接停止）/ wait（等待人工）。")
     session_mode = payload.get("session_mode", "fresh")
-    if session_mode not in ("fresh", "reuse"):
-        raise ValueError("浏览器会话只支持 fresh（每任务重启）/ reuse（短时复用）。")
+    if session_mode not in ("fresh", "reuse", "persistent"):
+        raise ValueError("浏览器会话只支持 fresh（每任务重启）/ reuse（短时复用）/ persistent（常驻会话）。")
     if entry_mode == "results" and (session_mode != "reuse" or interaction_mode != "stop"):
         raise ValueError("结果页续查仅支持短时复用、遇阻即停；请先通过官网表单取得同条件的参考结果。")
+    query_engine = payload.get("query_engine", "native")
+    if query_engine not in {"native", "flyclaw"}:
+        raise ValueError("查询引擎只支持 native / flyclaw。")
     normalized = {key: getattr(route, key) for key in ("origin", "destination", "departure_date", "cabin")}
     return route, flight_no, {**normalized, "flight_no": flight_no, "auto_confirm_notices": auto_confirm,
-                             "entry_mode": entry_mode, "interaction_mode": interaction_mode, "session_mode": session_mode}
+                             "entry_mode": entry_mode, "interaction_mode": interaction_mode,
+                             "session_mode": session_mode, "query_engine": query_engine}
 
 
 class ExperimentalQueryService:
@@ -83,6 +87,13 @@ class ExperimentalQueryService:
         self._control = None
         self._closing = False
         self._session_runner = ExperimentalSessionRunner()
+        from experimental_session_service import ExperimentalSessionService
+        self.experimental_sessions = ExperimentalSessionService(
+            query_service=self.query_service,
+            session_runner=self._session_runner,
+            run_lock=self.run_lock,
+            guard=self._guard,
+        )
         self.repository.interrupt_experimental_queries()
 
     def submit(self, payload):
@@ -159,6 +170,7 @@ class ExperimentalQueryService:
         entry_mode = self.get(job_id)["request"].get("entry_mode", "direct")
         interaction_mode = self.get(job_id)["request"].get("interaction_mode", "wait")
         session_mode = self.get(job_id)["request"].get("session_mode", "fresh")
+        query_engine = self.get(job_id)["request"].get("query_engine", "native")
 
         def record_session(evidence):
             self._update(job_id, session_evidence=evidence)
@@ -224,8 +236,38 @@ class ExperimentalQueryService:
                 await asyncio.sleep(.1)
 
         terminal = {"status": "failed", "stage": "failed", "message": "实验任务意外结束。", "result": None}
-        try:
-            report = self._session_runner.run(lambda pool: self.query_service.inspect_airchina_experiment(
+
+        async def inspect_with_engine(pool):
+            if query_engine == "flyclaw":
+                from providers.airchina_direct import create_airchina_source
+
+                source = create_airchina_source(
+                    self.query_service,
+                    timeout=self.timeout_seconds,
+                    session_pool=pool,
+                    session_mode=session_mode,
+                    progress=progress,
+                    manual_handler=manual if interaction_mode == "wait" else None,
+                    cancel_event=cancel,
+                    session_callback=record_session,
+                    entry_callback=record_entry,
+                    network_callback=record_network,
+                    notice_callback=record_notices,
+                    diagnostic_callback=record_diagnostics,
+                    auto_confirm_notices=auto_confirm,
+                    flight_no=flight_no,
+                    entry_mode=entry_mode,
+                )
+                await source.query_by_route_async(
+                    route.origin,
+                    route.destination,
+                    route.departure_date,
+                    cabin=route.cabin,
+                    stops=0,
+                    timeout=self.timeout_seconds,
+                )
+                return source.last_report
+            return await self.query_service.inspect_airchina_experiment(
                 route, flight_no=flight_no, progress=progress,
                 manual_handler=manual if interaction_mode == "wait" else None,
                 cancel_event=cancel, timeout_seconds=self.timeout_seconds,
@@ -234,7 +276,10 @@ class ExperimentalQueryService:
                 entry_mode=entry_mode, entry_callback=record_entry,
                 session_mode=session_mode, session_pool=pool, session_callback=record_session,
                 network_callback=record_network,
-            ))
+            )
+
+        try:
+            report = self._session_runner.run(inspect_with_engine)
             with self._guard:
                 # Keep access failures separate from the final task status.
                 # They remain available even when cancellation wins this race.
@@ -273,7 +318,17 @@ class ExperimentalQueryService:
                                     finished_at=self.repository.now_iso(), result=None)
                 try:
                     final = self.get(job_id)
-                    if terminal["status"] != "completed_reference":
+                    result = terminal.get("result") or {}
+                    verification_cleared = bool(
+                        result.get("verification_cleared")
+                        or (result.get("entry_evidence") or {}).get("verification_cleared")
+                    )
+                    retain_inconclusive = (
+                        terminal["status"] == "inconclusive"
+                        and terminal.get("stage") == "query_page_unverified"
+                        and (session_mode == "persistent" or verification_cleared)
+                    )
+                    if terminal["status"] != "completed_reference" and not retain_inconclusive:
                         cleanup_state = "closed"
                         try:
                             self._session_runner.close_idle()
@@ -291,6 +346,21 @@ class ExperimentalQueryService:
                         self._control = None
                         self.run_lock.release()
 
+    def session_status(self):
+        return self.experimental_sessions.status()
+
+    def prepare_browser_session(self, *, restore=False):
+        return self.experimental_sessions.prepare(restore=restore)
+
+    def browser_session_ready(self, *, backup=False):
+        return self.experimental_sessions.ready(backup=backup)
+
+    def cancel_browser_session_preparation(self):
+        return self.experimental_sessions.cancel()
+
+    def delete_browser_session_backup(self):
+        return self.experimental_sessions.delete_backup()
+
     def without_browser_session(self, operation=lambda: {"closed": True}):
         """Explicit idle close / profile maintenance, serialized with queries."""
         with self._guard:
@@ -298,6 +368,7 @@ class ExperimentalQueryService:
                 raise RuntimeError("已有查询正在运行，请先结束任务。")
         try:
             self._session_runner.close_idle()
+            self.experimental_sessions.mark_closed()
             return operation()
         finally:
             self.run_lock.release()
@@ -308,7 +379,8 @@ class ExperimentalQueryService:
             if self._control:
                 self._control[1].set()
             thread = self._thread
+        self.experimental_sessions.close()
         if thread:
             thread.join(timeout=15)
-        if not thread or not thread.is_alive():
+        if (not thread or not thread.is_alive()) and self.experimental_sessions.is_idle():
             self._session_runner.close()

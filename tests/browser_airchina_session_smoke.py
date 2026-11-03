@@ -65,11 +65,17 @@ def run():
             third = runner.run(lambda pool: task(pool, "fresh"))
             assert third[0] is not first[0] and third[3] == "1"
             assert len(opened) == len(closed) == 2
-            assert len(requests) == 3  # exactly one navigation per explicit task
+            fourth = runner.run(lambda pool: task(pool, "persistent"))
+            fifth = runner.run(lambda pool: task(pool, "persistent"))
+            assert fourth[0] is not third[0] and fifth[0] is fourth[0]
+            assert (fourth[3], fifth[3]) == ("1", "2")
+            assert len(opened) == 3 and len(closed) == 2
+            assert audits[-1]["reused"] and audits[-1]["use_number"] == 2
+            assert len(requests) == 5  # exactly one navigation per explicit task
         finally:
             runner.close()
         assert not runner._thread.is_alive()
-    print("Offline Chrome session smoke passed: same page/context/loop, synthetic per-tab state survives, "
+    print("Offline Chrome session smoke passed: reuse and persistent modes keep the same page/context/loop, "
           "fresh control closes before reopening, all requests intercepted, no background queries.")
 
 

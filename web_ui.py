@@ -108,6 +108,50 @@ def create_app(config_path: str | None = None) -> FastAPI:
         except RuntimeError:
             raise HTTPException(status_code=409, detail="已有查询正在运行或服务正在关闭，请稍后再试。")
 
+    @app.get("/api/experiments/airchina/session")
+    async def airchina_session_status() -> dict:
+        return await asyncio.to_thread(service.experimental_queries.session_status)
+
+    @app.post("/api/experiments/airchina/session/prepare", status_code=202)
+    async def prepare_airchina_session() -> dict:
+        try:
+            return await asyncio.to_thread(service.experimental_queries.prepare_browser_session, restore=False)
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+
+    @app.post("/api/experiments/airchina/session/restore", status_code=202)
+    async def restore_airchina_session() -> dict:
+        try:
+            return await asyncio.to_thread(service.experimental_queries.prepare_browser_session, restore=True)
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+
+    @app.post("/api/experiments/airchina/session/ready")
+    async def confirm_airchina_session(payload: dict = Body(default={})) -> dict:
+        try:
+            return await asyncio.to_thread(
+                service.experimental_queries.browser_session_ready,
+                backup=payload.get("backup", False),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+
+    @app.post("/api/experiments/airchina/session/cancel-prepare")
+    async def cancel_airchina_session_preparation() -> dict:
+        try:
+            return await asyncio.to_thread(service.experimental_queries.cancel_browser_session_preparation)
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+
+    @app.delete("/api/experiments/airchina/session/backup")
+    async def delete_airchina_session_backup() -> dict:
+        try:
+            return await asyncio.to_thread(service.experimental_queries.delete_browser_session_backup)
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+
     @app.post("/api/experiments/airchina/session/close")
     async def close_airchina_session() -> dict:
         try:

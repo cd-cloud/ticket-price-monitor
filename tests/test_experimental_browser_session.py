@@ -224,3 +224,39 @@ def test_partial_startup_failure_still_calls_manager_exit(fixture):
                 pytest.fail("no automation")
         manager.__aexit__.assert_awaited_once()
     asyncio.run(run())
+
+
+def test_persistent_ignores_short_expiry_and_resets_lease_retention(fixture):
+    cfg, provider, factory, created, closed = fixture
+    async def run():
+        now = [0]
+        pool = ExperimentalBrowserSession(idle_seconds=.01, max_age_seconds=.02, clock=lambda: now[0])
+        audits = []
+        async with pool.lease(cfg, provider, factory, mode="persistent", callback=audits.append) as lease:
+            lease.keep = True
+            lease.retention_reason = "manual_session_prepared"
+        now[0] = 999
+        async with pool.lease(cfg, provider, factory, mode="persistent", callback=audits.append) as lease:
+            assert lease.reused
+            assert lease.retention_reason is None
+            lease.keep = True
+            lease.retention_reason = "access_validated"
+        assert len(created) == 1 and not closed
+        assert audits[-1]["retention_reason"] == "access_validated"
+        assert (await pool.snapshot())["state"] == "retained"
+        async with pool.lease(cfg, provider, factory, mode="fresh"):
+            assert len(created) == 2 and len(closed) == 1
+        assert len(closed) == 2 and pool._record is None
+    asyncio.run(run())
+
+
+def test_snapshot_does_not_wait_for_active_lease(fixture):
+    cfg, provider, factory, _, _ = fixture
+    async def run():
+        pool = ExperimentalBrowserSession()
+        async with pool.lease(cfg, provider, factory, mode="persistent"):
+            current = await asyncio.wait_for(pool.snapshot(), timeout=.1)
+            assert current["state"] == "in_use"
+            assert current["mode"] == "persistent"
+        await pool.close()
+    asyncio.run(run())

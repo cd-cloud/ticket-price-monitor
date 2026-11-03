@@ -57,7 +57,7 @@ def test_preflight_requires_all_visible_conditions(change):
     assert not all(matches({**snapshot(), **change}, ROUTE).values())
 
 
-def fake_entry(*, change=None, callback=None, click_error=None):
+def fake_entry(*, change=None, callback=None, click_error=None, manual_handler=None):
     data = {**snapshot(), **(change or {})}
     target = validate_entry(ROUTE, "form")
     submit = AsyncMock()
@@ -73,7 +73,7 @@ def fake_entry(*, change=None, callback=None, click_error=None):
         evaluate=AsyncMock(side_effect=lambda _: deepcopy(data)), wait_for_timeout=AsyncMock(),
         locator=lambda selector: submit if "searchButton" in selector else control,
     )
-    entry = FormEntry(page, ROUTE, callback=callback)
+    entry = FormEntry(page, ROUTE, callback=callback, manual_handler=manual_handler)
     # DOM-control mechanics are exercised separately by the offline Chrome smoke.
     entry.airport = AsyncMock()
     entry.departure_date = AsyncMock()
@@ -91,6 +91,43 @@ def test_form_submits_once_and_does_not_navigate_to_result_url():
     page.goto.assert_awaited_once_with(HOME_URL, wait_until="domcontentloaded", timeout=1000)
     submit.click.assert_awaited_once()
     assert audit[-2]["submit_attempted"] and not audit[-2]["result_page_observed"]
+
+
+def test_existing_homepage_skips_duplicate_navigation():
+    entry, page, submit, _ = fake_entry()
+    page.url = HOME_URL
+    result = asyncio.run(entry.run(1000))
+    assert result["state"] == "query_submitted"
+    page.goto.assert_not_awaited()
+    submit.click.assert_awaited_once()
+
+
+def test_pre_submit_verification_resumes_same_form_without_navigation_or_duplicate_submit():
+    manual = AsyncMock()
+
+    async def cleared(_state):
+        data["verification"] = False
+
+    manual.side_effect = cleared
+    entry, page, submit, data = fake_entry(change={"verification": True}, manual_handler=manual)
+    result = asyncio.run(entry.run(1000))
+    assert result["state"] == "query_submitted"
+    assert result["entry_evidence"]["verification_cleared"]
+    manual.assert_awaited_once_with("needs_verification")
+    page.goto.assert_awaited_once()
+    submit.click.assert_awaited_once()
+
+
+def test_pre_submit_verification_not_cleared_stops_without_second_manual_attempt():
+    manual = AsyncMock()
+    entry, page, submit, _ = fake_entry(change={"verification": True}, manual_handler=manual)
+    result = asyncio.run(entry.run(1000))
+    assert result["state"] == "needs_verification"
+    assert not result["entry_evidence"]["submit_attempted"]
+    assert not result["entry_evidence"].get("verification_cleared")
+    manual.assert_awaited_once_with("needs_verification")
+    page.goto.assert_awaited_once()
+    submit.click.assert_not_awaited()
 
 
 @pytest.mark.parametrize(("change", "state"), [

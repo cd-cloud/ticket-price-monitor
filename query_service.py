@@ -117,12 +117,19 @@ class QueryService:
 
         airchina.validate_inspection(route, flight_no=flight_no)
         airchina.validate_entry(route, entry_mode)
-        if session_mode not in ("fresh", "reuse") or (session_mode == "reuse" and session_pool is None):
+        if session_mode not in ("fresh", "reuse", "persistent") or (
+            session_mode in {"reuse", "persistent"} and session_pool is None
+        ):
             raise ValueError("会话复用需要国航实验的专用浏览器服务。")
         if entry_mode == "results" and (session_mode != "reuse" or manual_handler is not None):
             raise ValueError("结果页续查仅支持短时复用、遇阻即停。")
         self.refresh_config()
-        config = replace(self.get_config(), headless=False)
+        config = replace(
+            self.get_config(),
+            headless=False,
+            browser_backend="chrome",
+            browser_backend_fallbacks=[],
+        )
         provider = config.providers.get("airchina")
         if provider is None:
             raise ValueError("配置中缺少 airchina；请参考示例配置。")
@@ -174,11 +181,25 @@ class QueryService:
                         **({"require_existing": True} if entry_mode == "results" else {}),
                     ) as lease:
                         report = await inspect(lease.automation, lease.page, lease.context)
-                        # Only a completed, strictly validated reference read can
-                        # retain the session. Challenge/empty/stale/error never do.
-                        lease.keep = (not cancel_event.is_set() and report["state"] in {
+                        reference_observed = report["state"] in {
                             "reference_fares_observed", "fare_products_observed",
-                        })
+                        }
+                        verification_cleared = bool(
+                            report.get("verification_cleared")
+                            or (report.get("entry_evidence") or {}).get("verification_cleared")
+                        )
+                        safe_inconclusive = report["state"] == "query_page_unverified"
+                        lease.keep = not cancel_event.is_set() and (
+                            reference_observed
+                            or verification_cleared and safe_inconclusive
+                            or session_mode == "persistent" and safe_inconclusive
+                        )
+                        if reference_observed:
+                            lease.retention_reason = "reference_validated"
+                        elif verification_cleared and safe_inconclusive:
+                            lease.retention_reason = "manual_verification_cleared"
+                        elif lease.keep:
+                            lease.retention_reason = "access_validated"
                         return report
                 async with self.automation_factory(config, {}) as automation:
                     page, context = await automation._new_page(provider)

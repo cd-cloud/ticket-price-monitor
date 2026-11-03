@@ -52,17 +52,22 @@ async def inspect(runtime, provider, route, page, *, flight_no=None, manual_wait
     validate_entry(route, entry_mode)
     notices = NoticeHandler(enabled=auto_confirm_notices, callback=notice_callback)
     entry_evidence = None
+    verification_cleared = False
 
     def finish(result):
         return {**result, "notices": notices.entries, "entry_mode": entry_mode,
-                "entry_evidence": entry_evidence}
+                "entry_evidence": entry_evidence, "verification_cleared": verification_cleared}
     if progress:
         progress("navigating")
     await runtime.throttle(provider)
     if entry_mode in {"form", "results"}:
         entry_class = ResultsRequery if entry_mode == "results" else FormEntry
-        entered = await entry_class(page, route, callback=entry_callback, progress=progress).run(provider.timeout_ms)
+        entry_options = {"callback": entry_callback, "progress": progress}
+        if entry_mode == "form":
+            entry_options["manual_handler"] = manual_handler
+        entered = await entry_class(page, route, **entry_options).run(provider.timeout_ms)
         entry_evidence = entered["entry_evidence"]
+        verification_cleared = bool(entry_evidence.get("verification_cleared"))
         if entered["state"] != "query_submitted":
             from providers.airchina_result import MESSAGES
             # Manual inspection only: keep the failed document alive until the
@@ -107,9 +112,12 @@ async def inspect(runtime, provider, route, page, *, flight_no=None, manual_wait
         if report["state"] in {"needs_verification", "needs_notice_confirmation"}:
             if manual_handler is None or manual_round == 3:
                 return finish(report)
-            await manual_handler(report["state"])
+            access_state = report["state"]
+            await manual_handler(access_state)
             text = await page.locator("body").inner_text(timeout=5000)
             report = classify_page(page.url, text, target, http_status=status)
+            if access_state == "needs_verification" and report["state"] != "needs_verification":
+                verification_cleared = True
             if report["state"] in {"needs_verification", "needs_notice_confirmation"}:
                 continue
         if report["state"] != "query_page_unverified":

@@ -26,6 +26,8 @@ class Lease:
     page: object
     context: object
     keep: bool = False
+    retention_reason: str | None = None
+    reused: bool = False
 
 
 class ExperimentalBrowserSession:
@@ -71,6 +73,24 @@ class ExperimentalBrowserSession:
             if self._poisoned:
                 raise RuntimeError("实验浏览器清理结果不确定，请重启应用后再试。")
 
+    async def snapshot(self):
+        # Runs on the owner loop; do not wait for an active lease's lock.
+        if self._poisoned:
+            return {"state": "error", "error_code": "cleanup_uncertain"}
+        if not self._record:
+            return {"state": "closed", "reused": False}
+        record = self._record
+        if record["lease"].page is not None and record["lease"].page.is_closed():
+            return {"state": "closed", "error_code": "page_closed", "reused": False}
+        return {
+            "state": "in_use" if record.get("in_use") else "retained",
+            "mode": record.get("mode"),
+            "generation": record["id"],
+            "use_number": record["uses"],
+            "reused": record["uses"] > 1,
+            "retention_reason": record.get("retention_reason"),
+        }
+
     async def _expire(self, generation):
         async with self._lock:
             record = self._record
@@ -86,6 +106,8 @@ class ExperimentalBrowserSession:
 
     @asynccontextmanager
     async def lease(self, config, provider, factory, *, mode, callback=None, require_existing=False):
+        if mode not in {"fresh", "reuse", "persistent"}:
+            raise ValueError("Unsupported experimental browser session mode.")
         async with self._lock:
             if self._poisoned:
                 raise RuntimeError("实验浏览器清理结果不确定，请重启应用后再试。")
@@ -98,7 +120,9 @@ class ExperimentalBrowserSession:
                     reason = "fresh_requested"
                 elif key != record["key"]:
                     reason = "configuration_changed"
-                elif now >= record["expires"] or now - record["born"] >= self.max_age_seconds:
+                elif record.get("mode") == "reuse" and (
+                    now >= record["expires"] or now - record["born"] >= self.max_age_seconds
+                ):
                     reason = "expired"
                 elif record["lease"].page.is_closed():
                     reason = "page_closed"
@@ -108,14 +132,15 @@ class ExperimentalBrowserSession:
                     await self._dispose()
                     record = None
             reused = record is not None
-            if require_existing and (not reused or mode != "reuse"):
+            if require_existing and (not reused or mode == "fresh"):
                 raise RetainedSessionUnavailable()
             if self._timer:
                 self._timer.cancel()
                 self._timer = None
             evidence = {
                 "mode": mode, "reused": reused, "reason": reason, "state": "opening",
-                "idle_seconds": self.idle_seconds, "max_age_seconds": self.max_age_seconds,
+                "idle_seconds": self.idle_seconds if mode == "reuse" else None,
+                "max_age_seconds": self.max_age_seconds if mode == "reuse" else None,
             }
 
             def publish(**changes):
@@ -142,7 +167,7 @@ class ExperimentalBrowserSession:
                     # the automation instead of leaking its browser process.
                     record = {
                         "id": uuid4().hex, "born": self.clock(), "expires": self.clock(),
-                        "key": key, "manager": manager, "uses": 0,
+                        "key": key, "manager": manager, "uses": 0, "in_use": False,
                         "lease": Lease(automation, None, None),
                     }
                     self._record = record
@@ -152,10 +177,23 @@ class ExperimentalBrowserSession:
                     record["key"] = self._key(config, provider)
                 lease = record["lease"]
                 lease.keep = False
+                lease.retention_reason = None
+                lease.reused = reused
+                record["mode"] = mode
+                record["in_use"] = True
                 record["uses"] += 1
                 publish(state="in_use", generation=record["id"], use_number=record["uses"])
                 yield lease
-                if mode == "reuse" and lease.keep and not lease.page.is_closed():
+                record["in_use"] = False
+                record["retention_reason"] = lease.retention_reason
+                if mode in {"reuse", "persistent"} and lease.keep and not lease.page.is_closed():
+                    if mode == "persistent":
+                        publish(
+                            state="retained",
+                            retention_reason=lease.retention_reason,
+                            idle_remaining_seconds=None,
+                        )
+                        return
                     record["expires"] = min(self.clock() + self.idle_seconds,
                                             record["born"] + self.max_age_seconds)
                     delay = record["expires"] - self.clock()
@@ -164,11 +202,17 @@ class ExperimentalBrowserSession:
                         self._timer = loop.call_later(
                             delay, lambda: loop.create_task(self._expire(record["id"])),
                         )
-                        publish(state="retained", idle_remaining_seconds=round(delay, 1))
+                        publish(
+                            state="retained",
+                            retention_reason=lease.retention_reason,
+                            idle_remaining_seconds=round(delay, 1),
+                        )
                         return
                 await self._dispose()
                 publish(state="closed")
             except BaseException:
+                if record:
+                    record["in_use"] = False
                 await self._dispose()
                 # Audit cancellation must not prevent cleanup or replace the
                 # original exception. The service records final disposition.
@@ -219,6 +263,13 @@ class ExperimentalSessionRunner:
             return asyncio.run_coroutine_threadsafe(execute(), self._loop).result()
         except FutureCancelled:
             raise asyncio.CancelledError() from None
+
+    def snapshot(self):
+        with self._guard:
+            if self._loop is None or self._loop.is_closed():
+                return {"state": "closed", "reused": False}
+            loop, pool = self._loop, self._pool
+        return asyncio.run_coroutine_threadsafe(pool.snapshot(), loop).result(timeout=5)
 
     def close_idle(self):
         # Caller holds the application admission lock (no active experiment).

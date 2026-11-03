@@ -24,6 +24,8 @@ async def run(output):
     with tempfile.TemporaryDirectory() as temp:
         with TestClient(create_app(str(config_file(Path(temp))))) as client:
             jobs, actions, errors = [], [], []
+            session_actions = []
+            session = {"state": "closed", "reused": False, "backup": {"available": False}}
             offline = False
             async with async_playwright() as p:
                 browser = await p.chromium.launch(channel="chrome", headless=True)
@@ -38,9 +40,35 @@ async def run(output):
                         if request.method == "GET":
                             if offline:
                                 return await route.fulfill(status=503, json={"detail": "模拟离线"})
+                            if url.path.endswith("/session"):
+                                if session["state"] == "opening":
+                                    session.update(state="waiting_user")
+                                return await route.fulfill(json=copy.deepcopy(session))
                             return await route.fulfill(json={"jobs": jobs})
+                        if request.method == "DELETE" and url.path.endswith("/session/backup"):
+                            session_actions.append(url.path)
+                            session["backup"] = {"available": False}
+                            return await route.fulfill(json={"available": False})
+                        if url.path.endswith("/session/prepare") or url.path.endswith("/session/restore"):
+                            session_actions.append(url.path)
+                            session.update(state="opening", retention_reason=None)
+                            return await route.fulfill(json=copy.deepcopy(session), status=202)
+                        if url.path.endswith("/session/ready"):
+                            session_actions.append(url.path)
+                            submitted = json.loads(request.post_data)
+                            session.update(state="ready", retention_reason="manual_session_prepared")
+                            session["backup"] = {
+                                "available": submitted["backup"],
+                                "saved_at": "2026-11-02T08:00:00+00:00" if submitted["backup"] else None,
+                            }
+                            return await route.fulfill(json=copy.deepcopy(session))
+                        if url.path.endswith("/session/cancel-prepare"):
+                            session_actions.append(url.path)
+                            session.update(state="closed")
+                            return await route.fulfill(json=copy.deepcopy(session))
                         actions.append(url.path)
                         if url.path.endswith("/session/close"):
+                            session.update(state="closed")
                             return await route.fulfill(json={"closed": True})
                         if url.path.endswith("/continue"):
                             jobs[0]["session_evidence"]["state"] = "retained"
@@ -56,7 +84,7 @@ async def run(output):
                             assert submitted["auto_confirm_notices"] is True
                             assert submitted["entry_mode"] == "form"
                             assert submitted["interaction_mode"] in {"stop", "wait"}
-                            assert submitted["session_mode"] == "reuse"
+                            assert submitted["session_mode"] == "persistent"
                             stopped = submitted["interaction_mode"] == "stop"
                             jobs[:] = [{
                                 "job_id": "offline-demo", "provider": "airchina",
@@ -70,7 +98,7 @@ async def run(output):
                                     "checks":{"origin":True, "destination":True, "departure_date":True, "passengers":True}},
                                 "access_events": [{"state":"needs_verification", "phase":"result_page",
                                     "action":"stop" if stopped else "wait", "observed_at":"2026-10-30T08:00:00Z"}],
-                                "session_evidence": {"mode":"reuse", "state":"closed" if stopped else "in_use",
+                                "session_evidence": {"mode":"persistent", "state":"closed" if stopped else "in_use",
                                     "reused":False, "reason":"first_use", "use_number":1},
                                 "notices": [{
                                     "notice_id": "offline-notice", "title": "测试提示 <script>error()</script>",
@@ -93,13 +121,26 @@ async def run(output):
                 await page.goto("http://127.0.0.1/")
                 await page.locator('[data-workspace-tab="experiments"]').click()
                 form = page.locator("#airchinaExperimentForm")
+                await expect(form.locator('[name="query_engine"]')).to_have_value("native")
+                await form.locator('[name="query_engine"]').select_option("flyclaw")
+                await expect(form.locator('[name="query_engine"]')).to_have_value("flyclaw")
+                await form.locator('[name="query_engine"]').select_option("native")
+                await expect(form.locator('[name="entry_mode"]')).to_have_value("form")
+                await expect(form.locator('[name="interaction_mode"]')).to_have_value("wait")
+                await expect(form.locator('[name="session_mode"]')).to_have_value("persistent")
+                await page.locator("#airchinaSessionPrepare").click()
+                await expect(page.locator("#airchinaSessionReady")).to_be_visible()
+                await page.locator("#airchinaSessionReady").click()
+                await expect(page.locator("#airchinaSessionStatus")).to_contain_text("会话可复用")
+                await expect(page.locator("#airchinaSessionStatus")).to_contain_text("本机加密备份")
+                assert session_actions == [
+                    "/api/experiments/airchina/session/prepare",
+                    "/api/experiments/airchina/session/ready",
+                ]
                 await form.locator('[name="origin"]').fill("PEK")
                 await form.locator('[name="destination"]').fill("SHA")
                 await form.locator('[name="departure_date"]').fill((date.today() + timedelta(days=10)).isoformat())
                 await form.locator('[name="entry_mode"]').select_option("form")
-                await expect(form.locator('[name="interaction_mode"]')).to_have_value("stop")
-                await expect(form.locator('[name="session_mode"]')).to_have_value("reuse")
-                await form.locator('[name="interaction_mode"]').select_option("wait")
                 await form.locator('[type="submit"]').click()
                 await expect(page.locator("#airchinaExperimentContinue")).to_be_visible()
                 await expect(page.locator("#airchinaExperimentStatus")).to_contain_text("官网表单")
@@ -204,7 +245,7 @@ async def run(output):
                 await expect(page.locator("#airchinaExperimentResults table")).to_have_count(0)
                 assert len(actions) == 3  # No automatic continue or retry.
                 await page.locator("#airchinaSessionClose").click()
-                await expect(page.locator("#airchinaSessionStatus")).to_contain_text("空闲浏览器已关闭")
+                await expect(page.locator("#airchinaSessionStatus")).to_contain_text("会话已关闭")
                 assert len(actions) == 4 and actions[-1].endswith("/session/close")
                 await page.screenshot(path=str(output / "airchina-unattended-offline.png"), full_page=True)
                 await form.locator('[name="entry_mode"]').select_option("results")
