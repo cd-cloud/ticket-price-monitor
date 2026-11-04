@@ -85,10 +85,24 @@
     visible_refresh_observed:"已观察到列表刷新过程（不证明服务端重新查价）"};
   let jobs = [], selected = "", generation = 0, busy = false, uncertain = true, timer;
   let sessionInfo = {state:"closed", backup:{}}, sessionBusy = false, sessionTimer, queryRunning = false;
+  let queryPolicyInfo = null, lastNonResultsOptions = null, diagnosticOpen = new Set();
   submit.disabled = closeSession.disabled = true;
   const base = "/api/experiments/airchina";
+  const workflow = document.getElementById("airchinaWorkflow");
+  const currentStatus = document.getElementById("airchinaCurrentStatus");
+  const sessionBadge = document.getElementById("airchinaSessionBadge");
+  const taskBadge = document.getElementById("airchinaTaskBadge");
+  const sessionNext = document.getElementById("airchinaSessionNext");
+  const nextAction = document.getElementById("airchinaNextAction");
+  const formHint = document.getElementById("airchinaFormHint");
+  const formReset = document.getElementById("airchinaFormReset");
+  const formStorageKey = "airchina_experiment_form_v1";
   const today = new Date();
-  form.elements.departure_date.min = `${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,"0")}-${String(today.getDate()).padStart(2,"0")}`;
+  const dateText = value => `${value.getFullYear()}-${String(value.getMonth()+1).padStart(2,"0")}-${String(value.getDate()).padStart(2,"0")}`;
+  form.elements.departure_date.min = dateText(today);
+  const maxDate = new Date(today);
+  maxDate.setDate(maxDate.getDate() + 365);
+  form.elements.departure_date.max = dateText(maxDate);
 
   async function request(url, options = {}) {
     const controller = new AbortController();
@@ -100,6 +114,169 @@
       return body;
     } finally { clearTimeout(deadline); }
   }
+
+  function selectedJob() {
+    return jobs.find(job => job.job_id === selected) || null;
+  }
+
+  function setBadge(element, text, tone) {
+    if (!element) return;
+    element.textContent = text;
+    element.className = `status-badge ${tone}`;
+  }
+
+  function diagnosticDetails(key, title, open = false) {
+    const detail = document.createElement("details");
+    detail.className = "airchina-diagnostics diagnostic-details";
+    detail.dataset.diagnostic = key;
+    detail.open = open;
+    const summary = document.createElement("summary");
+    summary.textContent = title;
+    detail.appendChild(summary);
+    return detail;
+  }
+
+  results.addEventListener("toggle", event => {
+    const detail = event.target.closest("details.diagnostic-details");
+    if (!detail) return;
+    if (detail.open) diagnosticOpen.add(detail.dataset.diagnostic);
+    else diagnosticOpen.delete(detail.dataset.diagnostic);
+  }, true);
+
+  function updateWorkflow(job) {
+    const activeJob = job || selectedJob();
+    const preparing = preparationActive.has(sessionInfo.state);
+    const running = activeJob && active.has(activeJob.status);
+    let step = "prepare";
+    if (preparing || running) step = "run";
+    else if (activeJob?.status === "completed_reference") step = "results";
+    else if (sessionInfo.state === "ready" || activeJob) step = "query";
+    const order = ["prepare", "query", "run", "results"];
+    for (const item of workflow.querySelectorAll("li")) {
+      const current = order.indexOf(item.dataset.step);
+      item.classList.toggle("active", item.dataset.step === step);
+      item.classList.toggle("done", current < order.indexOf(step));
+    }
+    const sessionStates = {
+      closed:"未准备", preparing:"准备中", opening:"打开中", in_use:"使用中",
+      waiting_user:"等待人工", validating:"确认中", ready:"可复用", retained:"可复用", error:"准备失败",
+    };
+    setBadge(sessionBadge, sessionStates[sessionInfo.state] || "未准备",
+      sessionInfo.state === "ready" ? "ready" : preparing ? "active" : sessionInfo.state === "error" ? "error" : "idle");
+    setBadge(currentStatus, activeJob ? (labels[activeJob.status] || activeJob.status) : (sessionStates[sessionInfo.state] || "未开始"),
+      activeJob?.status === "completed_reference" ? "ready" : running || preparing ? "active" : "idle");
+    setBadge(taskBadge, activeJob ? (labels[activeJob.status] || activeJob.status) : "尚未选择任务",
+      activeJob?.status === "completed_reference" ? "ready" : running ? "active" : "idle");
+
+    if (queryPolicyInfo?.paused) {
+      nextAction.textContent = "查询保护已暂停：请先在项目 Chrome 中人工检查，再解除本地暂停。";
+    } else if (activeJob?.status === "waiting_user") {
+      nextAction.textContent = activeJob.stage === "form_inspection"
+        ? "表单未能确认：请检查项目 Chrome，完成后点击“结束检查并关闭”。"
+        : "结果页需要人工处理：请在项目 Chrome 完成验证，再点击“继续读取”。";
+    } else if (running) {
+      nextAction.textContent = "查询正在进行；如需停止，请使用“取消任务”，已完成内容会保留。";
+    } else if (sessionInfo.state === "waiting_user") {
+      nextAction.textContent = "请在项目 Chrome 完成登录或验证，再点击“我已完成登录和验证”。";
+    } else if (sessionInfo.state === "ready") {
+      nextAction.textContent = activeJob?.status === "completed_reference"
+        ? "已取得参考结果，可展开诊断详情；也可修改条件发起新查询。"
+        : "登录态已准备，填写机场和日期后即可开始实验查询。";
+    } else {
+      nextAction.textContent = "先准备登录态，再开始实验查询。";
+    }
+    sessionNext.textContent = sessionInfo.state === "waiting_user"
+      ? "项目 Chrome 已打开，请完成登录或验证后点击确认。"
+      : preparing ? "正在准备项目 Chrome，请稍候。"
+      : sessionInfo.state === "ready" ? "登录态已准备，可开始配置查询。"
+      : "先准备登录态，再在项目 Chrome 中完成登录或验证。";
+  }
+
+  const recommendedForm = {
+    origin: "", destination: "", departure_date: "", cabin: "economy",
+    query_engine: "native", entry_mode: "form", interaction_mode: "wait",
+    session_mode: "persistent", flight_no: "", auto_confirm_notices: true,
+  };
+  const formFields = Object.keys(recommendedForm);
+
+  function saveForm() {
+    const payload = {};
+    for (const name of formFields) {
+      const field = form.elements[name];
+      payload[name] = field.type === "checkbox" ? field.checked : String(field.value || "").slice(0, 128);
+    }
+    try { localStorage.setItem(formStorageKey, JSON.stringify(payload)); } catch (_) { /* Storage is optional. */ }
+  }
+
+  function restoreForm() {
+    let saved = null;
+    try { saved = JSON.parse(localStorage.getItem(formStorageKey) || "null"); } catch (_) { /* Ignore invalid local data. */ }
+    const values = {...recommendedForm};
+    if (saved && typeof saved === "object") {
+      for (const name of formFields) {
+        const field = form.elements[name];
+        const value = saved[name];
+        if (field.type === "checkbox" && typeof value === "boolean") values[name] = value;
+        else if (field.type !== "checkbox" && typeof value === "string" && value.length <= 128) {
+          if (!field.matches("select") || [...field.options].some(option => option.value === value)) values[name] = value;
+        }
+      }
+    }
+    for (const name of formFields) {
+      const field = form.elements[name];
+      if (field.type === "checkbox") field.checked = values[name];
+      else field.value = values[name];
+    }
+    lastNonResultsOptions = {...values};
+    syncEntryModeConstraints();
+  }
+
+  function syncEntryModeConstraints() {
+    const resultsMode = form.elements.entry_mode.value === "results";
+    if (resultsMode) {
+      lastNonResultsOptions = lastNonResultsOptions || {
+        entry_mode: form.elements.entry_mode.value,
+        interaction_mode: form.elements.interaction_mode.value,
+        session_mode: form.elements.session_mode.value,
+      };
+      form.elements.interaction_mode.value = "stop";
+      form.elements.session_mode.value = "reuse";
+      formHint.textContent = "结果页续查需要“短时复用＋无人值守”，已自动设置；请确保已有同条件成功参考列表。";
+    } else {
+      const values = lastNonResultsOptions || recommendedForm;
+      form.elements.interaction_mode.value = values.interaction_mode;
+      form.elements.session_mode.value = values.session_mode;
+      formHint.textContent = "默认使用官网表单、等待人工和常驻会话。";
+    }
+    form.elements.interaction_mode.disabled = resultsMode;
+    form.elements.session_mode.disabled = resultsMode;
+  }
+
+  form.addEventListener("input", saveForm);
+  form.addEventListener("change", saveForm);
+  form.elements.entry_mode.addEventListener("change", () => {
+    if (form.elements.entry_mode.value !== "results") lastNonResultsOptions = null;
+    syncEntryModeConstraints();
+    saveForm();
+  });
+  for (const name of ["origin", "destination"]) {
+    form.elements[name].addEventListener("blur", event => {
+      event.target.value = event.target.value.trim().toUpperCase();
+      saveForm();
+    });
+  }
+  formReset.addEventListener("click", () => {
+    for (const name of formFields) {
+      const field = form.elements[name];
+      if (field.type === "checkbox") field.checked = recommendedForm[name];
+      else field.value = recommendedForm[name];
+    }
+    lastNonResultsOptions = null;
+    syncEntryModeConstraints();
+    saveForm();
+    form.elements.origin.focus();
+  });
+  restoreForm();
 
   let sessionVersion = 0;
 
@@ -131,10 +308,16 @@
       : backup.available && backup.encryption_available === false
         ? "；备份存在，但未配置项目主密钥，不能恢复"
         : backup.available ? `；本机加密备份：${backup.saved_at ? new Date(backup.saved_at).toLocaleString() : "已保存"}` : "；无本机备份";
-    sessionStatus.textContent = `${states[sessionInfo.state] || sessionInfo.state || "状态未知"}${sessionInfo.reused ? " · 正在复用同一页面" : ""}${sessionInfo.retention_reason ? ` · ${sessionInfo.retention_reason}` : ""}${backupText}。登录态和验证码是否有效以官网实际响应为准。`;
+    const retentionLabels = {
+      reference_validated:"已校验参考结果", manual_verification_cleared:"人工验证已解除",
+      access_validated:"访问状态可复用", manual_session_prepared:"人工准备登录态",
+    };
+    const retentionText = retentionLabels[sessionInfo.retention_reason] || "";
+    sessionStatus.textContent = `${states[sessionInfo.state] || sessionInfo.state || "状态未知"}${sessionInfo.reused ? " · 正在复用同一页面" : ""}${retentionText ? ` · ${retentionText}` : ""}${backupText}。登录态和验证码是否有效以官网实际响应为准。`;
     if (sessionInfo.error_code === "environment_changed_restart_required") {
       sessionStatus.textContent += ` ${backupStates.environment_changed_restart_required}。`;
     }
+    updateWorkflow();
   }
 
   async function refreshSession() {
@@ -170,6 +353,7 @@
   }
 
   function render(job) {
+    updateWorkflow(job);
     results.replaceChildren();
     const openNotices = new Set([...notices.querySelectorAll("details[open]")].map(el => el.dataset.noticeId));
     notices.replaceChildren();
@@ -203,14 +387,17 @@
     resume.textContent = job?.stage === "form_inspection" ? "结束检查并关闭" : "我已手动处理，继续读取";
     cancel.hidden = !job || !active.has(job.status);
     resume.disabled = cancel.disabled = busy || uncertain || job?.status === "cancelling";
-    if (!job) { status.textContent = "尚未选择任务。"; return; }
+    if (!job) {
+      status.textContent = "尚未选择任务。";
+      const empty = document.createElement("p");
+      empty.className = "airchina-muted";
+      empty.textContent = "暂无查询结果。先准备登录态，再开始实验查询。";
+      results.appendChild(empty);
+      return;
+    }
     status.textContent = `${labels[job.status] || job.status} · ${job.request.origin} → ${job.request.destination} · ${job.request.departure_date} · ${engineLabels[job.request.query_engine || "native"] || "未知引擎"} · ${entryLabels[job.request.entry_mode || "direct"] || "未知入口"} · ${interactionLabels[job.request.interaction_mode || "wait"] || "未知处理方式"} · ${sessionLabels[job.request.session_mode || "fresh"] || "未知会话模式"}\n${job.message}\n更新时间：${new Date(job.updated_at).toLocaleString()}${active.has(job.status) ? `；截止：${new Date(job.deadline_at).toLocaleTimeString()}` : ""}`;
     if (job.access_events?.length) {
-      const box = document.createElement("div");
-      box.className = "airchina-diagnostics";
-      const heading = document.createElement("h3");
-      heading.textContent = "访问阻塞记录（历史观察，不代表当前官网状态）";
-      box.appendChild(heading);
+      const box = diagnosticDetails("access", "访问阻塞记录（历史观察，不代表当前官网状态）", diagnosticOpen.has("access"));
       const phases = {home_form:"首页表单", result_page:"结果页", reading_results:"列表读取", reading_products:"产品读取"};
       const actions = {wait:"当时进入人工等待", stop:"当时停止读取"};
       for (const event of job.access_events) {
@@ -232,11 +419,7 @@
     }
     const network = job.network_diagnostics;
     if (network?.schema === "airchina_network_diagnostics_v1") {
-      const box = document.createElement("div");
-      box.className = "airchina-diagnostics";
-      const heading = document.createElement("h3");
-      heading.textContent = "单次查询网络诊断（历史记录）";
-      box.appendChild(heading);
+      const box = diagnosticDetails("network", "单次查询网络诊断（历史记录）", diagnosticOpen.has("network"));
       const add = text => {
         const p = document.createElement("p");
         p.textContent = text;
@@ -342,11 +525,7 @@
     }
     const evidence = report.wait_evidence || job.diagnostics;
     if (evidence && Object.hasOwn(evidence, "last_observation")) {
-      const box = document.createElement("div");
-      box.className = "airchina-diagnostics";
-      const heading = document.createElement("h3");
-      heading.textContent = "读取诊断（最近采样，不代表当前官网状态）";
-      box.appendChild(heading);
+      const box = diagnosticDetails("reading", "读取诊断（最近采样，不代表当前官网状态）", diagnosticOpen.has("reading"));
       const add = text => {
         const p = document.createElement("p");
         p.textContent = text;
@@ -400,6 +579,8 @@
       const data = await request(base);
       if (version !== generation) return;
       const gate = data.query_policy;
+      queryPolicyInfo = gate || null;
+      updateWorkflow();
       const policyText = document.getElementById("airchinaQueryPolicy");
       const policyResume = document.getElementById("airchinaQueryResume");
       if (gate && policyText && policyResume) {
@@ -457,6 +638,8 @@
       return;
     }
     const payload = Object.fromEntries(new FormData(form));
+    payload.interaction_mode = form.elements.interaction_mode.value;
+    payload.session_mode = form.elements.session_mode.value;
     payload.auto_confirm_notices = form.elements.auto_confirm_notices.checked;
     if (!payload.flight_no) delete payload.flight_no;
     mutate(base, payload);

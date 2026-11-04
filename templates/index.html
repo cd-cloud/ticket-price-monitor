@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Flight Price Tracker</title>
     <link rel="stylesheet" href="/static/app.css" />
+    <link rel="stylesheet" href="/static/vendor/tail-accordion.css" />
   </head>
   <body>
     <main class="shell">
@@ -222,54 +223,116 @@
     </template>
 
     <template id="airchinaExperimentTemplate">
-      <section id="airchinaExperimentPanel" class="panel">
-        <h2>国航实验查询</h2>
-        <p>仅单程、明确机场、1 成人。结果是<strong>每成人不含税参考票价</strong>，不进入正式报价、最低价排名或甩尾比价。</p>
-        <div class="actions">
-          <button id="airchinaSessionPrepare" type="button" class="primary">准备登录态</button>
-          <button id="airchinaSessionRestore" type="button" class="secondary">恢复本机备份</button>
-          <button id="airchinaSessionReady" type="button" class="primary" hidden>我已完成登录和验证</button>
-          <button id="airchinaSessionCancelPrepare" type="button" class="secondary" hidden>取消准备</button>
-          <button id="airchinaSessionClose" type="button" class="secondary">关闭会话</button>
-          <button id="airchinaSessionBackupDelete" type="button" class="ghost danger">删除备份</button>
-        </div>
-        <label class="inline-toggle"><input id="airchinaSessionBackup" type="checkbox" checked />
-          <span>就绪后保存本机加密登录态备份（需已配置项目主密钥，不导出 Cookie/token）</span>
-        </label>
-        <p id="airchinaSessionStatus" role="status">正在读取会话状态。</p>
-        <p id="airchinaQueryPolicy" role="status">正在读取国航查询保护状态。</p>
-        <button id="airchinaQueryResume" type="button" class="secondary" hidden>已人工检查，解除国航查询暂停</button>
-        <form id="airchinaExperimentForm" class="route-form">
-          <label>出发机场码<input name="origin" placeholder="PEK" maxlength="3" pattern="[A-Za-z]{3}" required /></label>
-          <label>到达机场码<input name="destination" placeholder="SHA" maxlength="3" pattern="[A-Za-z]{3}" required /></label>
-          <label>出发日期<input name="departure_date" type="date" required /></label>
-          <label>舱等<select name="cabin"><option value="economy">经济舱</option><option value="business">公务舱</option></select></label>
-          <label>查询引擎<select name="query_engine"><option value="native" selected>原生国航实验</option><option value="flyclaw">FlyClaw 国航 Source</option></select></label>
-          <label>查询入口<select name="entry_mode"><option value="direct">直达结果页（对照）</option><option value="form" selected>官网表单（推荐）</option><option value="results">结果页续查（同条件实验，不回首页）</option></select></label>
-          <label>遇阻处理<select name="interaction_mode"><option value="stop">无人值守：遇到验证或未知提示即停止</option><option value="wait" selected>等待人工：在同一页面处理后继续</option></select></label>
-          <label>浏览器会话<select name="session_mode"><option value="persistent" selected>常驻会话（推荐，应用运行期间复用）</option><option value="reuse">短时复用（10 分钟空闲 / 30 分钟总寿命）</option><option value="fresh">每任务重启（对照，不清除持久档案）</option></select></label>
-          <label>指定航班（可选）<input name="flight_no" placeholder="CA1549；留空只读列表" pattern="[A-Za-z]{2}[0-9]{3,4}" /></label>
-          <label class="inline-toggle"><input name="auto_confirm_notices" type="checkbox" checked />
-            <span>自动确认查询通知，并记录内容（不含验证码、登录、个人声明、预订或支付）</span>
-          </label>
-          <div class="actions"><button type="submit" class="primary">开始实验查询</button></div>
-        </form>
-        <p>建议先点击“准备登录态”，在同一个项目 Chrome 中手动登录或完成验证，再点击“我已完成登录和验证”。准备阶段只打开官网，不查询航班；查询总时限 4 分钟（含人工等待），不会自动处理验证码或预订。</p>
-        <p>常驻会话在应用运行期间跨任务复用同一页面和上下文；空结果或解析不确定不等于会话失效。验证未解除、访问受限、取消、超时、配置变化或显式关闭仍会销毁会话。应用重启后使用固定国航持久档案，也可显式恢复本机加密备份；均不保证免验证。</p>
-        <p>表单模式仅支持未来 365 天内的日期和普通 1 成人。已位于官网首页时不重复导航；提交前验证可在等待人工模式下继续同一表单，不重复提交。控件失败、提交结果未知、取消或超时仍不自动重试。</p>
-        <p>结果页续查仍须先取得并保留同条件的成功参考列表，仅支持“短时复用＋无人值守”；不会为了复用会话而接受旧票价。关闭会话不会删除持久档案或加密备份，删除备份需单独点击。</p>
-        <p id="airchinaExperimentError" role="alert"></p>
-        <div class="actions">
-          <label>任务记录<select id="airchinaExperimentJobs" aria-label="国航实验任务记录"></select></label>
-          <button id="airchinaExperimentRefresh" type="button" class="secondary">刷新记录</button>
-        </div>
-        <div id="airchinaExperimentStatus" role="status" aria-live="polite">尚未选择任务。</div>
-        <div class="actions">
-          <button id="airchinaExperimentContinue" type="button" class="primary" hidden>我已手动处理，继续读取</button>
-          <button id="airchinaExperimentCancel" type="button" class="secondary" hidden>取消任务</button>
-        </div>
-        <div id="airchinaExperimentResults" class="airchina-experiment-results"></div>
-        <div id="airchinaExperimentNotices"></div>
+      <section id="airchinaExperimentPanel" class="panel airchina-workspace">
+        <header class="airchina-heading">
+          <div>
+            <p class="eyebrow">国航实验</p>
+            <h2>国航查询工作台</h2>
+            <p>仅单程、明确机场、1 成人。结果是<strong>每成人不含税参考票价</strong>，不进入正式报价、最低价排名或甩尾比价。</p>
+          </div>
+          <span id="airchinaCurrentStatus" class="status-badge idle">未开始</span>
+        </header>
+
+        <ol id="airchinaWorkflow" class="airchina-workflow" aria-label="国航查询流程">
+          <li data-step="prepare" class="active"><span>1</span>准备登录</li>
+          <li data-step="query"><span>2</span>查询条件</li>
+          <li data-step="run"><span>3</span>执行查询</li>
+          <li data-step="results"><span>4</span>结果诊断</li>
+        </ol>
+
+        <section id="airchinaSessionCard" class="airchina-card">
+          <div class="airchina-card-head">
+            <h3>1. 准备登录态</h3>
+            <span id="airchinaSessionBadge" class="status-badge idle">未准备</span>
+          </div>
+          <p id="airchinaSessionNext" class="airchina-next-action">先准备登录态，再在项目 Chrome 中完成登录或验证。</p>
+          <div class="actions airchina-primary-actions">
+            <button id="airchinaSessionPrepare" type="button" class="primary">准备登录态</button>
+            <button id="airchinaSessionReady" type="button" class="primary" hidden>我已完成登录和验证</button>
+            <button id="airchinaSessionCancelPrepare" type="button" class="secondary" hidden>取消准备</button>
+          </div>
+          <p id="airchinaSessionStatus" role="status">正在读取会话状态。</p>
+          <details class="airchina-secondary">
+            <summary>备份、会话管理与查询保护</summary>
+            <div class="actions">
+              <button id="airchinaSessionRestore" type="button" class="secondary">恢复本机备份</button>
+              <button id="airchinaSessionClose" type="button" class="secondary">关闭会话</button>
+              <button id="airchinaSessionBackupDelete" type="button" class="ghost danger">删除备份</button>
+            </div>
+            <label class="inline-toggle"><input id="airchinaSessionBackup" type="checkbox" checked />
+              <span>就绪后保存本机加密登录态备份（需已配置项目主密钥，不导出 Cookie/token）</span>
+            </label>
+            <p id="airchinaQueryPolicy" role="status">正在读取国航查询保护状态。</p>
+            <button id="airchinaQueryResume" type="button" class="secondary" hidden>已人工检查，解除国航查询暂停</button>
+          </details>
+        </section>
+
+        <section class="airchina-card">
+          <div class="airchina-card-head">
+            <h3>2. 查询条件</h3>
+            <span class="airchina-card-note">基础项</span>
+          </div>
+          <p id="airchinaFormHint" class="airchina-muted">默认使用官网表单、等待人工和常驻会话。</p>
+          <form id="airchinaExperimentForm" class="route-form">
+            <div class="airchina-basic-fields">
+              <label>出发机场码<input name="origin" placeholder="PEK" maxlength="3" pattern="[A-Za-z]{3}" required /></label>
+              <label>到达机场码<input name="destination" placeholder="SHA" maxlength="3" pattern="[A-Za-z]{3}" required /></label>
+              <label>出发日期<input name="departure_date" type="date" required /></label>
+              <label>舱等<select name="cabin"><option value="economy">经济舱</option><option value="business">公务舱</option></select></label>
+            </div>
+            <div class="actions airchina-primary-actions">
+              <button type="submit" class="primary">开始实验查询</button>
+              <button id="airchinaFormReset" type="button" class="ghost">重置条件</button>
+            </div>
+            <details id="airchinaAdvancedSettings" class="airchina-secondary">
+              <summary>高级设置</summary>
+              <div class="airchina-advanced-grid">
+                <label>查询引擎<select name="query_engine"><option value="native" selected>原生国航实验</option><option value="flyclaw">FlyClaw 国航 Source</option></select></label>
+                <label>查询入口<select name="entry_mode"><option value="direct">直达结果页（对照）</option><option value="form" selected>官网表单（推荐）</option><option value="results">结果页续查（同条件实验，不回首页）</option></select></label>
+                <label>遇阻处理<select name="interaction_mode"><option value="stop">无人值守：遇到验证或未知提示即停止</option><option value="wait" selected>等待人工：在同一页面处理后继续</option></select></label>
+                <label>浏览器会话<select name="session_mode"><option value="persistent" selected>常驻会话（推荐，应用运行期间复用）</option><option value="reuse">短时复用（10 分钟空闲 / 30 分钟总寿命）</option><option value="fresh">每任务重启（对照，不清除持久档案）</option></select></label>
+                <label>指定航班（可选）<input name="flight_no" placeholder="CA1549；留空只读列表" pattern="[A-Za-z]{2}[0-9]{3,4}" /></label>
+                <label class="inline-toggle"><input name="auto_confirm_notices" type="checkbox" checked />
+                  <span>自动确认查询通知，并记录内容（不含验证码、登录、个人声明、预订或支付）</span>
+                </label>
+              </div>
+            </details>
+          </form>
+          <details class="airchina-secondary">
+            <summary>使用说明与限制</summary>
+            <p>准备阶段只打开官网，不查询航班；查询总时限 4 分钟（含人工等待），不会自动处理验证码或预订。</p>
+            <p>常驻会话跨任务复用同一页面和上下文；验证未解除、访问受限、取消、超时或配置变化会清理。应用重启后使用固定持久档案，也可显式恢复加密备份，均不保证免验证。</p>
+            <p>表单模式支持未来 365 天内日期和普通 1 成人。结果页续查须已有同条件成功参考列表，仅支持“短时复用＋无人值守”，不会接受旧票价冒充新结果。</p>
+          </details>
+        </section>
+
+        <section id="airchinaTaskCard" class="airchina-card">
+          <div class="airchina-card-head">
+            <h3>3. 执行状态</h3>
+            <span id="airchinaTaskBadge" class="status-badge idle">尚未选择任务</span>
+          </div>
+          <p id="airchinaNextAction" class="airchina-next-action">准备登录态后即可开始查询。</p>
+          <div class="actions">
+            <label>任务记录<select id="airchinaExperimentJobs" aria-label="国航实验任务记录"></select></label>
+            <button id="airchinaExperimentRefresh" type="button" class="secondary">刷新记录</button>
+            <button id="airchinaExperimentContinue" type="button" class="primary" hidden>我已手动处理，继续读取</button>
+            <button id="airchinaExperimentCancel" type="button" class="secondary" hidden>取消任务</button>
+          </div>
+          <div id="airchinaExperimentStatus" role="status" aria-live="polite">尚未选择任务。</div>
+          <p id="airchinaExperimentError" role="alert"></p>
+        </section>
+
+        <section class="airchina-card">
+          <div class="airchina-card-head">
+            <h3>4. 结果与诊断</h3>
+            <span class="airchina-card-note">参考信息，不代表可出票</span>
+          </div>
+          <div id="airchinaExperimentResults" class="airchina-experiment-results"></div>
+          <details id="airchinaNoticesDetails" class="airchina-secondary">
+            <summary>官网提示记录</summary>
+            <div id="airchinaExperimentNotices"></div>
+          </details>
+        </section>
       </section>
     </template>
     <script>

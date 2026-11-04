@@ -14,7 +14,7 @@ function ui() {
     candidates:{hidden:false},
   };
   const ctx = vm.createContext({URL, URLSearchParams, Date, AbortController,
-    tailResultView:"history", tailResultsLoaded:true, tailSelectedJobId:"job", activeTailJobId:"",tailConnectionUnknown:false,
+    tailResultView:"history", tailResultsLoaded:true, tailSelectedJobId:"job", tailSelectedJob:null, activeTailJobId:"",tailConnectionUnknown:false,
     tailDisclosureState:new Map(), window:{innerHeight:900}, tailDiscoveryResults:[],
     document:{getElementById:id=>elements[id],querySelector:()=>elements.candidates,querySelectorAll:()=>[]},
     escapeHtml: x=>String(x??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])),
@@ -25,9 +25,10 @@ function ui() {
   });
   for (const name of ['compareTailResults','tailQuoteFresh','tailQuoteVerified','prepareTailResults',
     'groupTailResultsByRoute','safeTailReviewUrl','tailQuoteTermsLabel','renderTailBaselines','renderTailFlightGroups',
+    'tailFullRouteLabel','tailItineraryKey','renderTailItineraryGroups',
     'renderTailResultCard','renderTailRouteGroup','renderTailResults','updateTailSearchScope','renderTailPriorities',
     'tailAttemptPhaseLabel','tailPlaceLabel','replaceTailMarkup','tailConditionLabel',
-    'tailQueryDiffers','updateTailResultContext','updateTailResultTools',
+    'tailQueryDiffers','updateTailRunAction','updateTailResultContext','updateTailResultTools','tailActiveContext',
     'tailComparableBaseline','tailDecisionDifference']) {
     const start = source.indexOf(`function ${name}(`);
     assert.ok(start>=0,name);
@@ -74,7 +75,7 @@ test('fresh verified and expired review partitions are separate',()=>{
   assert.equal(ctx.prepareTailResults([quote(),quote({itinerary_key:'old',expires_at:'2020-01-01T00:00:00Z'})]).length,1);
   elements.tailTrustInput.value='all';
   ctx.renderTailResults([quote(),quote({itinerary_key:'old',expires_at:'2020-01-01T00:00:00Z'})]);
-  assert.match(elements.tailResults.innerHTML,/行程已校验/); assert.match(elements.tailResults.innerHTML,/已过期 \/ 时间未知/);
+  assert.match(elements.tailResults.innerHTML,/航段已核对/); assert.match(elements.tailResults.innerHTML,/已过期 \/ 时间未知/);
 });
 test('same first flight groups tail alternatives without mixing currencies',()=>{
   const {ctx}=ui(); let html=ctx.renderTailFlightGroups([quote(),quote({destination:'SZX',itinerary_key:'two'})]);
@@ -85,7 +86,7 @@ test('same first flight groups tail alternatives without mixing currencies',()=>
 test('unknown terms never show guaranteed savings and include recheck action',()=>{
   const {ctx}=ui(); const html=ctx.renderTailResultCard(quote(),1);
   assert.match(html,/口径未确认，不计算节省金额/); assert.match(html,/data-tail-action="recheck"/);
-  assert.match(html,/行李：未核实/); assert.match(html,/人数库存未校验/);
+  assert.match(html,/行李：未核实/); assert.match(html,/人数库存未核实/);
 });
 test('review links reject executable schemes and escape source text',()=>{
   const {ctx}=ui(); const html=ctx.renderTailResultCard(quote({review_url:'javascript:alert(1)',destination:'<img src=x>'}),1);
@@ -117,8 +118,8 @@ test('inconclusive and legacy not_found rechecks do not assert delisting',()=>{
 });
 test('result cards distinguish first-leg and entire-itinerary filter scopes',()=>{
   const {ctx}=ui();
-  assert.match(ctx.renderTailResultCard(quote({filter_scope:'first_leg'}),1),/舱位／航司仅约束首段/);
-  assert.match(ctx.renderTailResultCard(quote({filter_scope:'all_legs'}),1),/舱位／航司约束全行程/);
+  assert.match(ctx.renderTailResultCard(quote({filter_scope:'first_leg'}),1),/舱位／航司仅约束我要乘坐的航段/);
+  assert.match(ctx.renderTailResultCard(quote({filter_scope:'all_legs'}),1),/舱位／航司约束完整购票行程/);
 });
 test('hybrid controls retain seed cities and expose separate finite budgets',()=>{
   const {ctx,elements}=ui();
@@ -139,12 +140,14 @@ test('hybrid controls retain seed cities and expose separate finite budgets',()=
 });
 test('priority explanations escape source data and do not promise bookability',()=>{
   const {ctx}=ui();
-  const html=ctx.renderTailPriorities({ranking:'contextual_history_v1',
-    provider_calls:{used:3,limit:20},next_candidates:[{destination:'CAN',reasons:['<img src=x onerror=x>','近期有效联程证据']}]});
+  const policy={ranking:'contextual_history_v1',
+    provider_calls:{used:3,limit:20},next_candidates:[{destination:'CAN',reasons:['<img src=x onerror=x>','近期有效联程证据']}]};
+  const html=ctx.renderTailPriorities(policy);
   assert.match(html,/3 \/ 20/);
   assert.match(html,/非可售保证/);
   assert.match(html,/近期有效联程证据/);
   assert.doesNotMatch(html,/<img/);
+  assert.doesNotMatch(ctx.renderTailPriorities(policy,true),/<details/);
   assert.equal(ctx.renderTailPriorities({}),'');
 });
 test('inconclusive search stays retryable and UI no longer offers absence cache bypass',()=>{
@@ -240,9 +243,9 @@ test('decision difference prefers same-flight comparison and distinctly labels m
   const {ctx}=ui(); const item=comparableQuote();
   assert.match(ctx.tailDecisionDifference(item),/比同首段单买低 CNY 400/);
   delete item.baselines.same_flight;
-  assert.match(ctx.tailDecisionDifference(item),/比符合条件的直飞最低价低 CNY 300/);
+  assert.match(ctx.tailDecisionDifference(item),/比符合筛选条件的直飞价低 CNY 300/);
   const html=ctx.renderTailResultCard(item,1);
-  assert.ok(html.indexOf('可比参考价差')<html.indexOf('<details'),
+  assert.ok(html.indexOf('同口径参考')<html.indexOf('<details'),
     'comparable difference must be visible without opening details');
 });
 
@@ -254,14 +257,14 @@ test('stale, unverified, unknown, inconsistent and legacy savings never become c
     comparableQuote({savings_amount:999,baselines:{}}),
     comparableQuote({currency:'USD'}),
     comparableQuote({passengers:2}),
-  ]) assert.equal(ctx.tailDecisionDifference(item),'暂无可比价差');
+  ]) assert.equal(ctx.tailDecisionDifference(item),'无法判断能省多少');
   const stale=comparableQuote({expires_at:'2020-01-01'});
   assert.match(ctx.tailDecisionDifference(stale),/历史报价/);
   assert.doesNotMatch(ctx.renderTailResultCard(stale,1),/比同首段单买低/);
   for (const amount of [null,undefined,NaN,999]) {
     const item=comparableQuote();delete item.baselines.market;
     item.baselines.same_flight.savings_amount=amount;
-    assert.equal(ctx.tailDecisionDifference(item),'暂无可比价差');
+    assert.equal(ctx.tailDecisionDifference(item),'无法判断能省多少');
   }
 });
 
@@ -270,7 +273,7 @@ test('negative and zero differences are not presented as savings',()=>{
   item.baselines.same_flight.price=650;item.baselines.same_flight.savings_amount=-50;
   assert.match(ctx.tailDecisionDifference(item),/比同首段单买高 CNY 50/);
   item.baselines.same_flight.price=700;item.baselines.same_flight.savings_amount=0;
-  assert.match(ctx.tailDecisionDifference(item),/参考价相同/);
+  assert.match(ctx.tailDecisionDifference(item),/与同首段单买相同/);
 });
 
 test('cards distinguish desired first leg, actual full route and visible unresolved risks',()=>{
@@ -280,10 +283,13 @@ test('cards distinguish desired first leg, actual full route and visible unresol
     {origin:'SHA',destination:'CAN',departure_airport:'SHA',arrival_airport:'CAN'},
   ]});
   const html=ctx.renderTailFlightGroups([item]);
-  assert.match(html,/想乘坐的首段 · BJS → SHA/);
+  assert.match(html,/我要乘坐 · BJS → SHA/);
   assert.match(html,/完整购票行程/);
   assert.match(html,/PEK → SHA → CAN/);
+  assert.ok(html.indexOf('我要乘坐')<html.indexOf('完整购票行程'));
   assert.ok(html.indexOf('价格及出票需复核')<html.indexOf('<details'));
+  assert.ok(html.indexOf('人数库存未核实')<html.indexOf('<details'));
+  assert.match(html,/航段已核对 · 价格未复核/);
   assert.match(ctx.renderTailResultCard(quote(),1),/候选购票行程 · 待核实/);
 });
 
@@ -346,17 +352,80 @@ test('dual draft comparison detects Fliggy scope and its hybrid budget independe
   assert.equal(ctx.tailQueryDiffers(saved,{...saved,feizhu_search_scope:'open'}),true);
 });
 
+test('advanced budget summary counts only effective changes and retains values across providers',()=>{
+  const {ctx,elements}=ui();
+  for (const [id,value] of [['tailBudgetCitiesInput','10'],['tailBudgetMinutesInput',''],
+    ['tailTargetInput','2'],['tailFollowupBudgetInput','5'],['tailCallBudgetInput','20'],['tailBaselineBudgetInput','3']]) {
+    elements[id]={value,defaultValue:value};
+  }
+  elements.tailBudgetSummary={};elements.tailProviderSelect.value='both';
+  elements.tailFeizhuScopeInput={value:'open'};elements.tailBothNotice={hidden:true};
+  ctx.selectedTailCandidates=()=>['CAN'];loadFunctions(ctx,['updateTailFormSummary']);
+  ctx.updateTailFormSummary();assert.equal(elements.tailBudgetSummary.textContent,'默认预算');
+  elements.tailCallBudgetInput.value='21';ctx.updateTailFormSummary();
+  assert.equal(elements.tailBudgetSummary.textContent,'1 项已调整');
+  elements.tailProviderSelect.value='ctrip';ctx.updateTailSearchScope();ctx.updateTailFormSummary();
+  assert.equal(elements.tailBudgetSummary.textContent,'默认预算');
+  assert.equal(elements.tailCallBudgetInput.value,'21');
+  elements.tailProviderSelect.value='both';ctx.updateTailSearchScope();ctx.updateTailFormSummary();
+  assert.equal(elements.tailBudgetSummary.textContent,'1 项已调整');
+});
+
+test('complete itinerary groups align providers only with matching evidence and terms',()=>{
+  const {ctx}=ui();ctx.tailSelectedJob={job_id:'both',payload:{provider:'both'}};
+  const legs=[
+    {flight_no:'CA1001',departure_airport:'PEK',arrival_airport:'SHA',departure_time:'09:00',arrival_time:'11:00',cabin:'economy'},
+    {flight_no:'CA2002',departure_airport:'SHA',arrival_airport:'CAN',departure_time:'13:00',arrival_time:'15:00',cabin:'economy'},
+  ];
+  const first=quote({provider:'ctrip',itinerary_key:'ctrip-route',flight_details:legs,quote_terms:{price_basis:'per_person'}});
+  const second=quote({id:2,provider:'feizhu',itinerary_key:'feizhu-route',price:650,flight_details:legs,quote_terms:{price_basis:'per_person'}});
+  assert.equal(ctx.tailItineraryKey(first),ctx.tailItineraryKey(second));
+  const html=ctx.renderTailItineraryGroups([first,second]).join('');
+  assert.equal((html.match(/has-multiple-providers/g)||[]).length,1);
+  assert.match(html,/同行程平台独立报价/);assert.doesNotMatch(html,/暂无同行程报价/);
+  assert.ok(html.indexOf('data-provider="ctrip"')<html.indexOf('data-provider="feizhu"'));
+  assert.match(html,/data-result-id="1"/);assert.match(html,/data-result-id="2"/);
+  const single=ctx.renderTailItineraryGroups([first]).join('');
+  assert.match(single,/feizhu暂无同行程报价/);
+  ctx.tailSelectedJob.payload.provider='ctrip';
+  assert.doesNotMatch(ctx.renderTailItineraryGroups([first]).join(''),/暂无同行程报价/);
+  const different=quote({id:3,provider:'feizhu',destination:'XMN',flight_details:legs.map((leg,index)=>index?{...leg,arrival_airport:'XMN',destination:'XMN'}:leg)});
+  assert.notEqual(ctx.tailItineraryKey(first),ctx.tailItineraryKey(different));
+  assert.equal(ctx.renderTailItineraryGroups([first,different]).length,2);
+  const partial=quote({id:4,provider:'feizhu',itinerary_key:'partial',flight_details:[legs[0]]});
+  assert.ok(ctx.renderTailItineraryGroups([first,partial]).every(html=>!html.includes('has-multiple-providers')));
+  assert.notEqual(ctx.tailItineraryKey(first),ctx.tailItineraryKey({...first,currency:'USD'}));
+  assert.notEqual(ctx.tailItineraryKey(first),ctx.tailItineraryKey({...first,passengers:2}));
+  assert.notEqual(ctx.tailItineraryKey(first),ctx.tailItineraryKey({...first,quote_terms:{}}));
+});
+
 test('provider filter does not deduplicate or price-compare different platforms as one quote',()=>{
   const {ctx,elements}=ui();
   const rows=[quote({id:1,provider:'ctrip'}),quote({id:2,provider:'feizhu',price:650})];
   assert.equal(ctx.prepareTailResults(rows).length,2);
-  assert.equal((ctx.renderTailFlightGroups(rows).match(/<h4>/g)||[]).length,2);
+  const html=ctx.renderTailFlightGroups(rows);
+  assert.equal((html.match(/<h4>/g)||[]).length,1);
+  assert.equal((html.match(/class="tail-result-card"/g)||[]).length,2);
+  assert.match(html,/data-provider="ctrip"/);assert.match(html,/data-provider="feizhu"/);
+  assert.match(html,/按完整行程比较/);assert.doesNotMatch(html,/同平台最低参考/);
+  const differentBasis=ctx.renderTailFlightGroups([rows[0],quote({id:2,provider:'feizhu',quote_terms:{price_basis:'per_person'}})]);
+  assert.equal((differentBasis.match(/<h4>/g)||[]).length,2);
+  const quickButtons=['','ctrip','feizhu'].map(provider=>({dataset:{tailProvider:provider},textContent:'',attributes:{},
+    setAttribute(name,value){this.attributes[name]=value;}}));
+  elements.tailProviderQuickFilter={hidden:true,querySelectorAll:()=>quickButtons};
+  ctx.tailDiscoveryResults=rows;ctx.updateTailResultTools();
+  assert.equal(elements.tailProviderQuickFilter.hidden,false);
+  assert.deepEqual(quickButtons.map(button=>button.textContent),['全部 2','携程 1','飞猪 1']);
   elements.tailResultProviderFilter={value:'ctrip'};
   assert.deepEqual(Array.from(ctx.prepareTailResults(rows),r=>r.provider),['ctrip']);
   elements.tailResultFilterSummary={};ctx.updateTailResultTools();
   assert.match(elements.tailResultFilterSummary.textContent,/1 项/);
+  assert.equal(quickButtons[1].attributes['aria-pressed'],'true');
   loadFunctions(ctx,['clearTailResultFilters']);ctx.clearTailResultFilters();
   assert.equal(elements.tailResultProviderFilter.value,'');
+  assert.equal(quickButtons[0].attributes['aria-pressed'],'true');
+  ctx.tailDiscoveryResults=[rows[0]];ctx.updateTailResultTools();
+  assert.equal(elements.tailProviderQuickFilter.hidden,true);
 });
 
 test('batch progress shows sibling success and failure, escapes errors and offers only valid recovery',()=>{
@@ -372,12 +441,67 @@ test('batch progress shows sibling success and failure, escapes errors and offer
   const html=elements.tailJobSummary.innerHTML;
   assert.match(html,/ctrip · finished/);assert.match(html,/feizhu · failed/);
   assert.match(html,/继续未完成平台/);assert.match(html,/重试失败平台/);
+  assert.match(html,/class="primary compact" data-tail-action="resume"/);
+  assert.match(html,/class="ghost compact" data-tail-action="retry-failed"/);
   assert.doesNotMatch(html,/<img src=x>/);
+  assert.equal((html.match(/class="tail-provider-progress-card"/g)||[]).length,2);
+  assert.equal((html.match(/data-disclosure="child-f"/g)||[]).length,1);
+  assert.doesNotMatch(html,/class="tail-provider-progress-card"[^>]*open/);
+  assert.match(html,/<summary><strong>feizhu · failed<\/strong>[\s\S]*?class="tail-warning"/);
   job.status='running';ctx.renderTailJobProgress(job);
   assert.doesNotMatch(elements.tailJobSummary.innerHTML,/data-tail-action="resume"|data-tail-action="retry-failed"/);
+  job.payload={...job.payload,origin:'BJS',transfer:'SHA',departure_date:'2027-06-20'};
+  assert.match(ctx.tailActiveContext(job),/后台执行.*下方结果另有所属/);
+  ctx.tailSelectedJobId='batch';ctx.tailResultView='current';
+  assert.doesNotMatch(ctx.tailActiveContext(job),/下方结果另有所属/);
+  job.status='finished';assert.equal(ctx.tailActiveContext(job),'');
+  job.status='needs_verification';
   job.status='needs_verification';ctx.renderTailJobProgress(job);
-  assert.match(elements.tailJobSummary.innerHTML,/data-tail-action="continue"/);
+  assert.match(elements.tailJobSummary.innerHTML,/class="primary compact" data-tail-action="continue"/);
   assert.match(elements.tailJobSummary.innerHTML,/飞猪无需等待/);
+});
+
+test('new search is secondary to an existing task and clearly distinguishes edited conditions',()=>{
+  const {ctx,elements}=ui();const classes=new Set(),viewClasses=new Set();
+  elements.tailRunBtn={classList:{toggle:(name,force)=>force?classes.add(name):classes.delete(name)}};
+  elements.tailViewResultsBtn={classList:{toggle:(name,force)=>force?viewClasses.add(name):viewClasses.delete(name)}};
+  elements.tailRunHint={};elements.tailOriginInput={};
+  const payload={origin:'BJS',transfer:'SHA',departure_date:'2027-06-20',provider:'ctrip'};
+  Object.assign(ctx,{tailResultView:'current',tailSelectedJobId:'paused',tailSelectedJob:{job_id:'paused',payload},
+    tailBusy:()=>false,normalizeCode:x=>x,buildTailQueryPayload:()=>({...payload}),tailDiscoveryResults:[quote()]});
+  ctx.updateTailRunAction();
+  assert.equal(elements.tailRunBtn.textContent,'使用表单条件重新查询');
+  assert.equal(classes.has('ghost'),true);assert.equal(classes.has('primary'),false);
+  assert.equal(viewClasses.has('primary'),false);
+  ctx.buildTailQueryPayload=()=>({...payload,departure_date:'2027-06-21'});ctx.updateTailRunAction();
+  assert.equal(elements.tailRunBtn.textContent,'使用新条件查询');
+  assert.match(elements.tailRunHint.textContent,/原任务结果/);
+  ctx.tailBusy=()=>true;ctx.updateTailRunAction();
+  assert.equal(elements.tailRunBtn.textContent,'查询进行中');
+  ctx.tailBusy=()=>false;ctx.tailResultView='history';ctx.updateTailRunAction();
+  assert.match(elements.tailRunHint.textContent,/历史报价/);
+  assert.equal(viewClasses.has('primary'),true);
+  ctx.tailResultView='current';ctx.tailSelectedJob={job_id:'paused',payload,status:'finished'};ctx.updateTailRunAction();
+  assert.equal(viewClasses.has('primary'),true);assert.equal(elements.tailViewResultsBtn.textContent,'查看方案 ↓');
+  ctx.tailBusy=()=>true;ctx.updateTailRunAction();assert.equal(viewClasses.has('primary'),false);
+  ctx.tailBusy=()=>false;ctx.tailResultView='history';ctx.updateTailRunAction();
+  assert.match(elements.tailRunHint.textContent,/历史报价/);
+  ctx.tailSelectedJobId='';ctx.tailSelectedJob=null;ctx.tailResultView='current';ctx.updateTailRunAction();
+  assert.equal(elements.tailRunBtn.textContent,'开始查询');assert.equal(classes.has('primary'),true);
+});
+
+test('empty summary distinguishes first use, filters, running, history and saved empty results',()=>{
+  const {ctx,elements}=ui();elements.tailSummary={};
+  Object.assign(ctx,{tailResultView:'current',tailSelectedJobId:'',tailResultsLoaded:true,activeTailJobId:''});
+  loadFunctions(ctx,['renderTailSummary']);
+  ctx.renderTailSummary([],[]);assert.equal(elements.tailSummary.textContent,'尚未开始查询');
+  ctx.renderTailSummary([],[quote()]);assert.equal(elements.tailSummary.textContent,'当前筛选下暂无结果');
+  ctx.tailSelectedJobId='run';ctx.activeTailJobId='run';ctx.renderTailSummary([],[]);
+  assert.match(elements.tailSummary.textContent,/查询进行中/);
+  ctx.tailResultView='history';ctx.renderTailSummary([],[]);
+  assert.match(elements.tailSummary.textContent,/历史报价/);
+  ctx.tailResultView='current';ctx.activeTailJobId='';ctx.renderTailSummary([],[]);
+  assert.match(elements.tailSummary.textContent,/暂未保存/);assert.doesNotMatch(elements.tailSummary.textContent,/暂无命中/);
 });
 
 function loadFunctions(ctx, names) {
@@ -403,8 +527,8 @@ test('review and expired filters are distinct and do not upgrade unknown data',(
 test('cards show explicit state, taxes and airport-change warnings without raw quality or confidence scores',()=>{
   const {ctx}=ui();
   const html=ctx.renderTailResultCard(quote({detail_quality:'complete',suitability:{airport_change:true}}),1);
-  assert.match(html,/行程已校验/);
-  assert.match(html,/税费口径未确认/);
+  assert.match(html,/航段已核对/);
+  assert.match(html,/税费未确认/);
   assert.match(html,/涉及换机场/);
   assert.doesNotMatch(html,/高可信|中可信|>complete</);
   assert.match(ctx.renderTailResultCard(quote({expires_at:'2020-01-01'}),1),/已过期 \/ 时间未知/);
@@ -416,7 +540,7 @@ test('empty states separate hidden results, first search, running and historical
   assert.match(elements.tailResults.innerHTML,/被列表筛选隐藏/);
   elements.tailMaxPriceInput.value='';
   ctx.tailResultView='current';ctx.tailSelectedJobId='';ctx.renderTailResults([]);
-  assert.match(elements.tailResults.innerHTML,/先告诉我们/);
+  assert.match(elements.tailResults.innerHTML,/先选择我要乘坐的行程/);
   ctx.tailSelectedJobId='running';ctx.activeTailJobId='running';ctx.renderTailResults([]);
   assert.match(elements.tailResults.innerHTML,/正在查找/);
   ctx.tailResultView='history';ctx.renderTailResults([]);

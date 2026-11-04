@@ -90,9 +90,10 @@ async def run(output):
                         else:
                             submitted = json.loads(request.post_data)
                             assert submitted["auto_confirm_notices"] is True
-                            assert submitted["entry_mode"] == "form"
+                            assert submitted["entry_mode"] in {"form", "results"}
                             assert submitted["interaction_mode"] in {"stop", "wait"}
-                            assert submitted["session_mode"] == "persistent"
+                            expected_session = "reuse" if submitted["entry_mode"] == "results" else "persistent"
+                            assert submitted["session_mode"] == expected_session
                             stopped = submitted["interaction_mode"] == "stop"
                             jobs[:] = [{
                                 "job_id": "offline-demo", "provider": "airchina",
@@ -129,6 +130,9 @@ async def run(output):
                 await page.goto("http://127.0.0.1/")
                 await page.locator('[data-workspace-tab="experiments"]').click()
                 form = page.locator("#airchinaExperimentForm")
+                await expect(page.locator("#airchinaAdvancedSettings")).not_to_have_attribute("open", "")
+                await form.locator("#airchinaAdvancedSettings summary").click()
+                await expect(page.locator("#airchinaAdvancedSettings")).to_have_attribute("open", "")
                 await expect(form.locator('[name="query_engine"]')).to_have_value("native")
                 await form.locator('[name="query_engine"]').select_option("flyclaw")
                 await expect(form.locator('[name="query_engine"]')).to_have_value("flyclaw")
@@ -153,10 +157,14 @@ async def run(output):
                 await expect(page.locator("#airchinaExperimentContinue")).to_be_visible()
                 await expect(page.locator("#airchinaExperimentStatus")).to_contain_text("官网表单")
                 await expect(page.locator("#airchinaExperimentResults")).to_contain_text("提交前核对")
+                await expect(page.locator('[data-diagnostic="access"]')).not_to_have_attribute("open", "")
+                await page.locator('[data-diagnostic="access"] summary').click()
                 await expect(page.locator("#airchinaExperimentResults")).to_contain_text("当时进入人工等待")
                 await expect(page.locator("#airchinaExperimentResults")).to_contain_text("本次新建")
                 await expect(page.locator("#airchinaSessionClose")).to_be_disabled()
                 await expect(page.locator("#airchinaExperimentNotices")).to_contain_text("已自动确认")
+                await expect(page.locator("#airchinaNoticesDetails")).not_to_have_attribute("open", "")
+                await page.locator("#airchinaNoticesDetails > summary").click()
                 await page.locator("#airchinaExperimentNotices summary").click()
                 await expect(page.locator("#airchinaExperimentNotices pre")).to_be_visible()
                 assert await page.locator("#airchinaExperimentNotices script, #airchinaExperimentNotices img").count() == 0
@@ -168,6 +176,8 @@ async def run(output):
                 await expect(page.locator("#airchinaExperimentContinue")).to_be_hidden()
                 await expect(page.locator("#airchinaExperimentResults")).to_contain_text("任务结束时保留")
                 await expect(page.locator("#airchinaExperimentNotices pre")).to_be_visible()
+                await expect(page.locator('[data-diagnostic="access"]')).to_have_attribute("open", "")
+                await expect(page.locator("#airchinaNoticesDetails")).to_have_attribute("open", "")
                 assert len(actions) == 2
                 await page.screenshot(path=str(output / "airchina-reference-offline.png"), full_page=True)
                 jobs[0]["result"]["query_policy"] = {
@@ -179,6 +189,7 @@ async def run(output):
                 await expect(page.locator("#airchinaExperimentResults")).to_contain_text("缓存参考（未重新查价）")
                 await expect(page.locator("#airchinaQueryPolicy")).to_contain_text("已暂停：验证码")
                 await expect(page.locator("#airchinaQueryResume")).to_be_enabled()
+                await page.locator("#airchinaSessionCard .airchina-secondary summary").click()
                 page.once("dialog", lambda dialog: dialog.accept())
                 await page.locator("#airchinaQueryResume").click()
                 await expect(page.locator("#airchinaQueryResume")).to_be_hidden()
@@ -233,6 +244,8 @@ async def run(output):
                     },
                 }
                 await page.locator("#airchinaExperimentRefresh").click()
+                await expect(page.locator('[data-diagnostic="network"]')).not_to_have_attribute("open", "")
+                await page.locator('[data-diagnostic="network"] > summary').click()
                 await expect(page.locator("#airchinaExperimentResults")).to_contain_text("单次查询网络诊断")
                 await expect(page.locator("#airchinaExperimentResults")).to_contain_text("国航主档案")
                 await expect(page.locator("#airchinaExperimentResults")).to_contain_text("403 × 1")
@@ -255,6 +268,8 @@ async def run(output):
                     },
                 })
                 await page.locator("#airchinaExperimentRefresh").click()
+                await expect(page.locator('[data-diagnostic="reading"]')).not_to_have_attribute("open", "")
+                await page.locator('[data-diagnostic="reading"] > summary').click()
                 await expect(page.locator("#airchinaExperimentResults")).to_contain_text("官网显示“查询无结果")
                 await expect(page.locator("#airchinaExperimentResults")).to_contain_text("可见航班行：0")
                 await expect(page.locator("#airchinaExperimentResults table")).to_have_count(0)
@@ -276,10 +291,15 @@ async def run(output):
                 assert len(actions) == 4 and actions[-1].endswith("/session/close")
                 await page.screenshot(path=str(output / "airchina-unattended-offline.png"), full_page=True)
                 await form.locator('[name="entry_mode"]').select_option("results")
-                await form.locator('[name="interaction_mode"]').select_option("wait")
+                await expect(form.locator('[name="interaction_mode"]')).to_have_value("stop")
+                await expect(form.locator('[name="interaction_mode"]')).to_be_disabled()
+                await expect(form.locator('[name="session_mode"]')).to_have_value("reuse")
+                await expect(form.locator('[name="session_mode"]')).to_be_disabled()
                 await form.locator('[type="submit"]').click()
-                await expect(page.locator("#airchinaExperimentError")).to_contain_text("结果页续查需要")
-                assert len(actions) == 4  # Invalid requery never submits.
+                await expect(page.locator("#airchinaExperimentError")).to_be_empty()
+                assert jobs[0]["request"]["interaction_mode"] == "stop"
+                assert jobs[0]["request"]["session_mode"] == "reuse"
+                assert len(actions) == 5
                 jobs[0]["request"]["entry_mode"] = "results"
                 jobs[0]["entry_evidence"] = {
                     "mode": "results", "stage": "stopped", "reason": "refresh_not_observed",
@@ -301,7 +321,7 @@ async def run(output):
                 await expect(page.locator("#airchinaExperimentContinue")).to_have_text("结束检查并关闭")
                 await expect(form.locator('[type="submit"]')).to_be_disabled()
                 await expect(page.locator("#airchinaSessionClose")).to_be_disabled()
-                assert len(actions) == 4
+                assert len(actions) == 5
                 jobs[0]["stage"] = "needs_verification"
                 await page.locator("#airchinaExperimentRefresh").click()
                 await expect(page.locator("#airchinaExperimentContinue")).to_have_text("我已手动处理，继续读取")
@@ -358,6 +378,25 @@ async def run(output):
                 await modal_page.locator("#notices").evaluate("el => { el.style.display = 'none'; }")
                 hidden = await modal_page.evaluate("(" + DOM_SCRIPT + ")()")
                 assert hidden["no_results_visible"] is False
+
+                await page.reload()
+                await page.locator("#workspaceTabSelect").select_option("experiments")
+                assert await page.locator("#workspaceTabSelect").input_value() == "experiments"
+                form = page.locator("#airchinaExperimentForm")
+                await expect(form.locator('[name="origin"]')).to_have_value("PEK")
+                await expect(form.locator('[name="destination"]')).to_have_value("SHA")
+                saved = json.loads(await page.evaluate("localStorage.getItem('airchina_experiment_form_v1')"))
+                assert set(saved) == {"origin", "destination", "departure_date", "cabin", "query_engine",
+                                      "entry_mode", "interaction_mode", "session_mode", "flight_no",
+                                      "auto_confirm_notices"}
+                assert "password" not in saved and "token" not in saved and "cookie" not in saved
+                await page.locator("#airchinaFormReset").click()
+                await expect(form.locator('[name="origin"]')).to_have_value("")
+                await expect(form.locator('[name="query_engine"]')).to_have_value("native")
+                await page.set_viewport_size({"width": 320, "height": 740})
+                await page.wait_for_timeout(200)
+                assert await page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
+                await page.screenshot(path=str(output / "airchina-mobile-320-offline.png"), full_page=True)
                 await browser.close()
     print("Air China offline UI smoke passed: submit, manual continue, unattended stop/access history, reference-only results, notice audit/XSS, mobile, offline recovery, diagnostics, empty-state collector, 3-modal production handler.")
 

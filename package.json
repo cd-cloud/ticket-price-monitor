@@ -1,0 +1,10 @@
+{
+  "private": true,
+  "scripts": {
+    "build:tail-ui": "node tools/build_tail_accordion.mjs"
+  },
+  "devDependencies": {
+    "bootstrap": "5.3.8",
+    "sass": "1.107.1"
+  }
+}

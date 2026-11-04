@@ -1,0 +1,28 @@
+$accordion-bg: #fffdfa;
+$accordion-color: #26372f;
+$accordion-border-color: #dfe4dc;
+$accordion-border-width: 1px;
+$accordion-border-radius: 12px;
+$accordion-inner-border-radius: 11px;
+$accordion-button-bg: #fffdfa;
+$accordion-button-color: #26372f;
+$accordion-button-active-bg: #e9f3ef;
+$accordion-button-active-color: #165d4e;
+$accordion-button-padding-y: 14px;
+$accordion-button-padding-x: 16px;
+$accordion-body-padding-y: 8px;
+$accordion-body-padding-x: 16px;
+$accordion-button-focus-box-shadow: 0 0 0 3px rgba(35, 141, 130, .2);
+$accordion-icon-color: #51625a;
+$accordion-icon-active-color: #165d4e;
+$accordion-transition: color .15s ease-in-out, background-color .15s ease-in-out, border-radius .15s ease;
+
+@import "bootstrap/scss/functions";
+@import "bootstrap/scss/variables";
+@import "bootstrap/scss/variables-dark";
+@import "bootstrap/scss/maps";
+@import "bootstrap/scss/mixins";
+
+.tail-ui-accordion {
+  @import "bootstrap/scss/accordion";
+}

@@ -41,6 +41,24 @@ node --test tests/test_tail_ui.cjs
 测试报告目录已加入 Git 忽略规则。无需安装浏览器即可运行以上测试。
 可选的 patchright、rebrowser-playwright 未安装时，对应后端测试会跳过。
 
+## 甩尾折叠组件样式构建
+
+只有修改 `tools/tail-accordion.scss` 或 Bootstrap 版本时需要重新构建：
+
+```sh
+npm ci
+npm run build:tail-ui
+```
+
+- `bootstrap@5.3.8` 与 `sass@1.107.1` 固定于 `package.json` 和 `package-lock.json`，
+  只用于构建；`node_modules/` 已加入 Git 忽略规则。
+- 产物 `static/vendor/tail-accordion.css` 随代码交付，运行时只读取本地静态文件，
+  不访问 CDN，不需要 npm 或 Bootstrap JS。MIT 文本位于 `static/vendor/LICENSE-bootstrap.txt`。
+- 连续两次构建应产生相同内容。既有 Python/Node 测试不需要安装这些构建依赖，
+  但修改源样式后应先重新构建，再运行浏览器冒烟。
+- `tests/browser_tail_smoke.py` 同时展开多个设置区，验证 1280、390、320px 的
+  通栏布局、字段分栏、箭头样式、无横向溢出，以及手机操作栏不遮挡输入项。
+
 ## 本轮范围与限制
 
 - CI 使用 Ubuntu 24.04、Python 3.12、Node.js 24；不是全操作系统兼容性认证。

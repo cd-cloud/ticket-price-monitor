@@ -80,7 +80,7 @@ async def run(output: Path):
                         dual["payload"] = submitted
                         existing = client.get("/api/tail-discovery/results?job_id=offline-demo").json()["results"]
                         extra = {**existing[0], "id":999, "provider":"feizhu", "price":650,
-                                 "quote_terms":{}, "baselines":{}, "savings_amount":None}
+                                 "quote_terms":{"price_basis":"per_person"}, "baselines":{}, "savings_amount":None}
                         dual["rows"] = [*existing, extra]
                         return await route.fulfill(status=200, json=dual_job())
                     return await route.fulfill(status=200, json={"job_id": "ui-action", "status": "finished"})
@@ -121,14 +121,37 @@ async def run(output: Path):
             assert not await page.locator("#tailTaskContextDetails").evaluate("el => el.open")
             assert await page.locator("button[data-tail-action='explore']").is_hidden()
             assert "2027-06-20" in await page.locator("#tailResultIdentity").inner_text()
-            assert "完整购票行程" in await page.locator(".tail-result-card").first.inner_text()
-            assert "可比参考价差" in await page.locator(".tail-price").first.inner_text()
+            assert "已停止，可继续" in await page.locator("#tailTaskContextSummary").inner_text()
+            assert "完整购票行程" in await page.locator(".tail-itinerary-option").first.inner_text()
+            assert "同口径参考" in await page.locator(".tail-decision-difference").first.inner_text()
+            assert "primary" in await page.locator("button[data-tail-action='resume']").get_attribute("class")
+            assert await page.locator("button[data-tail-action='resume']").inner_text() == "继续此任务"
+            assert "ghost" in await page.locator("#tailRunBtn").get_attribute("class")
+            assert await page.locator("#tailRunBtn").inner_text() == "使用新条件查询"
+            assert "上方待提交条件与此任务不同" in await page.locator("#tailDraftNotice").inner_text()
+            assert await page.locator("#tailDiscoveryPanel").get_attribute("data-has-results") == "true"
+            assert await page.locator("#tailDiscoveryPanel .panel-head .muted").is_hidden()
+            assert await page.locator("#tailJobSummary").get_attribute("data-active") == "false"
+            await page.evaluate("""() => {
+                tailSelectedJob = {...tailSelectedJob, status:'finished'};
+                renderTailJobProgress(tailSelectedJob);
+            }""")
+            assert "primary" in await page.locator("#tailViewResultsBtn").get_attribute("class")
+            assert await page.locator("#tailViewResultsBtn").inner_text() == "查看方案 ↓"
+            await page.evaluate("""() => {
+                tailSelectedJob = {...tailSelectedJob, status:'paused'};
+                renderTailJobProgress(tailSelectedJob);
+            }""")
+            assert "ghost" in await page.locator("#tailViewResultsBtn").get_attribute("class")
+            assert "primary" in await page.locator("button[data-tail-action='resume']").get_attribute("class")
             await page.locator("#tailViewResultsBtn").click()
             assert await page.locator("#tailResultsHeading").evaluate("el => el === document.activeElement")
             assert await page.locator(".tail-flight-group").count() == 1
             assert await page.locator("#tailProviderSelect").input_value() == "both"
             assert not await page.locator("#tailSearchSettings").get_attribute("open")
             assert not await page.locator("#tailFilters").get_attribute("open")
+            assert not await page.locator("#tailAdvancedBudgets").get_attribute("open")
+            assert await page.locator("#tailProviderQuickFilter").is_hidden()
             assert await page.locator("#tailCallBudgetInput").evaluate("el => !el.disabled")
             await page.screenshot(path=str(output / "tail-desktop.png"), full_page=True)
             await page.locator(".tail-alternatives > summary").first.click()
@@ -168,9 +191,11 @@ async def run(output: Path):
             assert "条件已修改" in await page.locator("#tailDraftNotice").inner_text()
             assert "2027-06-20" in await page.locator("#tailResultIdentity").inner_text()
             assert "2027-06-21" not in await page.locator("#tailResultIdentity").inner_text()
+            assert await page.locator("#tailRunBtn").inner_text() == "使用新条件查询"
             assert len(actions) == 0, "editing conditions must not start a query"
             await page.locator("#tailDateInput").fill("2027-06-20")
             assert await page.locator("#tailDraftNotice").is_hidden()
+            assert await page.locator("#tailRunBtn").inner_text() == "使用表单条件重新查询"
             await page.reload()
             await page.wait_for_function("document.querySelector('#tailRunBtn')?.disabled === false")
             await page.evaluate("setWorkspaceTab('tail', {persist:false})")
@@ -180,6 +205,8 @@ async def run(output: Path):
             await page.locator("#tailQueryEditor > summary").click()
             await page.locator("#tailProviderSelect").select_option("feizhu")
             await page.locator("#tailSearchSettings > summary").click()
+            await page.locator("#tailAdvancedBudgets > summary").click()
+            assert await page.locator("#tailCallBudgetInput").evaluate("el => el.closest('details').id") == "tailAdvancedBudgets"
             await page.locator("#tailSearchScopeInput").select_option("open")
             assert await page.locator("#tailOpenScopeNotice").is_visible()
             assert await page.locator("#tailBudgetCitiesInput").is_disabled()
@@ -187,6 +214,30 @@ async def run(output: Path):
             await page.locator("#tailFilters > summary").click()
             await page.locator("#tailFilterScopeInput").select_option("all_legs")
             await page.locator("#tailBaselineBudgetInput").fill("2")
+            await page.locator("#tailProviderSelect").select_option("both")
+            await page.evaluate("document.querySelector('.tail-candidate-box').open=false")
+            for width in (1280, 390, 320):
+                await page.set_viewport_size({"width":width,"height":900})
+                await page.evaluate("new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))")
+                assert await page.locator(".tail-options-grid").evaluate("el => getComputedStyle(el).gridTemplateColumns.split(' ').length === 1")
+                assert await page.locator("#tailFilters > summary").evaluate("el => getComputedStyle(el, '::after').backgroundImage !== 'none'")
+                assert await page.locator(".tail-settings-grid").first.evaluate("el => getComputedStyle(el).gridTemplateColumns.split(' ').length === (innerWidth >= 961 ? 3 : 1)")
+                if width <= 640:
+                    assert await page.locator(".tail-run-actions").evaluate("el => getComputedStyle(el).position === 'static'")
+                    assert await page.locator("#tailFilters > summary").evaluate("el => getComputedStyle(el).flexWrap === 'wrap'")
+                overflow = await page.evaluate("""() => ({
+                    overflow: document.documentElement.scrollWidth > innerWidth + 1,
+                    elements: [...document.querySelectorAll('#tailDiscoveryPanel *')].map(el => ({
+                        tag: el.tagName, cls: String(el.className), right: el.getBoundingClientRect().right,
+                        width: el.getBoundingClientRect().width,
+                    })).filter(el => el.right > innerWidth + 1).slice(0, 12),
+                })""")
+                assert not overflow["overflow"], f"expanded settings overflow {width}: {overflow['elements']}"
+                await page.screenshot(path=str(output / f"tail-settings-expanded-{width}.png"), full_page=True)
+            assert len(actions) == 0, "expanding settings must not start a query"
+            await page.set_viewport_size({"width":1280,"height":900})
+            await page.locator("#tailProviderSelect").select_option("feizhu")
+            await page.locator("#tailSearchScopeInput").select_option("open")
             await page.locator("#tailRunBtn").click()
             await page.wait_for_function("document.querySelector('#tailRunBtn').disabled === false")
             submitted = [json.loads(body) for path, body in actions if path == "/api/tail-discovery/run"]
@@ -225,6 +276,27 @@ async def run(output: Path):
             await page.wait_for_function("document.querySelector('#tailListError').hidden === false")
             assert await page.evaluate("activeTailJobId") == "live"
             assert await page.locator("#tailRunBtn").is_disabled()
+            await page.locator("[data-tail-view='history']").click()
+            await page.wait_for_function("document.querySelectorAll('.tail-result-card').length === 5")
+            assert "下方结果另有所属" in await page.locator("#tailJobSummary").inner_text()
+            live["quote_error"] = False
+            await page.locator("[data-tail-view='current']").click()
+            await page.wait_for_function("document.querySelectorAll('.tail-result-card').length === 4")
+            assert "下方结果另有所属" not in await page.locator("#tailJobSummary").inner_text()
+            await page.locator("#tailTaskContextDetails > summary").click()
+            await page.locator("#tailJobPicker").select_option("offline-demo")
+            await page.wait_for_function("tailSelectedJob?.job_id === 'offline-demo'")
+            await page.wait_for_function("document.querySelectorAll('.tail-result-card').length === 4")
+            job_context = await page.locator("#tailJobSummary").inner_text()
+            assert "后台执行：" in job_context and "下方结果另有所属" in job_context, job_context
+            assert "当前结果：北京 (BJS) → 上海 (SHA)" in await page.locator("#tailResultIdentity").inner_text()
+            live["quote_error"] = False
+            await page.evaluate("selectTailJob('live')")
+            assert await page.evaluate("tailSelectedJobId") == "live"
+            assert "下方结果另有所属" not in await page.locator("#tailJobSummary").inner_text()
+            await page.locator("#tailJobPicker").select_option("offline-demo")
+            await page.wait_for_function("tailSelectedJob?.job_id === 'offline-demo'")
+            await page.locator("#tailTaskContextDetails > summary").click()
             live.update(quote_error=False, status="finished")
             await page.evaluate("pollTailDiscoveryJob('live',true)")
             await page.wait_for_function("document.querySelector('#tailRunBtn').disabled === false && document.querySelector('#tailListError').hidden")
@@ -256,6 +328,32 @@ async def run(output: Path):
                 await preview.evaluate("new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))")
                 await preview.screenshot(path=str(output / f"tail-{width}.png"), full_page=True)
                 assert not await preview.evaluate("document.documentElement.scrollWidth > innerWidth + 1"), f"overflow {width}"
+                if width <= 640:
+                    navigation = preview.locator("#workspaceTabSelect")
+                    assert await navigation.is_visible()
+                    assert await navigation.locator("option").count() == 6
+                    assert await navigation.input_value() == "tail"
+                    assert "甩尾发现 · 4" in await navigation.locator("option:checked").inner_text()
+                    assert not await preview.locator("[data-workspace-tab='experiments']").is_visible()
+                    await navigation.select_option("experiments")
+                    assert await preview.locator("body").get_attribute("data-workspace") == "experiments"
+                    assert await preview.locator("#airchinaExperimentPanel").is_visible()
+                    assert await navigation.input_value() == "experiments"
+                    await navigation.select_option("tail")
+                    assert await preview.locator("#tailDiscoveryPanel").is_visible()
+                    assert await navigation.input_value() == "tail"
+                    assert await preview.locator(".tail-result-summary").first.evaluate("el => getComputedStyle(el).gridTemplateColumns.split(' ').length === 1")
+                    assert await preview.locator(".tail-result-decision").first.evaluate("el => getComputedStyle(el).gridTemplateColumns.split(' ').length === 1")
+                    assert await preview.locator(".tail-result-card").first.evaluate("""el => {
+                        const route = el.querySelector('.tail-result-main').getBoundingClientRect();
+                        const price = el.querySelector('.tail-price').getBoundingClientRect();
+                        return price.top >= route.bottom - 1;
+                    }""")
+                    await preview.locator("#tailQueryEditor > summary").click()
+                    assert await preview.locator(".tail-basic-grid").evaluate("el => getComputedStyle(el).gridTemplateColumns.split(' ').length === 1")
+                    assert await preview.locator("#tailRunBtn").inner_text() == "使用表单条件重新查询"
+                    assert "表单条件开始新查询" in await preview.locator("#tailRunHint").inner_text()
+                    await preview.locator("#tailQueryEditor > summary").click()
                 await preview.locator("#tailResultFilterSummary").click()
                 await preview.locator("#tailMaxPriceInput").fill("800")
                 assert "1 项" in await preview.locator("#tailResultFilterSummary").inner_text()
@@ -301,6 +399,7 @@ async def run(output: Path):
             await page.locator("#tailProviderSelect").select_option("both")
             await page.locator("#tailSearchSettings > summary").click()
             assert await page.locator("#tailFeizhuScopeInput").is_visible()
+            assert await page.locator("#tailFeizhuScopeInput").evaluate("el => el.closest('details').id") == "tailSearchSettings"
             assert await page.locator("#tailBudgetCitiesInput").is_enabled()
             assert await page.locator("#tailCallBudgetInput").is_enabled()
             await page.locator("#tailFeizhuScopeInput").select_option("hybrid")
@@ -314,17 +413,56 @@ async def run(output: Path):
             assert dual["payload"]["candidates"] == ["CAN"]
             assert dual["payload"]["search_scope"] == "candidates"
             assert await page.locator("#tailRunBtn").is_disabled()
-            assert await page.locator(".tail-flight-group").count() == 2
+            assert await page.locator("#tailRunBtn").inner_text() == "查询进行中"
+            assert await page.locator(".tail-flight-group").count() == 1, await page.locator(".tail-flight-group").evaluate_all("els => els.map(el => ({key:el.dataset.stableKey, text:el.innerText}))")
+            assert await page.locator(".tail-result-card").count() == 5
+            assert await page.locator(".tail-itinerary-option").count() == 4
+            shared = page.locator(".tail-itinerary-option.has-multiple-providers")
+            assert await shared.count() == 1
+            assert "厦门 (XMN)" in await shared.locator(".tail-itinerary-heading").inner_text()
+            assert "广州 (CAN)" not in await shared.locator(".tail-itinerary-heading").inner_text()
+            assert "同行程平台独立报价" in await shared.locator(".tail-itinerary-heading").inner_text()
+            assert await shared.locator(".tail-result-card").count() == 2
+            assert await shared.locator(".tail-result-card[data-provider='ctrip']").count() == 1
+            assert await shared.locator(".tail-result-card[data-provider='feizhu']").count() == 1
+            single = page.locator(".tail-itinerary-option:not(.has-multiple-providers)")
+            assert await single.count() == 3
+            await page.locator(".tail-alternatives > summary").click()
+            assert await single.first.locator(".tail-missing-provider").is_visible()
+            missing_text = await single.first.locator(".tail-missing-provider").inner_text()
+            assert missing_text == "飞猪暂无同行程报价", missing_text
+            await page.locator(".tail-alternatives > summary").click()
+            assert "按完整行程比较" in await page.locator(".tail-flight-best").inner_text()
+            quick = page.locator("#tailProviderQuickFilter")
+            assert await quick.is_visible()
+            assert "全部 5" in await quick.inner_text()
+            await quick.locator("[data-tail-provider='feizhu']").click()
+            assert await page.locator(".tail-result-card").count() == 1
+            assert await page.locator("#tailResultProviderFilter").input_value() == "feizhu"
+            assert await quick.locator("[data-tail-provider='feizhu']").get_attribute("aria-pressed") == "true"
+            await quick.locator("[data-tail-provider='']").click()
+            assert await page.locator(".tail-result-card").count() == 5
+            assert await page.locator("#tailResultProviderFilter").input_value() == ""
+            assert len(actions) == 5, "local provider filters must not query a platform"
+            assert await page.locator(".tail-provider-progress-card").evaluate_all("els => els.every(el => !el.open)")
+            await page.locator(".tail-provider-progress-card").first.locator("summary").click()
+            assert await page.locator(".tail-provider-progress-card").first.evaluate("el => el.open")
             dual["status"] = "partial"
             await page.evaluate("pollTailDiscoveryJob('dual-demo',true)")
             await page.wait_for_function("!document.querySelector('#tailRunBtn').disabled")
             assert "携程 + 飞猪" in await page.locator("#tailResultIdentity").inner_text()
             assert "部分平台未完成" in await page.locator("#tailJobSummary").inner_text()
             assert await page.get_by_role("button", name="继续未完成平台", exact=True).is_visible()
+            assert await page.locator("#tailJobSummary .tail-job-head button.primary").count() == 1
+            assert "primary" in await page.locator("button[data-tail-action='resume']").get_attribute("class")
+            assert "ghost" in await page.locator("button[data-tail-action='retry-failed']").get_attribute("class")
+            assert await page.locator(".tail-provider-progress-card").first.evaluate("el => el.open")
+            assert await page.locator(".tail-provider-progress-card").nth(1).locator("summary .tail-warning").is_visible()
+            await page.locator(".tail-provider-progress-card").first.locator("summary").click()
             await page.locator("#tailResultFilterSummary").click()
             await page.locator("#tailResultProviderFilter").select_option("feizhu")
             assert await page.locator(".tail-result-card").count() == 1
-            assert "暂无可比价差" in await page.locator(".tail-result-card").inner_text()
+            assert "无法判断能省多少" in await page.locator(".tail-result-card").inner_text()
             await page.locator("#tailClearFiltersBtn").click()
             assert await page.locator(".tail-result-card").count() == 5
             await page.locator("#tailResultFilterSummary").click()
@@ -335,6 +473,15 @@ async def run(output: Path):
                 await page.evaluate("new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))")
                 assert not await page.evaluate("document.documentElement.scrollWidth > innerWidth + 1"), f"dual overflow {width}"
                 await page.screenshot(path=str(output / f"tail-dual-{width}.png"), full_page=True)
+            await page.evaluate("""() => {
+                tailResultView = 'current'; tailSelectedJobId = ''; tailSelectedJob = null;
+                tailDiscoveryResults = []; tailResultsLoaded = true;
+                renderTailResults([]); updateTailBusyControls();
+            }""")
+            assert await page.locator("#tailSummary").inner_text() == "尚未开始查询"
+            assert await page.locator(".tail-empty-state strong").inner_text() == "先选择我要乘坐的行程"
+            assert await page.locator("#tailRunBtn").inner_text() == "开始查询"
+            assert "primary" in await page.locator("#tailRunBtn").get_attribute("class")
             assert not errors, errors
             await browser.close()
         client.close()
