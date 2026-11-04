@@ -2588,19 +2588,32 @@ function renderTailBatchProgress(job, container) {
     data-job-id="${id}" data-focus-key="${id}-${value}" ${tailBusy() && value !== "continue" ? "disabled" : ""}>${label}</button>`;
   let actions = "", primaryAction = "";
   if (job.status === "needs_verification") primaryAction = action("continue", "已完成携程人工验证，继续", true);
+  const failedProviders = children.filter(child => child.status === "failed");
+  const hasPending = job.status !== "finished" && (["paused", "interrupted", "cancelled"].includes(job.status)
+    || children.some(child => ["paused", "interrupted", "cancelled"].includes(child.status)
+      || (child.progress?.queue?.items || []).some(item => ["pending", "cancelled_before_query"].includes(item.status))
+    )
+  );
   if (!active) {
-    if (job.status !== "finished") primaryAction = action("resume", "继续未完成平台", true);
-    if (children.some(c => c.status === "failed")) {
-      if (primaryAction) actions += action("retry-failed", "重试失败平台");
-      else primaryAction = action("retry-failed", "重试失败平台", true);
+    if (failedProviders.length) {
+      const label = failedProviders.length === 1 ? `重试${escapeHtml(providerLabel(failedProviders[0].provider))}` : "重试失败平台";
+      primaryAction = action("retry-failed", label, true);
+    }
+    if (hasPending) {
+      if (primaryAction) actions += action("resume", "继续未查项");
+      else primaryAction = action("resume", "继续未查项", true);
     }
   }
+  const recoveryNote = failedProviders.length && hasPending
+    ? "重试只运行失败平台；继续只处理未查项。均沿用原条件并保留已存结果。"
+    : failedProviders.length ? "只重试失败平台，沿用原任务条件并保留已存结果。"
+      : "沿用原任务条件，继续未查项；已存结果保留。";
   container.hidden = false;
   replaceTailMarkup(container, `
     <div class="tail-job-head"><strong>${active ? "正在执行任务" : "双平台任务"} · ${escapeHtml(tailJobStatusLabel(job.status))}</strong>
       <span class="tail-job-counter" role="status">已保存 ${escapeHtml(String(progress.saved ?? job.result?.saved ?? 0))} 条报价</span>
       ${primaryAction ? `<div class="tail-job-actions">${primaryAction}</div>` : ""}</div>
-    ${primaryAction && job.status !== "needs_verification" ? '<p class="tail-task-action-note">沿用原任务条件，按平台恢复未完成项；已完成结果保留。</p>' : ""}
+    ${primaryAction && job.status !== "needs_verification" ? `<p class="tail-task-action-note">${recoveryNote}</p>` : ""}
     <p class="tail-job-message">${escapeHtml(job.error || progress.message || "正在创建携程与飞猪子任务…")}</p>
     ${tailActiveContext(job)}
     <div class="tail-provider-progress">${children.map(child => {
@@ -2765,6 +2778,7 @@ async function fetchTailJobs() {
 function showTailError(message) {
   const el = document.getElementById("tailActionError");
   if (el) { el.textContent = message; el.hidden = !message; }
+  if (message) notifyComplete(message, {kind: "warning", durationMs: 5200});
 }
 
 function startTailJobPolling(job, immediate = true) {
@@ -2910,10 +2924,18 @@ function renderTailResults(results) {
       ["信息待核实 · 未过期", visible.filter(item => tailQuoteFresh(item) && !tailQuoteVerified(item)), "review"],
       ["已过期 / 时间未知", visible.filter(item => !tailQuoteFresh(item)), "stale"],
     ];
-    replaceTailMarkup(container, groups.filter(([, rows]) => rows.length).map(([label, rows, state]) =>
-      `<section class="tail-state-section"><h3>${label} <span>${rows.length}</span></h3>
-       ${groupTailResultsByRoute(rows).map(group => renderTailRouteGroup({...group, state})).join("")}</section>`
-    ).join(""));
+    replaceTailMarkup(container, groups.filter(([, rows]) => rows.length).map(([label, rows, state]) => {
+      const content = groupTailResultsByRoute(rows).map(group => renderTailRouteGroup({...group, state})).join("");
+      if (state !== "stale") return `<section class="tail-state-section"><h3>${label} <span>${rows.length}</span></h3>${content}</section>`;
+      const open = document.getElementById("tailTrustInput")?.value === "stale" ? " open" : "";
+      return `<details class="tail-state-section tail-stale-group" data-disclosure="stale-results"${open}>
+        <summary data-focus-key="stale-results">${label} <span>${rows.length}</span><small>点击展开</small></summary>${content}</details>`;
+    }).join(""));
+    if (document.getElementById("tailTrustInput")?.value === "stale") {
+      const staleGroup = container.querySelector(".tail-stale-group");
+      if (staleGroup) staleGroup.open = true;
+      tailDisclosureState.set("stale-results", true);
+    }
   }
   if (typeof updateTailBusyControls === "function") updateTailBusyControls();
   updateWorkspaceTabs();
@@ -3123,7 +3145,7 @@ function renderTailResultCard(item, index, showRoute = true) {
         <small>${item.observed_at ? `采集 ${escapeHtml(formatQueryTime(item.observed_at))}` : "采集时间未知"}</small>
       </div>
       <div class="tail-review-actions">
-        ${item.id ? `<button type="button" class="ghost compact" data-tail-action="recheck" data-result-id="${key}" data-focus-key="recheck-${key}">复核报价</button>` : ""}
+        ${item.id ? `<button type="button" class="ghost compact" data-tail-action="recheck" data-result-id="${key}" data-focus-key="recheck-${key}">重新查此行程</button>` : ""}
         ${reviewUrl ? `<a class="ghost compact tail-review-link" href="${escapeHtml(reviewUrl)}" target="_blank" rel="noopener noreferrer">去${escapeHtml(providerLabel(item.provider))}核实</a>` : ""}
       </div>
     </div>

@@ -1742,7 +1742,7 @@ pre {
 #tailDiscoveryPanel .tail-job-summary > details { border-top: 1px solid var(--border); font-size: 13px; }
 #tailDiscoveryPanel .tail-priority-details { padding: 0 8px; }
 #tailDiscoveryPanel .tail-results-workspace { border-top: 1px solid var(--border); padding-top: 14px; }
-#tailResultsHeading { scroll-margin-top: 90px; }
+#tailResultsHeading { scroll-margin-top: 190px; }
 #tailDiscoveryPanel .tail-results-heading { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
 #tailDiscoveryPanel .tail-results-heading h3 { font-size: 18px; }
 #tailRefreshBtn { margin-left: auto; }
@@ -1758,7 +1758,11 @@ pre {
 #tailTaskConditions { font-size: 13px; line-height: 1.7; }
 #tailJobPickerLabel { max-width: 440px; flex: 1 1 250px; }
 #tailResultScopeNote { font-size: 12px; flex: 1 1 200px; line-height: 1.6; margin: 0 0 5px; }
-#tailDiscoveryPanel .tail-result-tools { display: grid; grid-template-columns: minmax(0, 220px) minmax(0, 1fr); align-items: end; gap: 6px 16px; }
+#tailDiscoveryPanel .tail-result-tools { position: sticky; top: 82px; z-index: 10; box-sizing: border-box; display: grid; grid-template-columns: minmax(0, 220px) minmax(0, 1fr); align-items: end; gap: 6px 16px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; background: #fffaf3; box-shadow: 0 8px 18px rgba(31, 42, 38, .06); }
+#tailDiscoveryPanel .tail-stale-group > summary { display: flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 600; }
+#tailDiscoveryPanel .tail-stale-group > summary span { color: var(--muted); font-weight: 400; }
+#tailDiscoveryPanel .tail-stale-group > summary small { margin-left: 4px; color: var(--muted); font-size: 12px; font-weight: 400; }
+#tailDiscoveryPanel .tail-flight-group { scroll-margin-top: 190px; }
 #tailResultFilters { min-width: 0; font-size: 13px; }
 #tailResultFilters[open] { grid-column: 1 / -1; background: #f4f4ef; border-radius: 10px; padding: 0 12px; }
 #tailResultFilters > p { line-height: 1.6; }
@@ -1916,6 +1920,9 @@ body[data-workspace="tail"] .hero .actions { display: none; }
 @media (max-width: 640px) {
   #tailDiscoveryPanel .tail-candidate-head { grid-template-columns: minmax(0, 1fr); }
   #tailDiscoveryPanel .tail-settings > summary .muted { flex: 1 1 140px; min-width: 0; text-align: right; overflow-wrap: anywhere; }
+}
+@media (max-width: 640px) {
+  #tailDiscoveryPanel .tail-result-tools { top: 8px; padding: 8px 10px; }
 }
 #airchinaExperimentStatus { white-space: pre-line; margin: 16px 0; }
 #airchinaExperimentError { color: #a32b24; }

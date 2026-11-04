@@ -51,7 +51,7 @@ async def run(output: Path):
             conn.execute("INSERT INTO tail_candidate_checkpoints (job_id,destination,fingerprint,status,attempt,result_ids,updated_at) VALUES (?,?,?,?,?,?,?)",
                          ("offline-demo", "CAN", "test", "matched", "{}", json.dumps(ids), repo.now_iso()))
         actions = []
-        live = {"status":"running", "offline":False, "quote_error":False}
+        live = {"status":"running", "offline":False, "quote_error":False, "recheck_error":False}
         dual = {"status":"running", "payload":None, "rows":None}
         def dual_job():
             return {"job_id":"dual-demo", "status":dual["status"], "payload":dual["payload"],
@@ -76,6 +76,8 @@ async def run(output: Path):
                 if route.request.method == "POST":
                     actions.append((url.path, route.request.post_data))
                     submitted = json.loads(route.request.post_data or "{}")
+                    if live["recheck_error"] and url.path.endswith("/recheck"):
+                        return await route.fulfill(status=503, json={"detail":"模拟复核失败，请稍后重试"})
                     if url.path == "/api/tail-discovery/run" and submitted.get("provider") == "both":
                         dual["payload"] = submitted
                         existing = client.get("/api/tail-discovery/results?job_id=offline-demo").json()["results"]
@@ -163,8 +165,13 @@ async def run(output: Path):
             await page.wait_for_function("document.querySelectorAll('.tail-result-card').length === 5")
             assert await page.locator(".tail-flight-group").count() == 2
             assert "跨任务" in await page.locator("#tailResultIdentity").inner_text()
+            assert not await page.locator(".tail-stale-group").evaluate("el => el.open")
             await page.locator("#tailResultFilters > summary").click()
             await page.locator("#tailTrustInput").select_option("stale")
+            assert not errors, errors
+            assert await page.locator(".tail-stale-group").evaluate("el => el.open")
+            assert await page.locator(".tail-stale-group .tail-result-card").count() == 1
+            assert await page.locator(".tail-stale-group .tail-result-card").first.is_visible()
             assert await page.locator(".tail-result-card").count() == 1
             await page.locator("#tailClearFiltersBtn").click()
             await page.locator("[data-tail-view='current']").click()
@@ -385,10 +392,21 @@ async def run(output: Path):
             assert await page.locator("#tailFilters").evaluate("el => el.open")
             assert len(actions) == 2, "invalid input must not dispatch a query"
             await page.evaluate("document.querySelector('#tailPassengersInput').value='1'")
+            assert await page.locator(".tail-result-card").count() > 0, await page.locator("#tailResults").inner_text()
             await page.locator("button[data-tail-action='recheck']").first.click()
             await page.wait_for_function("document.querySelector('#tailRunBtn').disabled === false")
             assert any(path.endswith("/recheck") for path, _ in actions)
             await page.locator("#tailTaskContextDetails > summary").click()
+            await page.locator("#tailJobPicker").select_option("offline-demo")
+            await page.wait_for_function("document.querySelectorAll('.tail-result-card').length === 4")
+            live["recheck_error"] = True
+            await page.locator("button[data-tail-action='recheck']").first.click()
+            await page.wait_for_function("document.querySelector('#completionToast')?.textContent.includes('模拟复核失败')")
+            assert await page.locator("#completionToast").is_visible()
+            assert "模拟复核失败" in await page.locator("#tailActionError").inner_text()
+            assert await page.locator("#tailRunBtn").is_enabled()
+            live["recheck_error"] = False
+            await page.evaluate("document.querySelector('#tailTaskContextDetails').open = true")
             await page.locator("#tailJobPicker").select_option("offline-demo")
             await page.wait_for_function("document.querySelectorAll('.tail-result-card').length === 4")
             await page.locator("button[data-tail-action='resume']").click()
@@ -407,7 +425,7 @@ async def run(output: Path):
             await page.locator("#tailFeizhuScopeInput").select_option("open")
             await page.locator("#tailRunBtn").click()
             await page.wait_for_function("document.querySelectorAll('.tail-result-card').length === 5 && document.querySelectorAll('.tail-provider-progress-card').length === 2")
-            assert len(actions) == 5, "dual search must use exactly one POST"
+            assert len(actions) == 6, "dual search must use exactly one POST"
             assert dual["payload"]["provider"] == "both"
             assert dual["payload"]["feizhu_search_scope"] == "open"
             assert dual["payload"]["candidates"] == ["CAN"]
@@ -443,7 +461,7 @@ async def run(output: Path):
             await quick.locator("[data-tail-provider='']").click()
             assert await page.locator(".tail-result-card").count() == 5
             assert await page.locator("#tailResultProviderFilter").input_value() == ""
-            assert len(actions) == 5, "local provider filters must not query a platform"
+            assert len(actions) == 6, "local provider filters must not query a platform"
             assert await page.locator(".tail-provider-progress-card").evaluate_all("els => els.every(el => !el.open)")
             await page.locator(".tail-provider-progress-card").first.locator("summary").click()
             assert await page.locator(".tail-provider-progress-card").first.evaluate("el => el.open")
@@ -452,10 +470,10 @@ async def run(output: Path):
             await page.wait_for_function("!document.querySelector('#tailRunBtn').disabled")
             assert "携程 + 飞猪" in await page.locator("#tailResultIdentity").inner_text()
             assert "部分平台未完成" in await page.locator("#tailJobSummary").inner_text()
-            assert await page.get_by_role("button", name="继续未完成平台", exact=True).is_visible()
+            assert await page.get_by_role("button", name="重试飞猪", exact=True).is_visible()
             assert await page.locator("#tailJobSummary .tail-job-head button.primary").count() == 1
-            assert "primary" in await page.locator("button[data-tail-action='resume']").get_attribute("class")
-            assert "ghost" in await page.locator("button[data-tail-action='retry-failed']").get_attribute("class")
+            assert "primary" in await page.locator("button[data-tail-action='retry-failed']").get_attribute("class")
+            assert await page.locator("button[data-tail-action='resume']").count() == 0
             assert await page.locator(".tail-provider-progress-card").first.evaluate("el => el.open")
             assert await page.locator(".tail-provider-progress-card").nth(1).locator("summary .tail-warning").is_visible()
             await page.locator(".tail-provider-progress-card").first.locator("summary").click()
@@ -471,6 +489,15 @@ async def run(output: Path):
                 await page.set_viewport_size({"width":width,"height":900})
                 await page.evaluate("document.activeElement?.blur(); window.scrollTo(0,0)")
                 await page.evaluate("new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))")
+                await page.locator(".tail-result-tools").evaluate("el => el.scrollIntoView()")
+                await page.evaluate("window.scrollBy(0, 500)")
+                await page.evaluate("new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))")
+                toolbar_top = await page.locator(".tail-result-tools").evaluate("el => el.getBoundingClientRect().top")
+                expected_top = 8 if width <= 640 else 82
+                assert abs(toolbar_top - expected_top) < 4, f"toolbar top {width}: {toolbar_top}"
+                if width > 640:
+                    nav_bottom = await page.locator("#workspaceTabs").evaluate("el => el.getBoundingClientRect().bottom")
+                    assert toolbar_top >= nav_bottom - 1, f"toolbar overlaps navigation: {toolbar_top} < {nav_bottom}"
                 assert not await page.evaluate("document.documentElement.scrollWidth > innerWidth + 1"), f"dual overflow {width}"
                 await page.screenshot(path=str(output / f"tail-dual-{width}.png"), full_page=True)
             await page.evaluate("""() => {

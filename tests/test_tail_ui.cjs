@@ -431,7 +431,7 @@ test('provider filter does not deduplicate or price-compare different platforms 
 test('batch progress shows sibling success and failure, escapes errors and offers only valid recovery',()=>{
   const {ctx,elements}=ui();
   elements.tailJobSummary={innerHTML:''};
-  Object.assign(ctx,{tailBusy:()=>false,tailJobStatusLabel:x=>x,renderTailJobCandidate:()=>'',ACTIVE_TAIL_JOB_STATUSES:['running','queued','needs_verification']});
+  Object.assign(ctx,{tailBusy:()=>false,tailJobStatusLabel:x=>x,renderTailJobCandidate:()=>'',providerLabel:x=>({ctrip:'携程',feizhu:'飞猪'}[x]||x),ACTIVE_TAIL_JOB_STATUSES:['running','queued','needs_verification']});
   loadFunctions(ctx,['renderTailJobProgress','renderTailBatchProgress']);
   const job={job_id:'batch',status:'partial',payload:{provider:'both'},progress:{saved:2,children:[
     {job_id:'c',provider:'ctrip',status:'finished',payload:{provider:'ctrip'},saved:2},
@@ -439,15 +439,15 @@ test('batch progress shows sibling success and failure, escapes errors and offer
   ]}};
   ctx.renderTailJobProgress(job);
   const html=elements.tailJobSummary.innerHTML;
-  assert.match(html,/ctrip · finished/);assert.match(html,/feizhu · failed/);
-  assert.match(html,/继续未完成平台/);assert.match(html,/重试失败平台/);
-  assert.match(html,/class="primary compact" data-tail-action="resume"/);
-  assert.match(html,/class="ghost compact" data-tail-action="retry-failed"/);
+  assert.match(html,/携程 · finished/);assert.match(html,/飞猪 · failed/);
+  assert.match(html,/重试飞猪/);
+  assert.match(html,/class="primary compact" data-tail-action="retry-failed"/);
+  assert.doesNotMatch(html,/data-tail-action="resume"/);
   assert.doesNotMatch(html,/<img src=x>/);
   assert.equal((html.match(/class="tail-provider-progress-card"/g)||[]).length,2);
   assert.equal((html.match(/data-disclosure="child-f"/g)||[]).length,1);
   assert.doesNotMatch(html,/class="tail-provider-progress-card"[^>]*open/);
-  assert.match(html,/<summary><strong>feizhu · failed<\/strong>[\s\S]*?class="tail-warning"/);
+  assert.match(html,/<summary><strong>飞猪 · failed<\/strong>[\s\S]*?class="tail-warning"/);
   job.status='running';ctx.renderTailJobProgress(job);
   assert.doesNotMatch(elements.tailJobSummary.innerHTML,/data-tail-action="resume"|data-tail-action="retry-failed"/);
   job.payload={...job.payload,origin:'BJS',transfer:'SHA',departure_date:'2027-06-20'};
@@ -455,10 +455,36 @@ test('batch progress shows sibling success and failure, escapes errors and offer
   ctx.tailSelectedJobId='batch';ctx.tailResultView='current';
   assert.doesNotMatch(ctx.tailActiveContext(job),/下方结果另有所属/);
   job.status='finished';assert.equal(ctx.tailActiveContext(job),'');
-  job.status='needs_verification';
   job.status='needs_verification';ctx.renderTailJobProgress(job);
   assert.match(elements.tailJobSummary.innerHTML,/class="primary compact" data-tail-action="continue"/);
   assert.match(elements.tailJobSummary.innerHTML,/飞猪无需等待/);
+});
+
+test('dual recovery separates failed providers from pending work and escapes provider names',()=>{
+  const {ctx,elements}=ui();elements.tailJobSummary={innerHTML:''};
+  Object.assign(ctx,{tailBusy:()=>false,tailJobStatusLabel:x=>x,renderTailJobCandidate:()=>'',providerLabel:x=>({ctrip:'携程',feizhu:'飞猪'}[x]||x),ACTIVE_TAIL_JOB_STATUSES:['running','queued','needs_verification']});
+  loadFunctions(ctx,['renderTailBatchProgress']);
+  const job={job_id:'batch',status:'paused',payload:{provider:'both'},progress:{saved:2,children:[
+    {job_id:'c',provider:'ctrip',status:'failed',saved:1,payload:{provider:'ctrip'}},
+    {job_id:'f',provider:'feizhu',status:'paused',saved:1,payload:{provider:'feizhu'}},
+  ]}};
+  ctx.renderTailBatchProgress(job,elements.tailJobSummary);
+  let html=elements.tailJobSummary.innerHTML;
+  assert.match(html,/class="primary compact" data-tail-action="retry-failed"/);
+  assert.match(html,/class="ghost compact" data-tail-action="resume"/);
+  assert.match(html,/重试携程/);assert.match(html,/继续未查项/);
+  assert.match(html,/重试只运行失败平台；继续只处理未查项/);
+  job.progress.children[0].provider='ctrip<img src=x>';
+  ctx.renderTailBatchProgress(job,elements.tailJobSummary);
+  assert.doesNotMatch(elements.tailJobSummary.innerHTML,/<img src=x>/);
+  job.progress.children=[{job_id:'f',provider:'feizhu',status:'paused',saved:1,payload:{provider:'feizhu'},
+    progress:{queue:{items:[{destination:'SZX',status:'pending'}]}}}];
+  ctx.renderTailBatchProgress(job,elements.tailJobSummary);
+  html=elements.tailJobSummary.innerHTML;
+  assert.match(html,/class="primary compact" data-tail-action="resume"/);
+  assert.doesNotMatch(html,/data-tail-action="retry-failed"/);
+  job.status='finished';ctx.renderTailBatchProgress(job,elements.tailJobSummary);
+  assert.doesNotMatch(elements.tailJobSummary.innerHTML,/data-tail-action="resume"/);
 });
 
 test('new search is secondary to an existing task and clearly distinguishes edited conditions',()=>{
@@ -661,7 +687,7 @@ test('404 is distinguished from temporary disconnect and releases vanished job',
 
 test('completed jobs do not offer meaningless resume and failed jobs get targeted retry',()=>{
   const {ctx,elements}=ui();elements.tailJobSummary={innerHTML:''};
-  Object.assign(ctx,{tailBusy:()=>false,tailJobStatusLabel:x=>x,renderTailJobCandidate:()=>'',ACTIVE_TAIL_JOB_STATUSES:['running','queued']});
+  Object.assign(ctx,{tailBusy:()=>false,tailJobStatusLabel:x=>x,renderTailJobCandidate:()=>'',providerLabel:x=>({ctrip:'携程',feizhu:'飞猪'}[x]||x),ACTIVE_TAIL_JOB_STATUSES:['running','queued']});
   loadFunctions(ctx,['renderTailJobProgress']);
   ctx.renderTailJobProgress({job_id:'done',status:'finished',progress:{saved:3}});
   assert.doesNotMatch(elements.tailJobSummary.innerHTML,/data-tail-action="resume"/);
@@ -740,4 +766,21 @@ test('refresh does not silently clear a date filter absent from the latest batch
   ctx.updateTailDateFilter([quote()]);
   assert.equal(elements.tailDateFilter.value,'2027-06-21');
   assert.match(elements.tailDateFilter.innerHTML,/2027-06-21/);
+});
+
+test('tail errors preserve the page message and show a non-navigating warning toast',()=>{
+  const {ctx,elements}=ui();elements.tailActionError={hidden:true};
+  const notices=[];
+  Object.assign(ctx,{notifyComplete:(message,options)=>notices.push({message,options})});
+  loadFunctions(ctx,['showTailError']);
+  ctx.showTailError('模拟复核失败');
+  assert.equal(elements.tailActionError.textContent,'模拟复核失败');
+  assert.equal(elements.tailActionError.hidden,false);
+  assert.equal(notices.length,1);
+  assert.equal(notices[0].message,'模拟复核失败');
+  assert.equal(notices[0].options.kind,'warning');
+  assert.equal(notices[0].options.durationMs,5200);
+  ctx.showTailError('');
+  assert.equal(elements.tailActionError.hidden,true);
+  assert.equal(notices.length,1);
 });
