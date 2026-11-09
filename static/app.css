@@ -86,6 +86,11 @@ button,
   text-decoration: none;
 }
 
+:is(button, a, input, select, summary):focus-visible {
+  outline: 3px solid #238d82;
+  outline-offset: 3px;
+}
+
 .compact {
   padding: 8px 12px;
   font-size: 12px;
@@ -1083,9 +1088,8 @@ textarea {
 }
 
 .route-card {
-  display: flex;
-  justify-content: space-between;
-  gap: 16px;
+  display: grid;
+  gap: 12px;
   padding: 16px 18px;
   border-radius: 18px;
   background: rgba(255, 255, 255, 0.76);
@@ -1102,6 +1106,17 @@ textarea {
   display: flex;
   gap: 8px;
   align-items: flex-start;
+  flex-wrap: wrap;
+  flex-shrink: 0;
+}
+
+.card-actions button {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.route-card > div:first-child {
+  min-width: 0;
 }
 
 .filters {
@@ -1628,10 +1643,6 @@ pre {
 
   .tail-candidate-head {
     grid-template-columns: 1fr;
-  }
-
-  .route-card {
-    flex-direction: column;
   }
 
   .segment-builder-head,

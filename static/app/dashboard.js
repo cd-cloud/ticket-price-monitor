@@ -176,6 +176,12 @@ function formatBestFlight(task) {
   `;
 }
 
+function hideTaskDetailDrawer(drawer) {
+  const returnFocus = drawer.returnFocus;
+  drawer.hidden = true;
+  if (returnFocus?.isConnected) returnFocus.focus({ preventScroll: true });
+}
+
 function ensureTaskDetailDrawer() {
   if (document.getElementById("taskDetailDrawer")) return;
   const drawer = document.createElement("aside");
@@ -184,7 +190,7 @@ function ensureTaskDetailDrawer() {
   drawer.hidden = true;
   drawer.innerHTML = `
     <div class="drawer-backdrop" data-drawer-close></div>
-    <section class="drawer-panel" aria-label="航班详情">
+    <section class="drawer-panel" role="dialog" aria-modal="true" aria-labelledby="drawerTitle">
       <div class="drawer-head">
         <div>
           <p class="eyebrow">Flight Detail</p>
@@ -196,8 +202,30 @@ function ensureTaskDetailDrawer() {
     </section>
   `;
   drawer.addEventListener("click", (event) => {
-    if (event.target.closest("[data-drawer-close]")) {
-      drawer.hidden = true;
+    if (event.target.closest("[data-drawer-close]")) hideTaskDetailDrawer(drawer);
+  });
+  drawer.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      hideTaskDetailDrawer(drawer);
+      return;
+    }
+    if (event.key !== "Tab") return;
+    const controls = Array.from(drawer.querySelectorAll(
+      "button:not([disabled]), a[href], summary, input:not([disabled]), select:not([disabled])",
+    )).filter((element) => element.getClientRects().length > 0);
+    if (!controls.length) {
+      event.preventDefault();
+      return;
+    }
+    const first = controls[0];
+    const last = controls[controls.length - 1];
+    if (event.shiftKey && (document.activeElement === first || !drawer.contains(document.activeElement))) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
     }
   });
   document.body.appendChild(drawer);
@@ -216,6 +244,7 @@ function showTaskDetail(routeKey, provider) {
   const airlines = task.preferred_airlines?.length ? task.preferred_airlines.join(", ") : "不限";
   const details = formatFlightDetails(task) || '<p class="muted">暂无可展示的航班分段详情。</p>';
 
+  if (drawer.hidden) drawer.returnFocus = document.activeElement;
   document.getElementById("drawerTitle").textContent = cleanDisplayText(title);
   document.getElementById("drawerBody").innerHTML = `
     <div class="detail-kpis">
@@ -231,6 +260,7 @@ function showTaskDetail(routeKey, provider) {
   `;
   drawer.hidden = false;
   cleanVisibleText(drawer);
+  drawer.querySelector("button[data-drawer-close]").focus({ preventScroll: true });
 }
 
 function routeLabel(route) {
@@ -500,6 +530,7 @@ function renderTaskViewTabs(tasks) {
     const view = button.dataset.taskView;
     const label = button.textContent.replace(/\s+\d+$/, "");
     button.classList.toggle("active", view === dashboardState.activeTaskView);
+    button.setAttribute("aria-pressed", String(view === dashboardState.activeTaskView));
     button.textContent = `${label} ${counts[view] || 0}`;
   });
 }
