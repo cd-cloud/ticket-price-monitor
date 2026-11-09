@@ -15,6 +15,13 @@ query results, reports, and schedule state on the user's machine.
   at-least-10-minute route spacing.
 - `browser_automation.py`: browser automation coordinator. It owns backend selection,
   provider dispatch, session reuse, response capture, and final raw payload assembly.
+- `browser_page_operations.py`: shared selector, DOM, throttling, and page-action helpers.
+- `provider_runtime.py`: provider-neutral runtime contract for shared browser operations.
+- `providers/ctrip_runtime.py`: Ctrip-specific runtime extensions used only by Ctrip handlers.
+- `providers/ctrip_browser_operations.py`: Ctrip ordinary-query forms, dates, and itinerary helpers.
+- `providers/ctrip_tail_operations.py`: Ctrip tail browser, verification, trace, and diagnostic helpers.
+  `BrowserAutomation` explicitly composes these adapters. `CtripTailDiscoveryRunner` receives the
+  core coordinator and Ctrip adapters separately, without mixin inheritance or dynamic forwarding.
 - `backends/base.py`: `BrowserBackend` ABC. Implementations return Playwright-compatible
   `BrowserContext` and `Page` objects.
 - `backends/chrome.py`: default backend. It launches the user's installed Chrome with a
@@ -44,7 +51,16 @@ query results, reports, and schedule state on the user's machine.
 - `config_manager.py`: configuration loading, encrypted credentials, route models, and defaults.
 - `data_storage.py`: SQLite schema and repository operations.
 - `analyzer.py`: CSV export and markdown reports.
-- `static/app.js`, `static/app.css`, `templates/index.html`: local dashboard UI.
+- `static/app/api.js`: shared fetch wrapper, request timeouts, and response error parsing.
+- `static/app/store.js`: explicit dashboard, workspace, and browser-profile state, plus
+  `tailState.form`, `job`, `results`, and `connection` groups. `window.tailCandidateNames`
+  remains a compatibility mirror for `airport_ui.js`, owned by `tailState.form`.
+- `static/app/common.js`: formatting, escaping, toast, and shared text helpers.
+- `static/app/route_form.js` and `static/app/dashboard.js`: route editing and ordinary-query dashboard.
+- `static/app/browser_profiles.js`: browser-profile controls and rendering.
+- `static/app/tail_form.js`, `tail_jobs.js`, and `tail_results.js`: tail form, job lifecycle, and quote views.
+- `static/app/workspace.js`: workspace navigation; `static/app.js` only binds events and starts the UI.
+- `static/app.css`, `templates/index.html`: local dashboard styling and script-load order.
 
 ## Tail-discovery execution
 
@@ -118,14 +134,12 @@ from the parent workspace.
 
 ## Known Cleanup Priorities
 
-1. Continue slimming `browser_automation.py` by moving provider-specific logic into provider modules.
-2. Add provider modules for any provider that still relies on generic fallback behavior.
-3. Keep Web UI state rendering small and explicit; prefer small helper functions over inline script.
-4. Continue slimming `app_service.py` by moving route CRUD helpers or legacy CLI paths into smaller modules.
-5. Remove or quarantine legacy execution paths after confirming they are no longer needed:
+1. Add provider modules for any provider that still relies on generic fallback behavior.
+2. Continue slimming `app_service.py` by moving route CRUD helpers or legacy CLI paths into smaller modules.
+3. Remove or quarantine legacy execution paths after confirming they are no longer needed:
    `run_once_via_cli`, `start_run_cycle_via_cli`, `run_cycle_worker.cmd`, and possibly `scheduler.py`.
-6. Clean historical encoding artifacts in old config selectors and any remaining old template text.
-7. Archive or delete old debug artifacts in `runtime/`, especially `multi_city_probe_*` and large
+4. Clean historical encoding artifacts in old config selectors and any remaining old template text.
+5. Archive or delete old debug artifacts in `runtime/`, especially `multi_city_probe_*` and large
    live-result JSON files.
 
 ## Refactor Rule

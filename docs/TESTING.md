@@ -34,8 +34,8 @@ Python 测试报告只上传 `test-results/python.xml`，保留 7 天；
 ```sh
 python -m pip install -r requirements-dev.txt
 python -m pytest tests -q -ra --allow-hosts=127.0.0.1,::1 --allow-unix-socket --junitxml=test-results/python.xml
-node --check static/app.js
-node --test tests/test_tail_ui.cjs
+for file in static/app.js static/app/*.js static/airchina_experiment.js; do node --check "$file"; done
+node --test tests/test_tail_ui.cjs tests/test_app_infrastructure.cjs
 ```
 
 测试报告目录已加入 Git 忽略规则。无需安装浏览器即可运行以上测试。

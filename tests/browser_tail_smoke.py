@@ -135,14 +135,14 @@ async def run(output: Path):
             assert await page.locator("#tailDiscoveryPanel .panel-head .muted").is_hidden()
             assert await page.locator("#tailJobSummary").get_attribute("data-active") == "false"
             await page.evaluate("""() => {
-                tailSelectedJob = {...tailSelectedJob, status:'finished'};
-                renderTailJobProgress(tailSelectedJob);
+                tailState.job.selected = {...tailState.job.selected, status:'finished'};
+                renderTailJobProgress(tailState.job.selected);
             }""")
             assert "primary" in await page.locator("#tailViewResultsBtn").get_attribute("class")
             assert await page.locator("#tailViewResultsBtn").inner_text() == "查看方案 ↓"
             await page.evaluate("""() => {
-                tailSelectedJob = {...tailSelectedJob, status:'paused'};
-                renderTailJobProgress(tailSelectedJob);
+                tailState.job.selected = {...tailState.job.selected, status:'paused'};
+                renderTailJobProgress(tailState.job.selected);
             }""")
             assert "ghost" in await page.locator("#tailViewResultsBtn").get_attribute("class")
             assert "primary" in await page.locator("button[data-tail-action='resume']").get_attribute("class")
@@ -275,13 +275,13 @@ async def run(output: Path):
             live["offline"] = True
             await page.evaluate("pollTailDiscoveryJob('live',true)")
             await page.wait_for_function("document.querySelector('#tailConnectionStatus').textContent.includes('连接中断')")
-            assert await page.evaluate("activeTailJobId") == "live"
+            assert await page.evaluate("tailState.job.activeId") == "live"
             assert await page.locator("#tailRunBtn").is_disabled()
             assert await page.locator(".tail-result-card").count() == 4
             live.update(offline=False, quote_error=True)
             await page.evaluate("pollTailDiscoveryJob('live',true)")
             await page.wait_for_function("document.querySelector('#tailListError').hidden === false")
-            assert await page.evaluate("activeTailJobId") == "live"
+            assert await page.evaluate("tailState.job.activeId") == "live"
             assert await page.locator("#tailRunBtn").is_disabled()
             await page.locator("[data-tail-view='history']").click()
             await page.wait_for_function("document.querySelectorAll('.tail-result-card').length === 5")
@@ -292,22 +292,22 @@ async def run(output: Path):
             assert "下方结果另有所属" not in await page.locator("#tailJobSummary").inner_text()
             await page.locator("#tailTaskContextDetails > summary").click()
             await page.locator("#tailJobPicker").select_option("offline-demo")
-            await page.wait_for_function("tailSelectedJob?.job_id === 'offline-demo'")
+            await page.wait_for_function("tailState.job.selected?.job_id === 'offline-demo'")
             await page.wait_for_function("document.querySelectorAll('.tail-result-card').length === 4")
             job_context = await page.locator("#tailJobSummary").inner_text()
             assert "后台执行：" in job_context and "下方结果另有所属" in job_context, job_context
             assert "当前结果：北京 (BJS) → 上海 (SHA)" in await page.locator("#tailResultIdentity").inner_text()
             live["quote_error"] = False
             await page.evaluate("selectTailJob('live')")
-            assert await page.evaluate("tailSelectedJobId") == "live"
+            assert await page.evaluate("tailState.job.selectedId") == "live"
             assert "下方结果另有所属" not in await page.locator("#tailJobSummary").inner_text()
             await page.locator("#tailJobPicker").select_option("offline-demo")
-            await page.wait_for_function("tailSelectedJob?.job_id === 'offline-demo'")
+            await page.wait_for_function("tailState.job.selected?.job_id === 'offline-demo'")
             await page.locator("#tailTaskContextDetails > summary").click()
             live.update(quote_error=False, status="finished")
             await page.evaluate("pollTailDiscoveryJob('live',true)")
             await page.wait_for_function("document.querySelector('#tailRunBtn').disabled === false && document.querySelector('#tailListError').hidden")
-            assert await page.evaluate("activeTailJobId") == ""
+            assert await page.evaluate("tailState.job.activeId") == ""
             assert await page.locator("#tailConnectionStatus").is_hidden()
             # Restore a useful fixture view for visual checks, without provider calls.
             await page.locator("#tailTaskContextDetails > summary").click()
@@ -501,8 +501,8 @@ async def run(output: Path):
                 assert not await page.evaluate("document.documentElement.scrollWidth > innerWidth + 1"), f"dual overflow {width}"
                 await page.screenshot(path=str(output / f"tail-dual-{width}.png"), full_page=True)
             await page.evaluate("""() => {
-                tailResultView = 'current'; tailSelectedJobId = ''; tailSelectedJob = null;
-                tailDiscoveryResults = []; tailResultsLoaded = true;
+                tailState.results.view = 'current'; tailState.job.selectedId = ''; tailState.job.selected = null;
+                tailState.results.items = []; tailState.results.loaded = true;
                 renderTailResults([]); updateTailBusyControls();
             }""")
             assert await page.locator("#tailSummary").inner_text() == "尚未开始查询"

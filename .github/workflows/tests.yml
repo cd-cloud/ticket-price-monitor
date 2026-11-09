@@ -63,11 +63,8 @@ jobs:
           package-manager-cache: false
       - name: Check JavaScript syntax
         run: |
-          node --check static/app.js
-          node --check static/airchina_experiment.js
-          node --check providers/airchina_dom.js
-          node --check providers/airchina_notices.js
-          node --check providers/airchina_form.js
-          node --check browser_fingerprint.js
+          for file in static/app.js static/app/*.js static/airchina_experiment.js providers/airchina_dom.js providers/airchina_notices.js providers/airchina_form.js browser_fingerprint.js; do
+            node --check "$file"
+          done
       - name: Run frontend tests
-        run: node --test tests/test_tail_ui.cjs
+        run: node --test tests/test_tail_ui.cjs tests/test_app_infrastructure.cjs

@@ -3,7 +3,58 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
-const source = fs.readFileSync(path.join(__dirname, '../static/app.js'), 'utf8');
+const sourceFiles = [
+  '../static/app/api.js',
+  '../static/app/store.js',
+  '../static/app/common.js',
+  '../static/app/route_form.js',
+  '../static/app/dashboard.js',
+  '../static/app/browser_profiles.js',
+  '../static/app/tail_form.js',
+  '../static/app/tail_jobs.js',
+  '../static/app/tail_results.js',
+  '../static/app/workspace.js',
+  '../static/app.js',
+];
+const source = sourceFiles
+  .map(file => fs.readFileSync(path.join(__dirname, file), 'utf8'))
+  .join('\n');
+
+const tailStateFields = {
+  tailSafeBatchSize: ['form', 'safeBatchSize'],
+  tailDefaultProfiles: ['form', 'defaultProfiles'],
+  tailCandidateProfileOverride: ['form', 'candidateProfileOverride'],
+  tailCandidatesManual: ['form', 'candidatesManual'],
+  tailSavedCandidates: ['form', 'savedCandidates'],
+  tailCandidatesLoaded: ['form', 'candidatesLoaded'],
+  tailFormTouched: ['form', 'touched'],
+  tailCandidateNames: ['form', 'candidateNames'],
+  activeTailJobId: ['job', 'activeId'],
+  activeTailJobTimer: ['job', 'activeTimer'],
+  tailDiscoveryJobs: ['job', 'items'],
+  tailSelectedJobId: ['job', 'selectedId'],
+  tailSelectedJob: ['job', 'selected'],
+  tailPollFailures: ['job', 'pollFailures'],
+  tailDiscoveryResults: ['results', 'items'],
+  tailResultView: ['results', 'view'],
+  tailResultRequest: ['results', 'request'],
+  tailResultOffset: ['results', 'offset'],
+  tailHasMore: ['results', 'hasMore'],
+  tailResultsLoaded: ['results', 'loaded'],
+  tailDisclosureState: ['results', 'disclosureState'],
+  tailConnectionUnknown: ['connection', 'unknown'],
+  tailSubmitting: ['connection', 'submitting'],
+};
+
+function assignTailState(ctx, values) {
+  const state = vm.runInContext('tailState', ctx);
+  for (const [key, value] of Object.entries(values)) {
+    const target = tailStateFields[key];
+    if (target) state[target[0]][target[1]] = value;
+    else ctx[key] = value;
+  }
+}
+
 function ui() {
   const elements = {
     tailLatestOnlyInput: {checked:true}, tailSortSelect:{value:'price'}, tailTrustInput:{value:'all'},
@@ -14,8 +65,7 @@ function ui() {
     candidates:{hidden:false},
   };
   const ctx = vm.createContext({URL, URLSearchParams, Date, AbortController,
-    tailResultView:"history", tailResultsLoaded:true, tailSelectedJobId:"job", tailSelectedJob:null, activeTailJobId:"",tailConnectionUnknown:false,
-    tailDisclosureState:new Map(), window:{innerHeight:900}, tailDiscoveryResults:[],
+    window:{innerHeight:900}, localStorage:{getItem:()=>null},
     document:{getElementById:id=>elements[id],querySelector:()=>elements.candidates,querySelectorAll:()=>[]},
     escapeHtml: x=>String(x??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])),
     airportCodeDisplayText:x=>x||'', providerLabel:x=>x, cabinLabel:x=>x||'', formatQueryDate:x=>x,formatQueryTime:x=>x,
@@ -23,6 +73,10 @@ function ui() {
     cleanVisibleText:()=>{},updateWorkspaceTabs:()=>{},renderTailSummary:()=>{},
     updateTailBusyControls:()=>{},
   });
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '../static/app/store.js'), 'utf8'), ctx);
+  ctx.tailState = vm.runInContext('tailState', ctx);
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '../static/app/api.js'), 'utf8'), ctx);
+  assignTailState(ctx, {tailResultView:'history', tailResultsLoaded:true, tailSelectedJobId:'job'});
   for (const name of ['compareTailResults','tailQuoteFresh','tailQuoteVerified','prepareTailResults',
     'groupTailResultsByRoute','safeTailReviewUrl','tailQuoteTermsLabel','renderTailBaselines','renderTailFlightGroups',
     'tailFullRouteLabel','tailItineraryKey','renderTailItineraryGroups',
@@ -195,7 +249,7 @@ test('result identity stays tied to selected task while draft changes, history h
   for (const id of ['tailResultIdentity','tailDraftNotice','tailTaskConditions']) elements[id]={};
   const payload={origin:'BJS',transfer:'SHA',departure_date:'2027-06-20',provider:'ctrip'};
   let draft={...payload};
-  Object.assign(ctx,{tailResultView:'current',tailSelectedJobId:'a',
+  assignTailState(ctx,{tailResultView:'current',tailSelectedJobId:'a',
     tailSelectedJob:{job_id:'a',payload},tailFormTouched:true,normalizeCode:x=>x,
     buildTailQueryPayload:()=>draft});
   ctx.updateTailResultContext();
@@ -206,11 +260,11 @@ test('result identity stays tied to selected task while draft changes, history h
   assert.equal(elements.tailResultIdentity.textContent,identity);
   assert.match(elements.tailDraftNotice.textContent,/条件已修改.*所选任务/);
   assert.equal(elements.tailDraftNotice.hidden,false);
-  ctx.tailSelectedJobId='loading';
+  ctx.tailState.job.selectedId='loading';
   ctx.updateTailResultContext();
   assert.doesNotMatch(elements.tailResultIdentity.textContent,/BJS/);
   assert.match(elements.tailResultIdentity.textContent,/正在读取/);
-  ctx.tailResultView='history';ctx.updateTailResultContext();
+  ctx.tailState.results.view='history';ctx.updateTailResultContext();
   assert.match(elements.tailResultIdentity.textContent,/跨任务/);
   assert.match(elements.tailDraftNotice.textContent,/不会改变历史报价/);
   assert.equal(elements.tailTaskConditions.textContent,'');
@@ -220,7 +274,7 @@ test('filter summary remains visible when controls close; clear restores latest-
   const {ctx,elements}=ui();
   elements.tailResultFilterSummary={};elements.tailViewResultsBtn={hidden:true};
   elements.tailDateFilter.value='2027-06-20';elements.tailMaxPriceInput.value='800';
-  elements.tailLatestOnlyInput.checked=false;ctx.tailDiscoveryResults=[quote()];
+  elements.tailLatestOnlyInput.checked=false;ctx.tailState.results.items=[quote()];
   ctx.updateTailResultTools();
   assert.match(elements.tailResultFilterSummary.textContent,/3 项/);
   assert.equal(elements.tailViewResultsBtn.hidden,false);
@@ -330,7 +384,7 @@ test('dual submission builds one payload with independent provider settings',()=
   const {ctx,elements}=ui();
   loadFunctions(ctx,['tailFormFieldIds','buildTailQueryPayload']);
   for (const id of ctx.tailFormFieldIds()) elements[id] ||= {value:''};
-  Object.assign(ctx,{normalizeCode:x=>x,selectedTailCandidates:()=>['CAN'],
+  assignTailState(ctx,{normalizeCode:x=>x,selectedTailCandidates:()=>['CAN'],
     tailCandidateProfileOverride:''});
   elements.tailProviderSelect.value='both';elements.tailFeizhuScopeInput.value='open';
   elements.tailSearchScopeInput.value='candidates';
@@ -372,7 +426,7 @@ test('advanced budget summary counts only effective changes and retains values a
 });
 
 test('complete itinerary groups align providers only with matching evidence and terms',()=>{
-  const {ctx}=ui();ctx.tailSelectedJob={job_id:'both',payload:{provider:'both'}};
+  const {ctx}=ui();ctx.tailState.job.selected={job_id:'both',payload:{provider:'both'}};
   const legs=[
     {flight_no:'CA1001',departure_airport:'PEK',arrival_airport:'SHA',departure_time:'09:00',arrival_time:'11:00',cabin:'economy'},
     {flight_no:'CA2002',departure_airport:'SHA',arrival_airport:'CAN',departure_time:'13:00',arrival_time:'15:00',cabin:'economy'},
@@ -387,7 +441,7 @@ test('complete itinerary groups align providers only with matching evidence and 
   assert.match(html,/data-result-id="1"/);assert.match(html,/data-result-id="2"/);
   const single=ctx.renderTailItineraryGroups([first]).join('');
   assert.match(single,/feizhu暂无同行程报价/);
-  ctx.tailSelectedJob.payload.provider='ctrip';
+  ctx.tailState.job.selected.payload.provider='ctrip';
   assert.doesNotMatch(ctx.renderTailItineraryGroups([first]).join(''),/暂无同行程报价/);
   const different=quote({id:3,provider:'feizhu',destination:'XMN',flight_details:legs.map((leg,index)=>index?{...leg,arrival_airport:'XMN',destination:'XMN'}:leg)});
   assert.notEqual(ctx.tailItineraryKey(first),ctx.tailItineraryKey(different));
@@ -413,7 +467,7 @@ test('provider filter does not deduplicate or price-compare different platforms 
   const quickButtons=['','ctrip','feizhu'].map(provider=>({dataset:{tailProvider:provider},textContent:'',attributes:{},
     setAttribute(name,value){this.attributes[name]=value;}}));
   elements.tailProviderQuickFilter={hidden:true,querySelectorAll:()=>quickButtons};
-  ctx.tailDiscoveryResults=rows;ctx.updateTailResultTools();
+  ctx.tailState.results.items=rows;ctx.updateTailResultTools();
   assert.equal(elements.tailProviderQuickFilter.hidden,false);
   assert.deepEqual(quickButtons.map(button=>button.textContent),['全部 2','携程 1','飞猪 1']);
   elements.tailResultProviderFilter={value:'ctrip'};
@@ -424,14 +478,14 @@ test('provider filter does not deduplicate or price-compare different platforms 
   loadFunctions(ctx,['clearTailResultFilters']);ctx.clearTailResultFilters();
   assert.equal(elements.tailResultProviderFilter.value,'');
   assert.equal(quickButtons[0].attributes['aria-pressed'],'true');
-  ctx.tailDiscoveryResults=[rows[0]];ctx.updateTailResultTools();
+  ctx.tailState.results.items=[rows[0]];ctx.updateTailResultTools();
   assert.equal(elements.tailProviderQuickFilter.hidden,true);
 });
 
 test('batch progress shows sibling success and failure, escapes errors and offers only valid recovery',()=>{
   const {ctx,elements}=ui();
   elements.tailJobSummary={innerHTML:''};
-  Object.assign(ctx,{tailBusy:()=>false,tailJobStatusLabel:x=>x,renderTailJobCandidate:()=>'',providerLabel:x=>({ctrip:'携程',feizhu:'飞猪'}[x]||x),ACTIVE_TAIL_JOB_STATUSES:['running','queued','needs_verification']});
+  assignTailState(ctx,{tailBusy:()=>false,tailJobStatusLabel:x=>x,renderTailJobCandidate:()=>'',providerLabel:x=>({ctrip:'携程',feizhu:'飞猪'}[x]||x),ACTIVE_TAIL_JOB_STATUSES:['running','queued','needs_verification']});
   loadFunctions(ctx,['renderTailJobProgress','renderTailBatchProgress']);
   const job={job_id:'batch',status:'partial',payload:{provider:'both'},progress:{saved:2,children:[
     {job_id:'c',provider:'ctrip',status:'finished',payload:{provider:'ctrip'},saved:2},
@@ -452,7 +506,7 @@ test('batch progress shows sibling success and failure, escapes errors and offer
   assert.doesNotMatch(elements.tailJobSummary.innerHTML,/data-tail-action="resume"|data-tail-action="retry-failed"/);
   job.payload={...job.payload,origin:'BJS',transfer:'SHA',departure_date:'2027-06-20'};
   assert.match(ctx.tailActiveContext(job),/后台执行.*下方结果另有所属/);
-  ctx.tailSelectedJobId='batch';ctx.tailResultView='current';
+  ctx.tailState.job.selectedId='batch';ctx.tailState.results.view='current';
   assert.doesNotMatch(ctx.tailActiveContext(job),/下方结果另有所属/);
   job.status='finished';assert.equal(ctx.tailActiveContext(job),'');
   job.status='needs_verification';ctx.renderTailJobProgress(job);
@@ -462,7 +516,7 @@ test('batch progress shows sibling success and failure, escapes errors and offer
 
 test('dual recovery separates failed providers from pending work and escapes provider names',()=>{
   const {ctx,elements}=ui();elements.tailJobSummary={innerHTML:''};
-  Object.assign(ctx,{tailBusy:()=>false,tailJobStatusLabel:x=>x,renderTailJobCandidate:()=>'',providerLabel:x=>({ctrip:'携程',feizhu:'飞猪'}[x]||x),ACTIVE_TAIL_JOB_STATUSES:['running','queued','needs_verification']});
+  assignTailState(ctx,{tailBusy:()=>false,tailJobStatusLabel:x=>x,renderTailJobCandidate:()=>'',providerLabel:x=>({ctrip:'携程',feizhu:'飞猪'}[x]||x),ACTIVE_TAIL_JOB_STATUSES:['running','queued','needs_verification']});
   loadFunctions(ctx,['renderTailBatchProgress']);
   const job={job_id:'batch',status:'paused',payload:{provider:'both'},progress:{saved:2,children:[
     {job_id:'c',provider:'ctrip',status:'failed',saved:1,payload:{provider:'ctrip'}},
@@ -493,7 +547,7 @@ test('new search is secondary to an existing task and clearly distinguishes edit
   elements.tailViewResultsBtn={classList:{toggle:(name,force)=>force?viewClasses.add(name):viewClasses.delete(name)}};
   elements.tailRunHint={};elements.tailOriginInput={};
   const payload={origin:'BJS',transfer:'SHA',departure_date:'2027-06-20',provider:'ctrip'};
-  Object.assign(ctx,{tailResultView:'current',tailSelectedJobId:'paused',tailSelectedJob:{job_id:'paused',payload},
+  assignTailState(ctx,{tailResultView:'current',tailSelectedJobId:'paused',tailSelectedJob:{job_id:'paused',payload},
     tailBusy:()=>false,normalizeCode:x=>x,buildTailQueryPayload:()=>({...payload}),tailDiscoveryResults:[quote()]});
   ctx.updateTailRunAction();
   assert.equal(elements.tailRunBtn.textContent,'使用表单条件重新查询');
@@ -504,29 +558,29 @@ test('new search is secondary to an existing task and clearly distinguishes edit
   assert.match(elements.tailRunHint.textContent,/原任务结果/);
   ctx.tailBusy=()=>true;ctx.updateTailRunAction();
   assert.equal(elements.tailRunBtn.textContent,'查询进行中');
-  ctx.tailBusy=()=>false;ctx.tailResultView='history';ctx.updateTailRunAction();
+  ctx.tailBusy=()=>false;ctx.tailState.results.view='history';ctx.updateTailRunAction();
   assert.match(elements.tailRunHint.textContent,/历史报价/);
   assert.equal(viewClasses.has('primary'),true);
-  ctx.tailResultView='current';ctx.tailSelectedJob={job_id:'paused',payload,status:'finished'};ctx.updateTailRunAction();
+  ctx.tailState.results.view='current';ctx.tailState.job.selected={job_id:'paused',payload,status:'finished'};ctx.updateTailRunAction();
   assert.equal(viewClasses.has('primary'),true);assert.equal(elements.tailViewResultsBtn.textContent,'查看方案 ↓');
   ctx.tailBusy=()=>true;ctx.updateTailRunAction();assert.equal(viewClasses.has('primary'),false);
-  ctx.tailBusy=()=>false;ctx.tailResultView='history';ctx.updateTailRunAction();
+  ctx.tailBusy=()=>false;ctx.tailState.results.view='history';ctx.updateTailRunAction();
   assert.match(elements.tailRunHint.textContent,/历史报价/);
-  ctx.tailSelectedJobId='';ctx.tailSelectedJob=null;ctx.tailResultView='current';ctx.updateTailRunAction();
+  ctx.tailState.job.selectedId='';ctx.tailState.job.selected=null;ctx.tailState.results.view='current';ctx.updateTailRunAction();
   assert.equal(elements.tailRunBtn.textContent,'开始查询');assert.equal(classes.has('primary'),true);
 });
 
 test('empty summary distinguishes first use, filters, running, history and saved empty results',()=>{
   const {ctx,elements}=ui();elements.tailSummary={};
-  Object.assign(ctx,{tailResultView:'current',tailSelectedJobId:'',tailResultsLoaded:true,activeTailJobId:''});
+  assignTailState(ctx,{tailResultView:'current',tailSelectedJobId:'',tailResultsLoaded:true,activeTailJobId:''});
   loadFunctions(ctx,['renderTailSummary']);
   ctx.renderTailSummary([],[]);assert.equal(elements.tailSummary.textContent,'尚未开始查询');
   ctx.renderTailSummary([],[quote()]);assert.equal(elements.tailSummary.textContent,'当前筛选下暂无结果');
-  ctx.tailSelectedJobId='run';ctx.activeTailJobId='run';ctx.renderTailSummary([],[]);
+  ctx.tailState.job.selectedId='run';ctx.tailState.job.activeId='run';ctx.renderTailSummary([],[]);
   assert.match(elements.tailSummary.textContent,/查询进行中/);
-  ctx.tailResultView='history';ctx.renderTailSummary([],[]);
+  ctx.tailState.results.view='history';ctx.renderTailSummary([],[]);
   assert.match(elements.tailSummary.textContent,/历史报价/);
-  ctx.tailResultView='current';ctx.activeTailJobId='';ctx.renderTailSummary([],[]);
+  ctx.tailState.results.view='current';ctx.tailState.job.activeId='';ctx.renderTailSummary([],[]);
   assert.match(elements.tailSummary.textContent,/暂未保存/);assert.doesNotMatch(elements.tailSummary.textContent,/暂无命中/);
 });
 
@@ -565,18 +619,18 @@ test('empty states separate hidden results, first search, running and historical
   elements.tailMaxPriceInput.value='1'; ctx.renderTailResults([quote()]);
   assert.match(elements.tailResults.innerHTML,/被列表筛选隐藏/);
   elements.tailMaxPriceInput.value='';
-  ctx.tailResultView='current';ctx.tailSelectedJobId='';ctx.renderTailResults([]);
+  ctx.tailState.results.view='current';ctx.tailState.job.selectedId='';ctx.renderTailResults([]);
   assert.match(elements.tailResults.innerHTML,/先选择我要乘坐的行程/);
-  ctx.tailSelectedJobId='running';ctx.activeTailJobId='running';ctx.renderTailResults([]);
+  ctx.tailState.job.selectedId='running';ctx.tailState.job.activeId='running';ctx.renderTailResults([]);
   assert.match(elements.tailResults.innerHTML,/正在查找/);
-  ctx.tailResultView='history';ctx.renderTailResults([]);
+  ctx.tailState.results.view='history';ctx.renderTailResults([]);
   assert.match(elements.tailResults.innerHTML,/还没有已保存/);
 });
 
 test('manual candidates survive route/airline edits while newly excluded endpoints are unchecked',()=>{
   const {ctx}=ui();
   const boxes=[{value:'CAN',checked:true},{value:'SZX',checked:false},{value:'BJS',checked:true}];
-  ctx.tailCandidatesManual=true;
+  ctx.tailState.form.candidatesManual=true;
   ctx.document.querySelectorAll=()=>boxes;
   ctx.tailDefaultCodesForAirlines=()=>['SZX','BJS'];
   ctx.excludedTailDestinationCodes=()=>new Set(['BJS']);
@@ -587,7 +641,7 @@ test('manual candidates survive route/airline edits while newly excluded endpoin
   assert.equal(boxes[1].checked,false);
   assert.equal(boxes[2].checked,false);
   assert.equal(boxes[2].disabled,true);
-  ctx.tailCandidatesManual=false;ctx.applyTailAirlineDefaults();
+  ctx.tailState.form.candidatesManual=false;ctx.applyTailAirlineDefaults();
   assert.equal(boxes[0].checked,false);assert.equal(boxes[1].checked,true);
 });
 
@@ -619,42 +673,42 @@ test('disclosure state including explicitly closed sections survives replacement
 test('task result requests include explicit job scope and history requests do not',async()=>{
   const {ctx,elements}=ui();const urls=[];
   elements.tailLoadMoreBtn={disabled:false};
-  Object.assign(ctx,{tailResultRequest:0,tailResultOffset:0,tailHasMore:false,tailDiscoveryResults:[],
+  assignTailState(ctx,{tailResultRequest:0,tailResultOffset:0,tailHasMore:false,tailDiscoveryResults:[],
     tailResultView:'current',tailSelectedJobId:'a/b',updateTailPagination:()=>{},updateTailDateFilter:()=>{},
     renderTailResults:()=>{},showTailError:()=>{},tailGetJson:async url=>{urls.push(url);return {results:[quote()],has_more:false,next_offset:1}}});
   loadFunctions(ctx,['fetchTailResults']);
   await ctx.fetchTailResults();
   assert.match(urls[0],/job_id=a%2Fb/);
-  ctx.tailResultView='history';await ctx.fetchTailResults();
+  ctx.tailState.results.view='history';await ctx.fetchTailResults();
   assert.doesNotMatch(urls[1],/job_id/);
 });
 
 test('a delayed response from a previous tab cannot overwrite the new context',async()=>{
   const {ctx,elements}=ui();elements.tailLoadMoreBtn={disabled:false};
   let release;
-  Object.assign(ctx,{tailResultRequest:0,tailResultOffset:0,tailHasMore:false,tailDiscoveryResults:[],
+  assignTailState(ctx,{tailResultRequest:0,tailResultOffset:0,tailHasMore:false,tailDiscoveryResults:[],
     tailResultView:'current',tailSelectedJobId:'a',updateTailPagination:()=>{},updateTailDateFilter:()=>{},
     renderTailResults:()=>{},showTailError:()=>{},tailGetJson:()=>new Promise(resolve=>{release=resolve})});
   loadFunctions(ctx,['fetchTailResults']);
   const old=ctx.fetchTailResults();
   const releaseOld=release;
-  ctx.tailResultView='history';
+  ctx.tailState.results.view='history';
   const newer=ctx.fetchTailResults();
   release({results:[quote({id:9})],next_offset:1});await newer;
   releaseOld({results:[quote({id:1})],next_offset:1});await old;
-  assert.deepEqual(Array.from(ctx.tailDiscoveryResults,r=>r.id),[9]);
+  assert.deepEqual(Array.from(ctx.tailState.results.items,r=>r.id),[9]);
 });
 
 test('failed polling retains active identity, prevents duplicate starts, and backs off',async()=>{
   const {ctx,elements}=ui();elements.tailConnectionStatus={};
   const timers=[];let busyUpdates=0;
-  Object.assign(ctx,{activeTailJobId:'running',activeTailJobTimer:null,tailPollFailures:0,tailConnectionUnknown:false,
+  assignTailState(ctx,{activeTailJobId:'running',activeTailJobTimer:null,tailPollFailures:0,tailConnectionUnknown:false,
     tailGetJson:async()=>{throw new Error('offline')},setTimeout:(fn,delay)=>{timers.push({fn,delay});return timers.length},
     clearTimeout:()=>{},updateTailBusyControls:()=>{busyUpdates++}});
-  loadFunctions(ctx,['pollTailDiscoveryJob','tailBusy']);ctx.tailSubmitting=false;
+  loadFunctions(ctx,['pollTailDiscoveryJob','tailBusy']);ctx.tailState.connection.submitting=false;
   ctx.pollTailDiscoveryJob('running',true);
   await timers[0].fn();
-  assert.equal(ctx.activeTailJobId,'running');assert.equal(ctx.tailConnectionUnknown,true);
+  assert.equal(ctx.tailState.job.activeId,'running');assert.equal(ctx.tailState.connection.unknown,true);
   assert.equal(ctx.tailBusy(),true);assert.ok(busyUpdates);
   assert.equal(timers[1].delay,7000);assert.match(elements.tailConnectionStatus.textContent,/后台状态待确认/);
 });
@@ -662,7 +716,7 @@ test('failed polling retains active identity, prevents duplicate starts, and bac
 test('running polling refreshes saved results before task completion; quote failure does not stop job',async()=>{
   const {ctx,elements}=ui();elements.tailConnectionStatus={};
   const timers=[];let resultCalls=0;
-  Object.assign(ctx,{activeTailJobId:'running',activeTailJobTimer:null,tailSelectedJobId:'running',tailResultView:'current',
+  assignTailState(ctx,{activeTailJobId:'running',activeTailJobTimer:null,tailSelectedJobId:'running',tailResultView:'current',
     tailPollFailures:0,tailConnectionUnknown:false,ACTIVE_TAIL_JOB_STATUSES:['queued','running','needs_verification'],
     tailGetJson:async()=>({job_id:'running',status:'running'}),
     setTimeout:(fn,delay)=>{timers.push({fn,delay});return timers.length},clearTimeout:()=>{},
@@ -670,24 +724,24 @@ test('running polling refreshes saved results before task completion; quote fail
     fetchTailResults:async()=>{resultCalls++;throw new Error('results offline')},fetchTailJobs:async()=>{}});
   loadFunctions(ctx,['pollTailDiscoveryJob']);
   ctx.pollTailDiscoveryJob('running',true);await timers[0].fn();
-  assert.equal(resultCalls,1);assert.equal(ctx.activeTailJobId,'running');
-  assert.equal(ctx.tailConnectionUnknown,false);assert.equal(timers.length,2);
+  assert.equal(resultCalls,1);assert.equal(ctx.tailState.job.activeId,'running');
+  assert.equal(ctx.tailState.connection.unknown,false);assert.equal(timers.length,2);
 });
 
 test('404 is distinguished from temporary disconnect and releases vanished job',async()=>{
   const {ctx,elements}=ui();elements.tailConnectionStatus={};let timer;
-  Object.assign(ctx,{activeTailJobId:'gone',activeTailJobTimer:null,tailPollFailures:0,
+  assignTailState(ctx,{activeTailJobId:'gone',activeTailJobTimer:null,tailPollFailures:0,
     setTimeout:fn=>{timer=fn},clearTimeout:()=>{},updateTailCancelButton:()=>{},
     tailGetJson:async()=>{throw Object.assign(new Error('missing'),{status:404})}});
   loadFunctions(ctx,['pollTailDiscoveryJob']);
   ctx.pollTailDiscoveryJob('gone',true);await timer();
-  assert.equal(ctx.activeTailJobId,'');assert.equal(ctx.tailConnectionUnknown,false);
+  assert.equal(ctx.tailState.job.activeId,'');assert.equal(ctx.tailState.connection.unknown,false);
   assert.match(elements.tailConnectionStatus.textContent,/找不到此任务/);
 });
 
 test('completed jobs do not offer meaningless resume and failed jobs get targeted retry',()=>{
   const {ctx,elements}=ui();elements.tailJobSummary={innerHTML:''};
-  Object.assign(ctx,{tailBusy:()=>false,tailJobStatusLabel:x=>x,renderTailJobCandidate:()=>'',providerLabel:x=>({ctrip:'携程',feizhu:'飞猪'}[x]||x),ACTIVE_TAIL_JOB_STATUSES:['running','queued']});
+  assignTailState(ctx,{tailBusy:()=>false,tailJobStatusLabel:x=>x,renderTailJobCandidate:()=>'',providerLabel:x=>({ctrip:'携程',feizhu:'飞猪'}[x]||x),ACTIVE_TAIL_JOB_STATUSES:['running','queued']});
   loadFunctions(ctx,['renderTailJobProgress']);
   ctx.renderTailJobProgress({job_id:'done',status:'finished',progress:{saved:3}});
   assert.doesNotMatch(elements.tailJobSummary.innerHTML,/data-tail-action="resume"/);
@@ -705,21 +759,21 @@ test('completed jobs do not offer meaningless resume and failed jobs get targete
 
 test('lost POST response locks competing actions and reconciles rather than resubmitting',async()=>{
   const {ctx,elements}=ui();elements.tailConnectionStatus={};const timers=[];let posts=0;
-  Object.assign(ctx,{tailSubmitting:false,tailConnectionUnknown:false,
+  assignTailState(ctx,{tailSubmitting:false,tailConnectionUnknown:false,
     fetch:async()=>{posts++;throw new Error('connection lost')},
     setTimeout:(fn,delay)=>{timers.push({fn,delay});return timers.length},clearTimeout:()=>{},
     initializeTailWorkspace:async()=>{}});
   loadFunctions(ctx,['tailPostJob','tailBusy']);
   await assert.rejects(ctx.tailPostJob('/api/tail-discovery/run'),/connection lost/);
-  assert.equal(posts,1);assert.equal(ctx.tailSubmitting,false);
-  assert.equal(ctx.tailConnectionUnknown,true);assert.equal(ctx.tailBusy(),true);
+  assert.equal(posts,1);assert.equal(ctx.tailState.connection.submitting,false);
+  assert.equal(ctx.tailState.connection.unknown,true);assert.equal(ctx.tailBusy(),true);
   assert.equal(timers[1].delay,3500);
   assert.match(elements.tailConnectionStatus.textContent,/不会自动重复提交/);
 });
 
 test('authoritative input rejection does not trap the form in an unknown state',async()=>{
   const {ctx,elements}=ui();elements.tailConnectionStatus={};let scheduled=0;
-  Object.assign(ctx,{tailSubmitting:false,tailConnectionUnknown:false,
+  assignTailState(ctx,{tailSubmitting:false,tailConnectionUnknown:false,
     fetch:async()=>({ok:false,json:async()=>({detail:'bad input'})}),
     setTimeout:()=>{scheduled++;return 1},clearTimeout:()=>{}});
   loadFunctions(ctx,['tailPostJob','tailBusy']);
@@ -730,7 +784,7 @@ test('authoritative input rejection does not trap the form in an unknown state',
 test('refresh preserves paginated depth and append removes duplicate IDs',async()=>{
   const {ctx,elements}=ui();elements.tailLoadMoreBtn={disabled:false};
   const calls=[];
-  Object.assign(ctx,{tailResultRequest:0,tailResultOffset:400,tailHasMore:true,tailDiscoveryResults:[],
+  assignTailState(ctx,{tailResultRequest:0,tailResultOffset:400,tailHasMore:true,tailDiscoveryResults:[],
     tailResultView:'current',tailSelectedJobId:'a',updateTailPagination:()=>{},updateTailDateFilter:()=>{},
     renderTailResults:()=>{},showTailError:()=>{},tailGetJson:async url=>{
       const offset=Number(new URL('http://local'+url).searchParams.get('offset'));calls.push(offset);
@@ -738,25 +792,25 @@ test('refresh preserves paginated depth and append removes duplicate IDs',async(
     }});
   loadFunctions(ctx,['fetchTailResults']);
   await ctx.fetchTailResults({background:true});
-  assert.deepEqual(calls,[0,200]);assert.equal(ctx.tailDiscoveryResults.length,2);
+  assert.deepEqual(calls,[0,200]);assert.equal(ctx.tailState.results.items.length,2);
   ctx.tailGetJson=async()=>({results:[quote({id:201}),quote({id:401})],has_more:false,next_offset:402});
   await ctx.fetchTailResults({append:true});
-  assert.deepEqual(Array.from(ctx.tailDiscoveryResults,r=>r.id),[1,201,401]);
+  assert.deepEqual(Array.from(ctx.tailState.results.items,r=>r.id),[1,201,401]);
 });
 
 test('saved conditions use a fixed allowlist and ignore credential-like fields',()=>{
   const {ctx,elements}=ui();
   elements.tailOriginInput={value:'BJS'};elements.tailCandidateProfileSelect={value:''};
   let saved;
-  Object.assign(ctx,{tailCandidatesManual:true,tailCandidateProfileOverride:'',tailSavedCandidates:null,
+  assignTailState(ctx,{tailCandidatesManual:true,tailCandidateProfileOverride:'',tailSavedCandidates:null,
     selectedTailCandidates:()=>['CAN'],localStorage:{setItem:(key,value)=>{saved=JSON.parse(value)},
       getItem:()=>JSON.stringify({fields:{tailOriginInput:'SHA',api_key:'not-a-credential'},manual:true,candidates:['SZX']})}});
   loadFunctions(ctx,['tailFormFieldIds','saveTailForm','restoreTailForm']);
   ctx.saveTailForm();assert.equal(saved.fields.tailOriginInput,'BJS');
   assert.equal(saved.fields.api_key,undefined);
   ctx.restoreTailForm();assert.equal(elements.tailOriginInput.value,'SHA');
-  assert.equal(ctx.tailCandidatesManual,true);
-  assert.deepEqual(Array.from(ctx.tailSavedCandidates),['SZX']);
+  assert.equal(ctx.tailState.form.candidatesManual,true);
+  assert.deepEqual(Array.from(ctx.tailState.form.savedCandidates),['SZX']);
 });
 
 test('refresh does not silently clear a date filter absent from the latest batch',()=>{
@@ -771,7 +825,7 @@ test('refresh does not silently clear a date filter absent from the latest batch
 test('tail errors preserve the page message and show a non-navigating warning toast',()=>{
   const {ctx,elements}=ui();elements.tailActionError={hidden:true};
   const notices=[];
-  Object.assign(ctx,{notifyComplete:(message,options)=>notices.push({message,options})});
+  assignTailState(ctx,{notifyComplete:(message,options)=>notices.push({message,options})});
   loadFunctions(ctx,['showTailError']);
   ctx.showTailError('模拟复核失败');
   assert.equal(elements.tailActionError.textContent,'模拟复核失败');

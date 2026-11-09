@@ -105,14 +105,10 @@
   form.elements.departure_date.max = dateText(maxDate);
 
   async function request(url, options = {}) {
-    const controller = new AbortController();
-    const deadline = setTimeout(() => controller.abort(), 10000);
-    try {
-      const response = await fetch(url, {...options, signal: controller.signal});
-      const body = await response.json();
-      if (!response.ok) throw new Error(typeof body.detail === "string" ? body.detail : "请求失败，请刷新任务记录。");
-      return body;
-    } finally { clearTimeout(deadline); }
+    const response = await fetchApi(url, {...options, timeoutMs: 10000});
+    const body = await response.json();
+    if (!response.ok) throw new Error(typeof body.detail === "string" ? body.detail : "请求失败，请刷新任务记录。");
+    return body;
   }
 
   function selectedJob() {
