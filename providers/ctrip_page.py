@@ -861,7 +861,10 @@ async def is_datepicker_overlay_visible(page: Page) -> bool:
             continue
         for index in range(count):
             try:
-                if await locator.nth(index).is_visible():
+                item = locator.nth(index)
+                if await item.evaluate("(node) => Boolean(node.closest('.calendar-lowprice-root, .calendar-lowprice'))"):
+                    continue
+                if await item.is_visible():
                     return True
             except Exception:
                 continue

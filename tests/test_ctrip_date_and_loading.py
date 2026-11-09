@@ -7,7 +7,7 @@ import pytest
 
 from config_manager import RouteQuery
 from providers.ctrip_date_evidence import collect_date_evidence, date_value_matches
-from providers.ctrip_page import ensure_results_departure_date
+from providers.ctrip_page import ensure_results_departure_date, is_datepicker_overlay_visible
 from providers.ctrip_result_wait import wait_for_progressive_results
 from providers.response_capture import ResponseStore, attach_response_listeners
 
@@ -93,6 +93,21 @@ def test_open_calendar_blocks_even_a_matching_input():
     evidence = asyncio.run(collect_date_evidence(page, DAY, overlay_visible=True))
     assert not evidence["matched"]
     assert evidence["matched_source"] == "calendar_open"
+
+
+@pytest.mark.parametrize("visible,low_price_calendar,expected", [
+    (True, True, False),
+    (False, False, False),
+    (True, False, True),
+])
+def test_datepicker_overlay_distinguishes_low_price_strip(visible, low_price_calendar, expected):
+    page = DatePage()
+    node = SimpleNamespace(
+        is_visible=AsyncMock(return_value=visible),
+        evaluate=AsyncMock(return_value=low_price_calendar),
+    )
+    with patch.object(page, "locator", return_value=Nodes([node])):
+        assert asyncio.run(is_datepicker_overlay_visible(page)) is expected
 
 
 def test_url_alone_and_empty_body_do_not_confirm_date():
