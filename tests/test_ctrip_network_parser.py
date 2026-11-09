@@ -145,7 +145,9 @@ class CtripNetworkParserTests(unittest.TestCase):
         self.assertIsNone(ctrip.as_native_round_trip_route(route))
 
     def test_tail_discovery_reads_domestic_online_flight_segments(self) -> None:
-        automation = BrowserAutomation.__new__(BrowserAutomation)
+        from providers.ctrip_tail_operations import CtripTailOperations
+
+        operations = CtripTailOperations.__new__(CtripTailOperations)
         itinerary = {
             "flightSegments": [
                 {
@@ -194,7 +196,7 @@ class CtripNetworkParserTests(unittest.TestCase):
         }
         response_store = [{"payload": {"data": {"flightItineraryList": [itinerary]}}}]
 
-        match = automation._extract_ctrip_tail_match_from_network(
+        match = operations._extract_ctrip_tail_match_from_network(
             response_store,
             origin="BJS",
             transfer="CTU",

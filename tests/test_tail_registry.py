@@ -8,7 +8,10 @@ from providers.tail_registry import create_tail_runner, supports_tail_discovery
 
 class TailRegistryTests(unittest.TestCase):
     def test_create_registered_tail_runners(self) -> None:
-        automation = SimpleNamespace(provider_runtime=None)
+        automation = SimpleNamespace(
+            app_config=None, ctrip_runtime=None, ctrip_browser=None, ctrip_tail=None,
+            TAIL_DISCOVERY_CANDIDATE_TIMEOUT_SECONDS=120,
+        )
 
         self.assertIsInstance(create_tail_runner("ctrip", automation), CtripTailDiscoveryRunner)
         self.assertIsInstance(create_tail_runner("feizhu", automation), FeizhuTailDiscoveryRunner)

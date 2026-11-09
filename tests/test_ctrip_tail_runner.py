@@ -19,7 +19,11 @@ class CtripTailRunnerTests(unittest.IsolatedAsyncioTestCase):
         context = object()
 
         class Automation:
-            provider_runtime = object()
+            app_config = object()
+            ctrip_runtime = object()
+            ctrip_browser = object()
+            ctrip_tail = object()
+            TAIL_DISCOVERY_CANDIDATE_TIMEOUT_SECONDS = 120
 
             async def _new_page(self, provider, backend_name=None):
                 return page, context

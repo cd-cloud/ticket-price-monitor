@@ -8,7 +8,9 @@ from pathlib import Path
 from typing import Callable
 from urllib.parse import quote
 
-from playwright.async_api import BrowserContext, Page, TimeoutError
+from playwright.async_api import BrowserContext, Page
+
+from browser_page_operations import BrowserPageOperations
 from browser_query_result import OfferDetails, QueryResult, build_query_result
 from browser_retry_policy import (
     looks_like_ctrip_profile_pollution,
@@ -16,7 +18,6 @@ from browser_retry_policy import (
     looks_like_rate_limit,
     should_stop_after_no_fare,
 )
-
 from browser_session_policy import (
     BrowserSessionArtifact,
     BrowserSessionMetadata,
@@ -26,19 +27,17 @@ from browser_session_policy import (
 )
 from browser_session_manager import BrowserSessionManager
 from browser_use_adapter import BrowserUseAdapter
-from config_manager import AppConfig, ProviderConfig, RouteQuery, RouteSegment
-from providers.base import ProviderQueryOutcome
+from config_manager import AppConfig, ProviderConfig, RouteQuery
 from provider_runtime import ProviderRuntime
+from providers.base import ProviderQueryOutcome
+from providers.ctrip_browser_operations import CtripBrowserOperations
+from providers.ctrip_runtime import CtripRuntime
 from providers.ctrip_support import provider_cabin_value
+from providers.ctrip_tail_operations import CtripTailOperations
 from providers.response_capture import attach_response_listeners, ResponseStore
 from providers.tail_registry import create_tail_runner
-from providers import ctrip_page
-from providers import ctrip_parser
-from providers import ctrip_itinerary
-from providers import ctrip_network_parser
-from providers import ctrip_tail_parser
-from providers import ctrip_tail_discovery
 from providers import ctrip
+from providers import ctrip_network_parser
 from providers import feizhu
 from providers import priceline
 
@@ -49,20 +48,8 @@ PROVIDER_HANDLERS = {
     priceline.name: priceline,
 }
 
-CTRIP_VERIFICATION_KEYWORDS = (
-    "\u9a8c\u8bc1\u7801",
-    "\u5b89\u5168\u9a8c\u8bc1",
-    "\u6ed1\u5757",
-    "\u4eba\u673a\u9a8c\u8bc1",
-    "\u8bf7\u5b8c\u6210\u9a8c\u8bc1",
-    "\u8bbf\u95ee\u5f02\u5e38",
-    "captcha",
-    "verify",
-    "verification",
-    "robot",
-)
 LOGGER = logging.getLogger(__name__)
-PRICE_PATTERN = re.compile(r"(?<!\d)(?:CNY|RMB|[\u00a5\uffe5])?\s*([1-9]\d{1,5}(?:\.\d{1,2})?)")
+PRICE_PATTERN = re.compile(r"(?<!\d)(?:CNY|RMB|[¥￥])?\s*([1-9]\d{1,5}(?:\.\d{1,2})?)")
 
 
 class BrowserAutomation:
@@ -79,7 +66,11 @@ class BrowserAutomation:
         self.credentials = credentials
         self.backend_override = str(backend_override or "").strip().lower() or None
         self.session_manager = BrowserSessionManager(app_config)
+        self.page_operations = BrowserPageOperations()
         self.provider_runtime = ProviderRuntime(self)
+        self.ctrip_runtime = CtripRuntime(self)
+        self.ctrip_browser = CtripBrowserOperations(self, self.ctrip_runtime)
+        self.ctrip_tail = CtripTailOperations(self, self.ctrip_runtime, self.ctrip_browser)
         self.automation_backend = (getattr(app_config, "automation_backend", "playwright") or "playwright").lower()
         self.browser_use_adapter = BrowserUseAdapter(app_config.runtime_dir)
 
@@ -219,7 +210,6 @@ class BrowserAutomation:
                     LOGGER.warning(
                         "provider=%s route=%s backend=%s detected polluted Chrome profile=%s; rotating profile and retrying once",
                         provider_name,
-                        route.route_key,
                         backend_name,
                         polluted_profile_name or "selected",
                     )
@@ -289,7 +279,8 @@ class BrowserAutomation:
     ) -> ProviderQueryOutcome:
         handler = PROVIDER_HANDLERS.get(provider.name)
         if handler is not None:
-            return await handler.query(self.provider_runtime, provider, route, page, response_store)
+            runtime = self.ctrip_runtime if provider.name == "ctrip" else self.provider_runtime
+            return await handler.query(runtime, provider, route, page, response_store)
 
         if route.is_multi_city:
             raise RuntimeError(f"Provider {provider.name} does not support native multi-city automation in this tool yet.")
@@ -301,6 +292,29 @@ class BrowserAutomation:
             departure_time=offer.departure_time,
             row_text=offer.row_text,
         )
+
+    async def _query_single_route_offer(
+        self,
+        provider: ProviderConfig,
+        route: RouteQuery,
+        page: Page,
+        response_store: list[dict],
+    ) -> tuple[OfferDetails, str, str]:
+        if provider.name == "ctrip":
+            return await self.ctrip_browser._query_single_route_offer(provider, route, page, response_store)
+        if provider.name == "priceline":
+            return await priceline.query_single_route_offer(self, provider, route, page, response_store)
+
+        await self._throttle(provider)
+        await page.goto(
+            self._build_search_url(provider, route),
+            wait_until="domcontentloaded",
+            timeout=provider.timeout_ms,
+        )
+        await self._prepare_results_page(provider, page, route)
+        await self._wait_for_results(provider, page)
+        offer = await self._extract_offer(provider, route, page, response_store)
+        return offer, page.url, await page.title()
 
     async def query_tail_baseline(
         self,
@@ -368,211 +382,6 @@ class BrowserAutomation:
     ) -> dict[str, object]:
         return await self.discover_tail_routes("feizhu", **kwargs)
 
-    async def _tail_cancellable_wait(
-        self,
-        page: Page,
-        wait_ms: int,
-        *,
-        cancel_checker: Callable[[], bool] | None = None,
-    ) -> None:
-        remaining = max(0, int(wait_ms))
-        while remaining > 0:
-            if cancel_checker and cancel_checker():
-                return
-            step = min(1000, remaining)
-            await page.wait_for_timeout(step)
-            remaining -= step
-
-    async def _start_ctrip_tail_trace(
-        self,
-        context: BrowserContext,
-        *,
-        origin: str,
-        transfer: str,
-        destination: str,
-        departure_date: str,
-    ) -> bool:
-        return await ctrip_tail_discovery.start_trace(
-            context,
-            origin=origin,
-            transfer=transfer,
-            destination=destination,
-            departure_date=departure_date,
-        )
-
-    async def _stop_ctrip_tail_trace(
-        self,
-        context: BrowserContext,
-        *,
-        trace_started: bool,
-    ) -> Path | None:
-        return await ctrip_tail_discovery.stop_trace(self, context, trace_started=trace_started)
-
-    async def _ctrip_results_date_evidence(self, page: Page, route: RouteQuery) -> dict[str, object]:
-        try:
-            return await ctrip_page.collect_results_date_evidence(page, route.departure_date)
-        except Exception as exc:
-            return {"expected": route.departure_date, "url": getattr(page, "url", ""), "error": str(exc)}
-
-    async def _goto_ctrip_tail_results(self, provider: ProviderConfig, route: RouteQuery, page: Page) -> None:
-        await ctrip_tail_discovery.goto_tail_results(self, provider, route, page)
-
-    async def _warm_ctrip_tail_result_data(self, page: Page, response_store: list[dict]) -> None:
-        await ctrip_tail_discovery.warm_tail_result_data(self, page, response_store)
-
-    async def _wait_for_ctrip_verification_continue(
-        self,
-        page: Page,
-        *,
-        cancel_checker: Callable[[], bool] | None = None,
-        verification_continue_checker: Callable[[], bool] | None = None,
-    ) -> bool:
-        await self._browser_use_assist_page(
-            page,
-            "ctrip_verification_wait",
-            "Ctrip is showing a security verification screen. Wait for the user to finish it manually, then continue.",
-            {"provider": "ctrip", "safety": "manual_verification_only"},
-        )
-        deadline = datetime.utcnow().timestamp() + 15 * 60
-        while datetime.utcnow().timestamp() < deadline:
-            if cancel_checker and cancel_checker():
-                return False
-            if verification_continue_checker and verification_continue_checker():
-                return True
-            try:
-                if not await self._ctrip_verification_detected(page):
-                    return True
-            except Exception:
-                pass
-            await page.wait_for_timeout(2000)
-        return False
-
-    def _response_store_has_flight_itineraries(self, response_store: list[dict]) -> bool:
-        return ctrip_tail_discovery.response_store_has_flight_itineraries(
-            response_store,
-            data_walker=self._walk_ctrip_data_nodes,
-        )
-
-    async def _try_enrich_ctrip_tail_match_details(self, page: Page, match: dict[str, object]) -> None:
-        card = match.get("card")
-        if not isinstance(card, dict):
-            match.setdefault("detail_source", "network_exact")
-            match.setdefault("detail_quality", "complete")
-            return
-        index = card.get("card_index")
-        if not isinstance(index, int) or index < 0:
-            return
-        try:
-            row = page.locator(".list-content-item-transit").nth(index)
-            await row.scroll_into_view_if_needed(timeout=3000)
-            for selector in [".detail", ".airline", ".box-row"]:
-                try:
-                    await row.locator(selector).first.click(timeout=1500, force=True)
-                    await page.wait_for_timeout(900)
-                    break
-                except Exception:
-                    continue
-            details_text = await self._visible_ctrip_expanded_detail_text(page, row)
-        except Exception:
-            return
-        if not details_text:
-            return
-        existing_details = match.get("details")
-        if not isinstance(existing_details, list) or not existing_details:
-            return
-        first_detail = existing_details[0] if isinstance(existing_details[0], dict) else {}
-        last_detail = existing_details[-1] if isinstance(existing_details[-1], dict) else {}
-        enriched = ctrip_tail_parser.build_tail_details_from_text_block(
-            details_text,
-            origin=str(first_detail.get("origin") or ""),
-            transfer=str(first_detail.get("destination") or first_detail.get("tail_transfer") or ""),
-            destination=str(last_detail.get("destination") or ""),
-            departure_date=str(first_detail.get("departure_date") or ""),
-            cabin=str(first_detail.get("cabin") or "economy_plus"),
-        )
-        has_more_signal = any(item.get("flight_no") for item in enriched) or len(details_text) > len(str(card.get("text") or ""))
-        if has_more_signal:
-            match["details"] = enriched
-            match["detail_source"] = "expanded_dom"
-            match["detail_quality"] = "expanded"
-
-    async def _visible_ctrip_expanded_detail_text(self, page: Page, row) -> str:
-        candidates: list[str] = []
-        for selector in [
-            ".flight-detail",
-            ".flight-detail-list",
-            ".detail-content",
-            ".drawer",
-            ".modal",
-            ".popup",
-            ".ant-modal",
-            ".el-dialog",
-        ]:
-            try:
-                loc = page.locator(selector)
-                count = min(await loc.count(), 5)
-            except Exception:
-                continue
-            for index in range(count):
-                try:
-                    text = (await loc.nth(index).inner_text(timeout=800)).strip()
-                except Exception:
-                    continue
-                if text and len(text) > 40:
-                    candidates.append(text)
-        try:
-            row_text = (await row.inner_text(timeout=1000)).strip()
-            if row_text:
-                candidates.append(row_text)
-        except Exception:
-            pass
-        candidates.sort(key=len, reverse=True)
-        return candidates[0] if candidates else ""
-
-    async def _ctrip_verification_detected(self, page: Page) -> bool:
-        try:
-            url = (page.url or "").lower()
-            if any(token in url for token in ["captcha", "verify", "verification", "risk"]):
-                return True
-            body = (await page.locator("body").inner_text(timeout=2500)).lower()
-        except Exception:
-            return False
-        return any(keyword.lower() in body for keyword in CTRIP_VERIFICATION_KEYWORDS)
-
-    async def _query_single_route_offer(
-        self,
-        provider: ProviderConfig,
-        route: RouteQuery,
-        page: Page,
-        response_store: list[dict],
-    ) -> tuple[OfferDetails, str, str]:
-        if provider.name == "ctrip":
-            result = await ctrip.query_single_route_offer(self, provider, route, page, response_store)
-            await self._ensure_ctrip_results_date(page, route, provider.timeout_ms, offer=result[0])
-            return result
-        if provider.name == "priceline":
-            return await priceline.query_single_route_offer(self, provider, route, page, response_store)
-
-        await self._throttle(provider)
-        await page.goto(
-            self._build_search_url(provider, route),
-            wait_until="domcontentloaded",
-            timeout=provider.timeout_ms,
-        )
-        await self._prepare_results_page(provider, page, route)
-        await self._wait_for_results(provider, page)
-        offer = await self._extract_offer(provider, route, page, response_store)
-        return offer, page.url, await page.title()
-
-    async def _query_ctrip_multi_city_offer(
-        self,
-        provider: ProviderConfig,
-        route: RouteQuery,
-        page: Page,
-        response_store: list[dict],
-    ) -> tuple[OfferDetails, str, str]:
-        return await ctrip.query_multi_city_offer(self, provider, route, page, response_store)
-
     async def login(
         self,
         provider_name: str,
@@ -601,7 +410,6 @@ class BrowserAutomation:
                 )
                 return
 
-            # 1) Try a saved or persistent browser session first.
             if session_metadata.persistent_profile_loaded and not session_metadata.storage_state_loaded:
                 await page.goto(provider.login_url, wait_until="domcontentloaded", timeout=provider.timeout_ms)
                 if await self._verify_saved_session(page, provider):
@@ -699,7 +507,6 @@ class BrowserAutomation:
         relies on the page remaining on its current URL for the subsequent query flow.
         """
         try:
-            # Just check the current page state without navigating away.
             title = (await page.title()).lower()
             url = (page.url or "").lower()
             if any(token in url for token in ("passport", "login", "signin", "auth")):
@@ -739,80 +546,35 @@ class BrowserAutomation:
     ) -> bool:
         return should_stop_after_no_fare(provider_name, route, attempt_index, backend_count)
 
+    async def _texts_for_selectors(self, page: Page, selectors: list[str], limit: int = 6) -> list[str]:
+        return await self.page_operations._texts_for_selectors(page, selectors, limit)
+
+    async def _collect_candidate_texts(self, provider: ProviderConfig, page: Page) -> dict[str, list[str]]:
+        return await self.page_operations._collect_candidate_texts(provider, page)
+
+    async def _fill_first(self, page: Page, selectors: list[str], value: str) -> None:
+        await self.page_operations._fill_first(page, selectors, value)
+
+    async def _click_first(self, page: Page, selectors: list[str]) -> None:
+        await self.page_operations._click_first(page, selectors)
+
+    async def _click_first_available(self, scope, selectors: list[str], timeout_ms: int) -> bool:
+        return await self.page_operations._click_first_available(scope, selectors, timeout_ms)
+
+    async def _throttle(self, provider: ProviderConfig) -> None:
+        await self.page_operations._throttle(provider)
+
+    @staticmethod
+    def _selector_list(provider: ProviderConfig, key: str) -> list[str]:
+        return BrowserPageOperations._selector_list(provider, key)
+
+    @staticmethod
+    def _build_itinerary_summary(route: RouteQuery) -> str:
+        return BrowserPageOperations._build_itinerary_summary(route)
+
     async def _prepare_results_page(self, provider: ProviderConfig, page: Page, route: RouteQuery) -> None:
         if provider.name == "ctrip":
-            await self._prepare_ctrip_results_page(page, route, provider.timeout_ms)
-
-    async def _prepare_ctrip_results_page(self, page: Page, route: RouteQuery, timeout_ms: int) -> None:
-        await ctrip_page.prepare_results_page(self, page, route, timeout_ms)
-
-    async def _ensure_ctrip_results_date(self, page: Page, route: RouteQuery, timeout_ms: int, *, offer=None) -> dict:
-        return await ctrip_page.ensure_results_departure_date(page, route, timeout_ms, offer=offer)
-
-    async def _activate_ctrip_multi_city(self, page: Page, timeout_ms: int) -> None:
-        await ctrip_page.activate_multi_city(page, timeout_ms)
-
-    async def _activate_ctrip_one_way(self, page: Page, timeout_ms: int) -> None:
-        await ctrip_page.activate_one_way(page, timeout_ms)
-
-    async def _activate_ctrip_round_trip(self, page: Page, timeout_ms: int) -> None:
-        await ctrip_page.activate_round_trip(page, timeout_ms)
-
-    async def _dismiss_ctrip_login_overlays(self, page: Page, timeout_ms: int) -> None:
-        await ctrip_page.dismiss_login_overlays(page, timeout_ms)
-
-    async def _prepare_ctrip_one_way_form(
-        self,
-        page: Page,
-        route: RouteQuery,
-        timeout_ms: int,
-        *,
-        skip_origin: bool = False,
-    ) -> None:
-        try:
-            await ctrip_page.prepare_one_way_form(self, page, route, timeout_ms, skip_origin=skip_origin)
-        except Exception as exc:
-            await self._browser_use_assist_page(
-                page,
-                "ctrip_one_way_form",
-                "Ctrip one-way form preparation failed. Help diagnose city/date field state using normal UI only.",
-                {"route_key": route.route_key, "origin": route.origin, "destination": route.destination, "error": str(exc)},
-            )
-            raise
-
-    async def _prepare_ctrip_round_trip_form(
-        self,
-        page: Page,
-        route: RouteQuery,
-        timeout_ms: int,
-    ) -> None:
-        try:
-            await ctrip_page.prepare_round_trip_form(self, page, route, timeout_ms)
-        except Exception as exc:
-            await self._browser_use_assist_page(
-                page,
-                "ctrip_round_trip_form",
-                "Ctrip round-trip form preparation failed. Help diagnose city/date field state using normal UI only.",
-                {"route_key": route.route_key, "origin": route.origin, "destination": route.destination, "error": str(exc)},
-            )
-            raise
-
-    async def _prepare_ctrip_multi_city_form(
-        self,
-        page: Page,
-        segments: list[RouteSegment],
-        timeout_ms: int,
-    ) -> None:
-        try:
-            await ctrip_page.prepare_multi_city_form(self, page, segments, timeout_ms)
-        except Exception as exc:
-            await self._browser_use_assist_page(
-                page,
-                "ctrip_multi_city_form",
-                "Ctrip multi-city form preparation failed. Help diagnose city/date field state using normal UI only.",
-                {"segments": [segment.to_dict() for segment in segments], "error": str(exc)},
-            )
-            raise
+            await self.ctrip_browser._prepare_ctrip_results_page(page, route, provider.timeout_ms)
 
     async def _browser_use_assist_page(
         self,
@@ -905,260 +667,8 @@ class BrowserAutomation:
             "Run inspect-page to capture the live DOM and update selectors.lowest_price."
         )
 
-    async def _extract_ctrip_offer(self, page: Page, route: RouteQuery) -> OfferDetails | None:
-        return await ctrip_parser.extract_offer(self, page, route)
-
-    async def _texts_for_selectors(self, page: Page, selectors: list[str], limit: int = 6) -> list[str]:
-        texts: list[str] = []
-        for selector in selectors:
-            try:
-                locator = page.locator(selector)
-                count = min(await locator.count(), limit)
-                for index in range(count):
-                    text = (await locator.nth(index).inner_text()).strip()
-                    if text:
-                        texts.append(text)
-            except Exception:
-                continue
-        return texts
-
-    async def _collect_candidate_texts(self, provider: ProviderConfig, page: Page) -> dict[str, list[str]]:
-        selector_sets = {
-            "price_candidates": self._selector_list(provider, "lowest_price")
-            or [
-                "[class*='price']",
-                "[class*='Price']",
-                "[class*='fare']",
-                "[class*='Fare']",
-                "[data-testid*='price']",
-            ],
-            "button_candidates": ["button", "a", "[role='button']"],
-        }
-        result: dict[str, list[str]] = {}
-        for key, selectors in selector_sets.items():
-            result[key] = await self._texts_for_selectors(page, selectors, limit=10)
-        return result
-
     def _extract_price_from_network(self, response_store: list[dict]) -> float | None:
         return ctrip_network_parser.extract_price_from_network(response_store)
-
-    def _extract_ctrip_multi_city_match_from_network(
-        self,
-        response_store: list[dict],
-        route: RouteQuery,
-        *,
-        preferred_total: float | None = None,
-    ) -> dict[str, object] | None:
-        return ctrip_network_parser.extract_multi_city_match_from_network(
-            response_store,
-            route,
-            preferred_total=preferred_total,
-        )
-
-    def _extract_ctrip_tail_match_from_network(
-        self,
-        response_store: list[dict],
-        *,
-        origin: str,
-        transfer: str,
-        destination: str,
-        preferred_airlines: list[str] | None = None,
-    ) -> dict[str, object] | None:
-        return ctrip_tail_discovery.extract_tail_match_from_network(
-            self,
-            response_store,
-            origin=origin,
-            transfer=transfer,
-            destination=destination,
-            preferred_airlines=preferred_airlines,
-        )
-
-    async def _extract_ctrip_tail_match_from_page(
-        self,
-        page: Page,
-        *,
-        origin: str,
-        transfer: str,
-        destination: str,
-        departure_date: str,
-        cabin: str,
-        preferred_airlines: list[str] | None = None,
-    ) -> dict[str, object] | None:
-        return await ctrip_tail_discovery.extract_tail_match_from_page(
-            page,
-            origin=origin,
-            transfer=transfer,
-            destination=destination,
-            departure_date=departure_date,
-            cabin=cabin,
-            preferred_airlines=preferred_airlines,
-        )
-
-    async def _extract_ctrip_tail_page_diagnostics(
-        self,
-        page: Page,
-        *,
-        response_store: list[dict] | None = None,
-        origin: str = "",
-        transfer: str,
-        destination: str = "",
-        preferred_airlines: list[str] | None = None,
-    ) -> str:
-        return await ctrip_tail_discovery.extract_tail_page_diagnostics(
-            self,
-            page,
-            response_store=response_store,
-            origin=origin,
-            transfer=transfer,
-            destination=destination,
-            preferred_airlines=preferred_airlines,
-        )
-
-    async def _dump_ctrip_tail_diagnostics(
-        self,
-        page: Page,
-        *,
-        response_store: list[dict],
-        origin: str,
-        transfer: str,
-        destination: str,
-        departure_date: str,
-    ) -> dict[str, str] | None:
-        return await ctrip_tail_discovery.dump_tail_diagnostics(
-            self,
-            page,
-            response_store=response_store,
-            origin=origin,
-            transfer=transfer,
-            destination=destination,
-            departure_date=departure_date,
-        )
-
-    def _summarize_response_for_diagnostics(self, item: dict) -> dict[str, object]:
-        return ctrip_network_parser.summarize_response_for_diagnostics(item)
-
-    def _payload_shape(self, payload: dict) -> str:
-        return ctrip_network_parser.payload_shape(payload)
-
-    def _ctrip_tail_network_diagnostics(
-        self,
-        response_store: list[dict],
-        *,
-        origin: str,
-        transfer: str,
-        destination: str,
-        preferred_airlines: list[str] | None = None,
-    ) -> str:
-        return ctrip_tail_discovery.network_diagnostics(
-            self,
-            response_store,
-            origin=origin,
-            transfer=transfer,
-            destination=destination,
-            preferred_airlines=preferred_airlines,
-        )
-
-    @staticmethod
-    def _summarize_tail_details(details: list[dict[str, object]]) -> str:
-        return ctrip_tail_discovery.summarize_tail_details(details)
-
-    def _details_match_tail_route(
-        self,
-        details: list[dict[str, object]],
-        origin: str,
-        transfer: str,
-        destination: str,
-    ) -> bool:
-        return ctrip_tail_discovery.details_match_tail_route(details, origin, transfer, destination)
-
-    @staticmethod
-    def _code_matches_target(value: object, target: str) -> bool:
-        return ctrip_tail_discovery.code_matches_target(value, target)
-
-    @staticmethod
-    def _ctrip_total_price(price: dict) -> float | None:
-        return ctrip_itinerary.total_price(price)
-
-    @staticmethod
-    def _multi_city_details_are_direct(details: list[dict[str, object]], route: RouteQuery) -> bool:
-        return ctrip_itinerary.multi_city_details_are_direct(details, route)
-
-    def _walk_ctrip_data_nodes(self, node):
-        yield from ctrip_itinerary.walk_data_nodes(node)
-
-    def _build_ctrip_itinerary_details(self, itinerary: dict, price: dict) -> list[dict[str, object]]:
-        return ctrip_itinerary.build_itinerary_details(itinerary, price)
-
-    def _build_multi_city_details(self, itinerary: dict, price: dict) -> list[dict[str, object]]:
-        return ctrip_itinerary.build_multi_city_details(itinerary, price)
-
-    def _build_domestic_online_details(self, itinerary: dict, price: dict) -> list[dict[str, object]]:
-        return ctrip_itinerary.build_domestic_online_details(itinerary, price)
-
-    def _extract_flight_info_list(self, price: dict) -> list[dict]:
-        return ctrip_itinerary.extract_flight_info_list(price)
-
-    @staticmethod
-    def _normalize_cabin_from_seat(seat: dict[str, object]) -> str | None:
-        return ctrip_itinerary.normalize_cabin_from_seat(seat)
-
-    @staticmethod
-    def _normalize_cabin_code(value: object) -> str | None:
-        return ctrip_itinerary.normalize_cabin_code(value)
-
-    @staticmethod
-    def _format_ctrip_dt(value: object) -> str | None:
-        return ctrip_itinerary.format_ctrip_dt(value)
-
-    @staticmethod
-    def _coerce_price(value) -> float | None:
-        return ctrip_itinerary.coerce_price(value)
-
-    async def _fill_first(self, page: Page, selectors: list[str], value: str) -> None:
-        last_error: Exception | None = None
-        for selector in selectors:
-            try:
-                await page.locator(selector).first.fill(value)
-                return
-            except Exception as exc:
-                last_error = exc
-        raise RuntimeError(f"Could not fill any selector from {selectors}") from last_error
-
-    async def _click_first(self, page: Page, selectors: list[str]) -> None:
-        last_error: Exception | None = None
-        for selector in selectors:
-            try:
-                await page.locator(selector).first.click()
-                return
-            except Exception as exc:
-                last_error = exc
-        raise RuntimeError(f"Could not click any selector from {selectors}") from last_error
-
-    async def _click_first_available(self, scope, selectors: list[str], timeout_ms: int) -> bool:
-        click_timeout = max(500, min(timeout_ms, 1500))
-        for selector in selectors:
-            try:
-                locator = scope.locator(selector)
-                if await locator.count() == 0:
-                    continue
-                await locator.first.click(timeout=click_timeout, force=True)
-                return True
-            except Exception:
-                continue
-        return False
-
-    async def _throttle(self, provider: ProviderConfig) -> None:
-        wait_seconds = random.uniform(provider.min_delay_seconds, provider.max_delay_seconds)
-        await asyncio.sleep(wait_seconds)
-
-    @staticmethod
-    def _selector_list(provider: ProviderConfig, key: str) -> list[str]:
-        raw = provider.selectors.get(key)
-        if raw is None:
-            return []
-        if isinstance(raw, str):
-            return [raw] if raw.strip() else []
-        return [item for item in raw if isinstance(item, str) and item.strip()]
 
     @staticmethod
     def _storage_state_is_usable(path: Path) -> bool:
@@ -1175,13 +685,4 @@ class BrowserAutomation:
             return_date=quote(route.return_date or ""),
             cabin=quote(provider_cabin_value(provider.name, route.cabin)),
             passengers=quote(str(route.passengers)),
-        )
-
-    @staticmethod
-    def _build_itinerary_summary(route: RouteQuery) -> str:
-        if not route.segments:
-            return f"{route.origin}->{route.destination} {route.departure_date}"
-        return " / ".join(
-            f"{segment.origin}->{segment.destination} {segment.departure_date}"
-            for segment in route.segments
         )

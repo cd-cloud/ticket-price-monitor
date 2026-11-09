@@ -86,6 +86,42 @@ class ProviderRuntimeTests(unittest.TestCase):
         self.assertEqual(100, result.price)
         self.assertEqual([automation.provider_runtime], seen)
 
+    def test_browser_automation_passes_ctrip_runtime_to_ctrip_handler(self) -> None:
+        from providers.ctrip_runtime import CtripRuntime
+
+        seen: list[object] = []
+
+        class FakeHandler:
+            async def query(self, runtime, provider, route, page, response_store):
+                seen.append(runtime)
+                return ProviderQueryOutcome(price=100, final_url="https://example.test", title="ok")
+
+        original = browser_automation.PROVIDER_HANDLERS["ctrip"]
+        browser_automation.PROVIDER_HANDLERS["ctrip"] = FakeHandler()
+        try:
+            automation = BrowserAutomation(
+                SimpleNamespace(
+                    runtime_dir=Path("."),
+                    automation_backend="playwright",
+                    browser_backend="playwright",
+                    browser_backend_fallbacks=[],
+                    providers={},
+                ),
+                {},
+            )
+            result = asyncio.run(automation._query_provider_with_handler(
+                SimpleNamespace(name="ctrip"),
+                RouteQuery(origin="SHA", destination="PEK", departure_date="2026-06-01"),
+                page=None,
+                response_store=[],
+            ))
+        finally:
+            browser_automation.PROVIDER_HANDLERS["ctrip"] = original
+
+        self.assertEqual(100, result.price)
+        self.assertEqual([automation.ctrip_runtime], seen)
+        self.assertIsInstance(seen[0], CtripRuntime)
+
     def test_runtime_builds_itinerary_summary_without_automation_delegate(self) -> None:
         route = RouteQuery(
             origin="BJS",

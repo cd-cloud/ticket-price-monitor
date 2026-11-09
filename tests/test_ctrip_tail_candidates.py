@@ -140,7 +140,11 @@ def test_network_date_evidence_only_uses_successful_current_generation(status, g
 
 
 def make_runner(ui):
-    automation = SimpleNamespace(provider_runtime=object(), _ctrip_results_date_evidence=AsyncMock(return_value=ui))
+    ctrip_browser = SimpleNamespace(_ctrip_results_date_evidence=AsyncMock(return_value=ui))
+    automation = SimpleNamespace(
+        app_config=object(), ctrip_runtime=object(), ctrip_browser=ctrip_browser, ctrip_tail=object(),
+        TAIL_DISCOVERY_CANDIDATE_TIMEOUT_SECONDS=120,
+    )
     return CtripTailDiscoveryRunner(automation)
 
 
@@ -261,7 +265,7 @@ def test_full_runner_keeps_candidate_date_proof_after_loading_and_backend_retry(
 
     async def run():
         runner, automation, _, _ = fixtures.CtripRunnerLifecycleTests().runner()
-        automation._ctrip_results_date_evidence.return_value = evidence()
+        runner.ctrip_browser._ctrip_results_date_evidence.return_value = evidence()
         item = response(day=DATE)
         itinerary = item["payload"]["flightItineraryList"][0]
         onward = deepcopy(itinerary["flightSegments"][0]["flightList"][0])
@@ -294,5 +298,5 @@ def test_full_runner_keeps_candidate_date_proof_after_loading_and_backend_retry(
         assert raw["date_evidence"]["ui_status"] == "unknown"
         assert result["attempts"][0]["date_evidence"]["scope"] == "network_candidates_only"
         dom.assert_not_awaited()
-        automation._ensure_ctrip_results_date.assert_not_awaited()
+        runner.ctrip_browser._ensure_ctrip_results_date.assert_not_awaited()
     asyncio.run(run())

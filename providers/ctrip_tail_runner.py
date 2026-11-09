@@ -7,7 +7,6 @@ import logging
 import random
 from datetime import datetime, timezone
 from time import monotonic
-from pathlib import Path
 from typing import Any, Callable
 
 from config_manager import RouteQuery
@@ -24,16 +23,17 @@ LOGGER = logging.getLogger(__name__)
 
 
 class CtripTailDiscoveryRunner:
-    """Runs the long Ctrip tail-discovery flow using BrowserAutomation primitives."""
+    """Runs the long Ctrip tail-discovery flow using explicit browser adapters."""
 
     CONTEXT_REBUILD_INTERVAL = 8
 
     def __init__(self, automation: Any) -> None:
         self.automation = automation
-        self.runtime = automation.provider_runtime
-
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self.automation, name)
+        self.runtime = automation.ctrip_runtime
+        self.ctrip_browser = automation.ctrip_browser
+        self.ctrip_tail = automation.ctrip_tail
+        self.app_config = automation.app_config
+        self.TAIL_DISCOVERY_CANDIDATE_TIMEOUT_SECONDS = automation.TAIL_DISCOVERY_CANDIDATE_TIMEOUT_SECONDS
 
     async def _open_tail_context(
         self,
@@ -41,14 +41,14 @@ class CtripTailDiscoveryRunner:
         *,
         backend_name: str | None = None,
     ) -> tuple[Any, Any, Any, list[dict]]:
-        page, context = await self._new_page(provider, backend_name=backend_name)
-        session_metadata = self._session_metadata_for_context(context)
+        page, context = await self.automation._new_page(provider, backend_name=backend_name)
+        session_metadata = self.automation._session_metadata_for_context(context)
         response_store: list[dict] = ResponseStore()
         await attach_response_listeners(page, response_store)
         return page, context, session_metadata, response_store
 
     def _backend_names_after(self, provider: Any, current_backend: str | None) -> list[str]:
-        names = self._backend_names_for_provider(provider)
+        names = self.automation._backend_names_for_provider(provider)
         current = (current_backend or "").strip().lower()
         if not current or current not in names:
             return names
@@ -108,13 +108,13 @@ class CtripTailDiscoveryRunner:
                 LOGGER.info("tail discovery backend open failed backend=%s error=%s", next_backend, exc)
                 continue
 
-            await self._stop_ctrip_tail_trace(context, trace_started=trace_started)
-            await self._close_context_quietly(context)
+            await self.ctrip_tail._stop_ctrip_tail_trace(context, trace_started=trace_started)
+            await self.automation._close_context_quietly(context)
             page = next_page
             context = next_context
             session_metadata = next_session_metadata
             response_store = next_response_store
-            trace_started = await self._start_ctrip_tail_trace(
+            trace_started = await self.ctrip_tail._start_ctrip_tail_trace(
                 context,
                 origin=origin,
                 transfer=transfer,
@@ -156,7 +156,7 @@ class CtripTailDiscoveryRunner:
                 attempt["phase"] = "form_search_failed"
                 if looks_like_rate_limit(last_error):
                     break
-                if await self._ctrip_verification_detected(page):
+                if await self.ctrip_tail._ctrip_verification_detected(page):
                     break
         return last_error, page, context, response_store, session_metadata, trace_started, False
 
@@ -189,20 +189,20 @@ class CtripTailDiscoveryRunner:
                 time_start=departure_time_start, time_end=departure_time_end, preferred_airlines=preferred_airlines,
             )
         finally:
-            await self._close_context_quietly(context)
+            await self.automation._close_context_quietly(context)
 
     async def _verification_gate(self, page, context, attempt, progress_callback, cancel_checker, continue_checker):
-        if not await self._ctrip_verification_detected(page):
+        if not await self.ctrip_tail._ctrip_verification_detected(page):
             return False
         attempt.update(status="needs_verification", phase="verification_detected")
         if progress_callback:
             progress_callback({"stage": "needs_verification", "destination": attempt["destination"],
                                "message": "请在浏览器中人工完成验证，再点击继续。", "attempts": [dict(attempt)]})
-        if not await self._wait_for_ctrip_verification_continue(
+        if not await self.ctrip_tail._wait_for_ctrip_verification_continue(
             page, cancel_checker=cancel_checker, verification_continue_checker=continue_checker,
         ):
             raise RuntimeError("verification_timeout: manual verification was not completed")
-        await self._save_storage_state_if_allowed(context, self.app_config.providers["ctrip"])
+        await self.automation._save_storage_state_if_allowed(context, self.app_config.providers["ctrip"])
         attempt.update(status="started", phase="verification_continued")
         if progress_callback:
             progress_callback({"stage": "verification_continued", "destination": attempt["destination"]})
@@ -210,10 +210,10 @@ class CtripTailDiscoveryRunner:
 
     async def _collect_candidate_matches(self, page, route, transfer, responses, attempt, cabin):
         network = extract_tail_matches_from_network(
-            self.automation, responses, origin=route.origin, transfer=transfer,
+            self.ctrip_tail, responses, origin=route.origin, transfer=transfer,
             destination=route.destination, preferred_airlines=None,
         )
-        ui_evidence = await self._ctrip_results_date_evidence(page, route)
+        ui_evidence = await self.ctrip_browser._ctrip_results_date_evidence(page, route)
         attempt["date_evidence"] = ui_evidence
         try:
             network, evidence = prepare_network_candidates(ui_evidence, network, route, transfer)
@@ -260,7 +260,7 @@ class CtripTailDiscoveryRunner:
                 if cancel_checker and cancel_checker():
                     break
                 if index and (context_error or index % self.CONTEXT_REBUILD_INTERVAL == 0):
-                    await self._close_context_quietly(context)
+                    await self.automation._close_context_quietly(context)
                     page, context, metadata, responses = await self._open_tail_context(provider, backend_name=metadata.browser_backend)
                     origin_ready, context_error = False, False
                 started = monotonic()
@@ -277,7 +277,7 @@ class CtripTailDiscoveryRunner:
                 try:
                     await self._verification_gate(page, context, attempt, progress_callback, cancel_checker, verification_continue_checker)
                     responses.clear()
-                    trace_started = await self._start_ctrip_tail_trace(context, origin=origin, transfer=transfer,
+                    trace_started = await self.ctrip_tail._start_ctrip_tail_trace(context, origin=origin, transfer=transfer,
                                                                       destination=destination, departure_date=departure_date)
                     try:
                         await asyncio.wait_for(ctrip.query_tail_candidate_offer(
@@ -309,10 +309,10 @@ class CtripTailDiscoveryRunner:
                                 else:
                                     raise error
                     await self._verification_gate(page, context, attempt, progress_callback, cancel_checker, verification_continue_checker)
-                    await self._warm_ctrip_tail_result_data(page, responses)
+                    await self.ctrip_tail._warm_ctrip_tail_result_data(page, responses)
                     if await self._verification_gate(page, context, attempt, progress_callback, cancel_checker, verification_continue_checker):
                         responses.clear()
-                        await self._warm_ctrip_tail_result_data(page, responses)
+                        await self.ctrip_tail._warm_ctrip_tail_result_data(page, responses)
                     attempt["loading_evidence"] = getattr(responses, "loading_evidence", None)
                     matches = await self._collect_candidate_matches(
                         page, route, transfer, responses, attempt, cabin,
@@ -323,7 +323,7 @@ class CtripTailDiscoveryRunner:
                                                      preferred_airlines=preferred_airlines),
                             has_no_results_notice=await ctrip_page.has_no_results_notice(page),
                         ))
-                        attempt["diagnostic_artifact"] = await self._dump_ctrip_tail_diagnostics(
+                        attempt["diagnostic_artifact"] = await self.ctrip_tail._dump_ctrip_tail_diagnostics(
                             page, response_store=responses, origin=origin, transfer=transfer,
                             destination=destination, departure_date=departure_date,
                         )
@@ -364,7 +364,7 @@ class CtripTailDiscoveryRunner:
                         attempt["stop_reason"] = attempt["phase"]
                     errors.append(f"{origin}->{destination}: {attempt['error']}")
                 finally:
-                    trace = await self._stop_ctrip_tail_trace(context, trace_started=trace_started)
+                    trace = await self.ctrip_tail._stop_ctrip_tail_trace(context, trace_started=trace_started)
                     if trace:
                         attempt["trace_path"] = str(trace)
                         for result in results:
@@ -379,7 +379,7 @@ class CtripTailDiscoveryRunner:
                 if stop:
                     break
                 if index < len(candidates) - 1:
-                    await self._tail_cancellable_wait(page, random.randint(35000, 75000), cancel_checker=cancel_checker)
+                    await self.ctrip_tail._tail_cancellable_wait(page, random.randint(35000, 75000), cancel_checker=cancel_checker)
         finally:
-            await self._close_context_quietly(context)
+            await self.automation._close_context_quietly(context)
         return {"results": results, "errors": errors, "attempts": attempts}

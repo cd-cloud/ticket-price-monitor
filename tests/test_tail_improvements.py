@@ -394,18 +394,25 @@ class CtripRunnerLifecycleTests(unittest.IsolatedAsyncioTestCase):
         page = SimpleNamespace(url="https://flights.ctrip.com/online/list/oneway-bjs-can", on=lambda *args: None)
         context = object()
         metadata = SimpleNamespace(browser_backend="chrome", to_payload=lambda: {"browser_backend": "chrome"})
-        automation = SimpleNamespace(
-            app_config=SimpleNamespace(providers={"ctrip": SimpleNamespace(timeout_ms=1000)}, default_currency="CNY"),
-            provider_runtime=object(), TAIL_DISCOVERY_CANDIDATE_TIMEOUT_SECONDS=120, _new_page=AsyncMock(return_value=(page, context)),
-            _session_metadata_for_context=lambda ctx: metadata,
-            _ctrip_verification_detected=AsyncMock(return_value=False),
-            _wait_for_ctrip_verification_continue=AsyncMock(return_value=True),
-            _save_storage_state_if_allowed=AsyncMock(), _start_ctrip_tail_trace=AsyncMock(return_value=False),
-            _stop_ctrip_tail_trace=AsyncMock(return_value=None), _close_context_quietly=AsyncMock(),
-            _ensure_ctrip_results_date=AsyncMock(), _warm_ctrip_tail_result_data=AsyncMock(),
+        ctrip_browser = SimpleNamespace(
+            _ensure_ctrip_results_date=AsyncMock(),
             _ctrip_results_date_evidence=AsyncMock(return_value={
                 "matched": True, "status": "confirmed", "matched_source": "visible_control", "overlay_visible": False}),
+        )
+        ctrip_tail = SimpleNamespace(
+            _ctrip_verification_detected=AsyncMock(return_value=False),
+            _wait_for_ctrip_verification_continue=AsyncMock(return_value=True),
+            _start_ctrip_tail_trace=AsyncMock(return_value=False),
+            _stop_ctrip_tail_trace=AsyncMock(return_value=None),
+            _warm_ctrip_tail_result_data=AsyncMock(),
             _dump_ctrip_tail_diagnostics=AsyncMock(return_value={}), _tail_cancellable_wait=AsyncMock(),
+        )
+        automation = SimpleNamespace(
+            app_config=SimpleNamespace(providers={"ctrip": SimpleNamespace(timeout_ms=1000)}, default_currency="CNY"),
+            ctrip_runtime=object(), ctrip_browser=ctrip_browser, ctrip_tail=ctrip_tail,
+            TAIL_DISCOVERY_CANDIDATE_TIMEOUT_SECONDS=120, _new_page=AsyncMock(return_value=(page, context)),
+            _session_metadata_for_context=lambda ctx: metadata,
+            _save_storage_state_if_allowed=AsyncMock(), _close_context_quietly=AsyncMock(),
         )
         return CtripTailDiscoveryRunner(automation), automation, page, context
 
@@ -420,7 +427,7 @@ class CtripRunnerLifecycleTests(unittest.IsolatedAsyncioTestCase):
                                       candidates=["CAN", "SZX"], progress_callback=events.append)
         self.assertEqual(2, len([event for event in events if event["stage"] == "candidate_finished"]))
         self.assertEqual(["no_match", "no_match"], [a["status"] for a in result["attempts"]])
-        automation._tail_cancellable_wait.assert_awaited_once()
+        runner.ctrip_tail._tail_cancellable_wait.assert_awaited_once()
         automation._close_context_quietly.assert_awaited_once()
 
     async def test_ctrip_preserves_all_network_alternatives(self):
@@ -436,12 +443,12 @@ class CtripRunnerLifecycleTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_verification_gate_waits_for_human_and_resumes(self):
         runner, automation, page, context = self.runner()
-        automation._ctrip_verification_detected.return_value = True
+        runner.ctrip_tail._ctrip_verification_detected.return_value = True
         events = []
         outcome = await runner._verification_gate(page, context, {"destination": "CAN"}, events.append, None, None)
         self.assertTrue(outcome)
         self.assertEqual(["needs_verification", "verification_continued"], [e["stage"] for e in events])
-        automation._wait_for_ctrip_verification_continue.assert_awaited_once()
+        runner.ctrip_tail._wait_for_ctrip_verification_continue.assert_awaited_once()
 
     async def test_ctrip_rate_limit_does_not_switch_backend(self):
         runner, automation, _, _ = self.runner()
