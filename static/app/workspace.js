@@ -75,6 +75,7 @@ function setWorkspaceTab(tab, options = {}) {
   });
   const select = document.getElementById("workspaceTabSelect");
   if (select) select.value = nextTab;
+  if (nextTab === "insights" && typeof fetchLog === "function") fetchLog().catch(() => {});
 }
 
 function updateWorkspaceTabs() {

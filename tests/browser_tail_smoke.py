@@ -118,6 +118,10 @@ async def run(output: Path):
             await page.goto("http://127.0.0.1:8765/")
             await page.wait_for_function("document.querySelectorAll('.tail-result-card').length === 4")
             await page.evaluate("setWorkspaceTab('tail', {persist:false})")
+            await page.locator("button[data-workspace-tab='insights']").click()
+            await page.wait_for_function("document.querySelector('#logBox').textContent !== '加载中...'")
+            assert (await page.locator("#logBox").inner_text()).strip()
+            await page.evaluate("setWorkspaceTab('tail', {persist:false})")
             await page.wait_for_function("document.querySelector('#tailQueryEditor').open === false")
             assert not await page.locator("#tailResultFilters").evaluate("el => el.open")
             assert not await page.locator("#tailTaskContextDetails").evaluate("el => el.open")
@@ -131,6 +135,15 @@ async def run(output: Path):
             assert "ghost" in await page.locator("#tailRunBtn").get_attribute("class")
             assert await page.locator("#tailRunBtn").inner_text() == "使用新条件查询"
             assert "上方待提交条件与此任务不同" in await page.locator("#tailDraftNotice").inner_text()
+            assert await page.locator("#tailLoadTaskBtn").is_visible()
+            await page.locator("#tailLoadTaskBtn").click()
+            assert await page.locator("#tailOriginInput").input_value() == "BJS"
+            assert await page.locator("#tailTransferInput").input_value() == "SHA"
+            assert await page.locator("#tailDateInput").input_value() == "2027-06-20"
+            assert await page.locator("#tailProviderSelect").input_value() == "ctrip"
+            assert await page.locator("#tailQueryEditor").evaluate("el => el.open")
+            await page.locator("#tailProviderSelect").select_option("both")
+            await page.evaluate("document.querySelector('#tailQueryEditor').open=false")
             assert await page.locator("#tailDiscoveryPanel").get_attribute("data-has-results") == "true"
             assert await page.locator("#tailDiscoveryPanel .panel-head .muted").is_hidden()
             assert await page.locator("#tailJobSummary").get_attribute("data-active") == "false"
@@ -149,6 +162,10 @@ async def run(output: Path):
             await page.locator("#tailViewResultsBtn").click()
             assert await page.locator("#tailResultsHeading").evaluate("el => el === document.activeElement")
             assert await page.locator(".tail-flight-group").count() == 1
+            assert await page.locator(".tail-recommended-results").count() == 1
+            assert await page.locator(".tail-recommended-results > .tail-flight-group > .tail-itinerary-option").count() == 3
+            assert await page.locator(".tail-recommended-results .tail-alternatives").evaluate("el => !el.open")
+            assert "比较其他 1 条购票路线" in await page.locator(".tail-recommended-results .tail-alternatives > summary").inner_text()
             assert await page.locator("#tailProviderSelect").input_value() == "both"
             assert not await page.locator("#tailSearchSettings").get_attribute("open")
             assert not await page.locator("#tailFilters").get_attribute("open")
@@ -349,6 +366,7 @@ async def run(output: Path):
                     await navigation.select_option("tail")
                     assert await preview.locator("#tailDiscoveryPanel").is_visible()
                     assert await navigation.input_value() == "tail"
+                    assert await preview.locator(".tail-result-tools").evaluate("el => getComputedStyle(el).position === 'static'")
                     assert await preview.locator(".tail-result-summary").first.evaluate("el => getComputedStyle(el).gridTemplateColumns.split(' ').length === 1")
                     assert await preview.locator(".tail-result-decision").first.evaluate("el => getComputedStyle(el).gridTemplateColumns.split(' ').length === 1")
                     assert await preview.locator(".tail-result-card").first.evaluate("""el => {
@@ -493,11 +511,12 @@ async def run(output: Path):
                 await page.evaluate("window.scrollBy(0, 500)")
                 await page.evaluate("new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))")
                 toolbar_top = await page.locator(".tail-result-tools").evaluate("el => el.getBoundingClientRect().top")
-                expected_top = 8 if width <= 640 else 82
-                assert abs(toolbar_top - expected_top) < 4, f"toolbar top {width}: {toolbar_top}"
                 if width > 640:
+                    assert abs(toolbar_top - 76) < 4, f"toolbar top {width}: {toolbar_top}"
                     nav_bottom = await page.locator("#workspaceTabs").evaluate("el => el.getBoundingClientRect().bottom")
                     assert toolbar_top >= nav_bottom - 1, f"toolbar overlaps navigation: {toolbar_top} < {nav_bottom}"
+                else:
+                    assert await page.locator(".tail-result-tools").evaluate("el => getComputedStyle(el).position === 'static'")
                 assert not await page.evaluate("document.documentElement.scrollWidth > innerWidth + 1"), f"dual overflow {width}"
                 await page.screenshot(path=str(output / f"tail-dual-{width}.png"), full_page=True)
             await page.evaluate("""() => {

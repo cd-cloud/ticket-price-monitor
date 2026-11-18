@@ -69,6 +69,8 @@ function updateTailBusyControls() {
   const busy = tailBusy();
   document.getElementById("tailRunBtn").disabled = busy;
   document.getElementById("tailQueryFields").disabled = busy;
+  const loadTask = document.getElementById("tailLoadTaskBtn");
+  if (loadTask) loadTask.disabled = busy;
   updateTailRunAction();
   document.querySelectorAll("#tailResults [data-tail-action='recheck'], #tailJobSummary [data-tail-action]").forEach(button => {
     button.disabled = busy && button.dataset.tailAction !== "continue";
@@ -510,6 +512,7 @@ function startTailJobPolling(job, immediate = true) {
   renderTailJobProgress(job);
   updateTailCancelButton(job);
   updateTailBusyControls();
+  resetTailResultDisclosure();
   clearTailResultFilters();
   setTailResultView("current");
   pollTailDiscoveryJob(tailState.job.activeId, immediate);

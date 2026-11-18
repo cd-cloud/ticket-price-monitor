@@ -1769,7 +1769,7 @@ pre {
 #tailTaskConditions { font-size: 13px; line-height: 1.7; }
 #tailJobPickerLabel { max-width: 440px; flex: 1 1 250px; }
 #tailResultScopeNote { font-size: 12px; flex: 1 1 200px; line-height: 1.6; margin: 0 0 5px; }
-#tailDiscoveryPanel .tail-result-tools { position: sticky; top: 82px; z-index: 10; box-sizing: border-box; display: grid; grid-template-columns: minmax(0, 220px) minmax(0, 1fr); align-items: end; gap: 6px 16px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; background: #fffaf3; box-shadow: 0 8px 18px rgba(31, 42, 38, .06); }
+#tailDiscoveryPanel .tail-result-tools { position: sticky; top: 76px; z-index: 10; box-sizing: border-box; display: grid; grid-template-columns: minmax(0, 220px) minmax(0, 1fr); align-items: center; gap: 6px 12px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 10px; background: #fffaf3; box-shadow: 0 6px 14px rgba(31, 42, 38, .05); }
 #tailDiscoveryPanel .tail-stale-group > summary { display: flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 600; }
 #tailDiscoveryPanel .tail-stale-group > summary span { color: var(--muted); font-weight: 400; }
 #tailDiscoveryPanel .tail-stale-group > summary small { margin-left: 4px; color: var(--muted); font-size: 12px; font-weight: 400; }
@@ -1790,6 +1790,15 @@ pre {
 #tailDiscoveryPanel .tail-safety-note { color: var(--muted); font-size: 12px; line-height: 1.7; margin: 0 0 16px; }
 #tailDiscoveryPanel .tail-state-section > h3 { font-size: 14px; margin: 8px 0 12px; }
 #tailDiscoveryPanel .tail-state-section > h3 > span { color: var(--muted); font-weight: 400; margin-left: 6px; }
+#tailDiscoveryPanel .tail-recommended-results > h3 { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; }
+#tailDiscoveryPanel .tail-recommended-results > h3 small { flex-basis: 100%; color: var(--muted); font-size: 12px; font-weight: 400; line-height: 1.6; }
+#tailDiscoveryPanel .tail-all-results { margin: 0 0 18px; border: 1px solid var(--border); border-radius: 12px; background: #fffdfa; }
+#tailDiscoveryPanel .tail-all-results > summary { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 46px; padding: 10px 14px; color: var(--accent); font-size: 14px; font-weight: 600; list-style: none; }
+#tailDiscoveryPanel .tail-all-results > summary::-webkit-details-marker { display: none; }
+#tailDiscoveryPanel .tail-all-results > summary::after { content: "展开"; color: var(--muted); font-size: 12px; font-weight: 400; }
+#tailDiscoveryPanel .tail-all-results[open] > summary::after { content: "收起"; }
+#tailDiscoveryPanel .tail-all-results > summary small { color: var(--muted); font-size: 12px; font-weight: 400; }
+#tailDiscoveryPanel .tail-all-results-body { padding: 14px; border-top: 1px solid var(--border); }
 #tailDiscoveryPanel .tail-route-group { background: none; border: 0; border-radius: 0; padding: 0; gap: 4px; }
 #tailDiscoveryPanel .tail-route-group-head { font-size: 13px; align-items: center; }
 #tailDiscoveryPanel .tail-route-group-head strong { font-size: 14px; }
@@ -1863,7 +1872,7 @@ body[data-workspace="tail"] .hero .actions { display: none; }
   #tailDiscoveryPanel .tail-settings-grid { grid-template-columns: 1fr; }
   #tailDiscoveryPanel .tail-toolbar { grid-template-columns: repeat(2, minmax(0,1fr)); }
   #tailDiscoveryPanel #tailResultFilters .tail-toolbar { grid-template-columns: 1fr; }
-  #tailDiscoveryPanel .tail-result-tools { grid-template-columns: minmax(0, 1fr) auto; }
+  #tailDiscoveryPanel .tail-result-tools { position: static; grid-template-columns: minmax(0, 1fr) auto; box-shadow: none; }
   #tailDiscoveryPanel .tail-results-meta .tail-toggle { margin-left: 0; }
   #tailDiscoveryPanel .tail-flight-heading { flex-direction: column; }
   #tailDiscoveryPanel .tail-flight-heading h4 { font-size: 18px; }

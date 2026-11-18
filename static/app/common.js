@@ -13,7 +13,7 @@ const STATUS_LABELS = {
   ok: ["已查询", "ok"],
   scheduled: ["已排程", "scheduled"],
   error: ["未更新", "idle"],
-  expired: ["已过期", "expired"],
+  expired: ["日期较早", "expired"],
   idle: ["未查询", "idle"],
 };
 

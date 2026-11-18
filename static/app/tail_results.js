@@ -1,9 +1,55 @@
+const TAIL_RECOMMENDATION_LIMIT = 3;
+
 function tailQuoteFresh(item) {
   return Boolean(item.expires_at) && Date.parse(item.expires_at) > Date.now();
 }
 
 function tailQuoteVerified(item) {
   return tailQuoteFresh(item) && item.validation?.status === "valid";
+}
+
+function tailFlightGroupKey(item, state = "") {
+  const leg = (item.flight_details || [])[0] || {};
+  return [state, item.departure_date, item.first_leg_key || item.itinerary_key || item.id,
+    item.currency, item.passengers || 1, item.quote_terms?.price_basis || "unknown"].join("|");
+}
+
+function groupTailFlightResults(items, state = "") {
+  const groups = new Map();
+  for (const item of items || []) {
+    const key = tailFlightGroupKey(item, state);
+    if (!groups.has(key)) groups.set(key, {leg: (item.flight_details || [])[0] || {}, items: [], key});
+    groups.get(key).items.push(item);
+  }
+  return [...groups.values()].map(group => ({
+    ...group,
+    optionCount: new Set(group.items.map(tailItineraryKey)).size,
+  }));
+}
+
+function selectTailRecommendationGroups(items, limit = TAIL_RECOMMENDATION_LIMIT) {
+  let quota = Math.max(0, Number(limit) || 0);
+  const selected = [], deferred = [];
+  for (const group of groupTailFlightResults(items, "recommended")) {
+    const visibleOptions = Math.min(quota, group.optionCount);
+    if (visibleOptions > 0) {
+      selected.push({...group, visibleOptions});
+      quota -= visibleOptions;
+    } else deferred.push(group);
+  }
+  return {selected, deferred};
+}
+
+function renderTailStaleResults(items) {
+  if (!items.length) return "";
+  const content = groupTailResultsByRoute(items).map(group => renderTailRouteGroup({...group, state: "stale"})).join("");
+  const open = document.getElementById("tailTrustInput")?.value === "stale" ? " open" : "";
+  return `<details class="tail-state-section tail-stale-group" data-disclosure="stale-results"${open}>
+    <summary data-focus-key="stale-results">较早检索 <span>${items.length}</span><small>点击展开</small></summary>${content}</details>`;
+}
+
+function resetTailResultDisclosure() {
+  tailState.results.disclosureState.clear();
 }
 
 function prepareTailResults(results) {
@@ -61,22 +107,43 @@ function renderTailResults(results) {
     }
     replaceTailMarkup(container, `<div class="tail-empty-state"><strong>${title}</strong><span>${message}</span>${action}</div>`);
   } else {
-    const groups = [
-      ["已校验且未过期", visible.filter(tailQuoteVerified), "verified"],
-      ["信息待核实 · 未过期", visible.filter(item => tailQuoteFresh(item) && !tailQuoteVerified(item)), "review"],
-      ["已过期 / 时间未知", visible.filter(item => !tailQuoteFresh(item)), "stale"],
-    ];
-    replaceTailMarkup(container, groups.filter(([, rows]) => rows.length).map(([label, rows, state]) => {
-      const content = groupTailResultsByRoute(rows).map(group => renderTailRouteGroup({...group, state})).join("");
-      if (state !== "stale") return `<section class="tail-state-section"><h3>${label} <span>${rows.length}</span></h3>${content}</section>`;
-      const open = document.getElementById("tailTrustInput")?.value === "stale" ? " open" : "";
-      return `<details class="tail-state-section tail-stale-group" data-disclosure="stale-results"${open}>
-        <summary data-focus-key="stale-results">${label} <span>${rows.length}</span><small>点击展开</small></summary>${content}</details>`;
-    }).join(""));
-    if (document.getElementById("tailTrustInput")?.value === "stale") {
+    const trust = document.getElementById("tailTrustInput")?.value || "all";
+    if (trust === "stale") {
+      const content = groupTailResultsByRoute(visible).map(group => renderTailRouteGroup({...group, state: "stale"})).join("");
+      replaceTailMarkup(container, `<details class="tail-state-section tail-stale-group" data-disclosure="stale-results" open>
+        <summary data-focus-key="stale-results">较早检索 <span>${visible.length}</span><small>点击收起</small></summary>${content}</details>`);
       const staleGroup = container.querySelector(".tail-stale-group");
       if (staleGroup) staleGroup.open = true;
       tailState.results.disclosureState.set("stale-results", true);
+    } else {
+      const freshItems = visible.filter(tailQuoteFresh);
+      const recommendationSource = freshItems.length ? freshItems : visible;
+      const {selected} = selectTailRecommendationGroups(recommendationSource);
+      const selectedItems = new Set(selected.flatMap(group => group.items));
+      const deferredItems = visible.filter(item => !selectedItems.has(item));
+      const deferredFresh = deferredItems.filter(tailQuoteFresh);
+      const deferredStale = deferredItems.filter(item => !tailQuoteFresh(item));
+      const recommendedCount = selected.reduce((total, group) => total + group.visibleOptions, 0);
+      const staleRecommended = selected.length > 0 && selected.every(group => group.items.every(item => !tailQuoteFresh(item)));
+      const recommendedTitle = staleRecommended ? "较早检索" : "优选方案";
+      const recommendedCountLabel = staleRecommended ? `${recommendedCount} / ${visible.length}` : String(recommendedCount);
+      const recommendedNote = staleRecommended
+        ? "当前结果均为较早检索；展示排序靠前路线，价格与库存请重新核实"
+        : "按当前筛选和排序展示前 3 条完整购票路线；近期检索且已核对的报价优先";
+      const recommendedHtml = selected.map(group => renderTailFlightGroups(group.items, "recommended", {
+        visibleOptions: group.visibleOptions,
+      })).join("");
+      const remainingFreshHtml = groupTailResultsByRoute(deferredFresh)
+        .map(group => renderTailRouteGroup({...group, state: ""})).join("");
+      const staleHtml = renderTailStaleResults(deferredStale);
+      let markup = `<section class="tail-state-section tail-recommended-results">
+        <h3>${recommendedTitle} <span>${recommendedCountLabel}</span><small>${recommendedNote}</small></h3>${recommendedHtml}</section>`;
+      if (deferredItems.length) {
+        markup += `<details class="tail-all-results" data-disclosure="tail-more-results">
+          <summary data-focus-key="tail-more-results">展开其余 ${deferredItems.length} 条报价<small>包含当前筛选下的其他购票路线</small></summary>
+          <div class="tail-all-results-body">${remainingFreshHtml}${staleHtml}</div></details>`;
+      }
+      replaceTailMarkup(container, markup);
     }
   }
   if (typeof updateTailBusyControls === "function") updateTailBusyControls();
@@ -146,7 +213,7 @@ function tailComparableBaseline(item, key) {
 }
 
 function tailDecisionDifference(item) {
-  if (!tailQuoteFresh(item)) return "历史报价，先复核再比较";
+  if (!tailQuoteFresh(item)) return "价格比较待复核";
   for (const [key, label] of [["same_flight", "同首段单买"], ["market", "符合筛选条件的直飞价"]]) {
     const baseline = tailComparableBaseline(item, key);
     if (!baseline) continue;
@@ -224,30 +291,25 @@ function renderTailItineraryGroups(items) {
   });
 }
 
-function renderTailFlightGroups(items, state = "") {
-  const groups = new Map();
-  for (const item of items) {
-    const leg = (item.flight_details || [])[0] || {};
-    const key = [state, item.departure_date, item.first_leg_key || item.itinerary_key || item.id,
-      item.currency, item.passengers || 1, item.quote_terms?.price_basis || "unknown"].join("|");
-    if (!groups.has(key)) groups.set(key, {leg, items:[], key});
-    groups.get(key).items.push(item);
-  }
-  return [...groups.values()].map(group => {
+function renderTailFlightGroups(items, state = "", display = {}) {
+  const visibleLimit = Number.isFinite(display.visibleOptions)
+    ? Math.max(0, Math.floor(display.visibleOptions)) : Infinity;
+  return groupTailFlightResults(items, state).map(group => {
     group.items.sort(compareTailResults);
     const leg = group.leg;
-    const options = renderTailItineraryGroups(group.items);
+    const itineraryOptions = renderTailItineraryGroups(group.items);
+    const visibleOptions = Math.min(itineraryOptions.length, visibleLimit);
     const key = escapeHtml(group.key);
     return `<section class="tail-flight-group" data-stable-key="${key}">
       <div class="tail-flight-heading">
         <div><p class="tail-first-leg-label">我要乘坐 · ${escapeHtml(tailPlaceLabel(group.items[0].origin))} → ${escapeHtml(tailPlaceLabel(group.items[0].transfer))}</p>
         <h4>${escapeHtml(leg.flight_no || "航班号待确认")} <span>${escapeHtml(leg.departure_time || "--:--")} → ${escapeHtml(leg.arrival_time || "--:--")}</span></h4>
         <p class="muted">${escapeHtml(airportCodeDisplayText(leg.departure_airport || leg.origin))} → ${escapeHtml(airportCodeDisplayText(leg.arrival_airport || leg.destination))}</p></div>
-        <div class="tail-flight-best"><small>${options.length} 条购票路线 · ${group.items.length} 条平台报价</small><span>按完整行程比较</span></div>
+        <div class="tail-flight-best"><small>${itineraryOptions.length} 条购票路线 · ${group.items.length} 条平台报价</small><span>按完整行程比较</span></div>
       </div>
-      ${options[0] || ""}
-      ${options.length > 1 ? `<details class="tail-alternatives" data-disclosure="alternatives-${key}"><summary data-focus-key="alternatives-${key}">比较其他 ${options.length - 1} 条购票路线</summary>
-      ${options.slice(1).join("")}</details>` : ""}
+      ${itineraryOptions.slice(0, visibleOptions).join("")}
+      ${itineraryOptions.length > visibleOptions ? `<details class="tail-alternatives" data-disclosure="alternatives-${key}"><summary data-focus-key="alternatives-${key}">比较其他 ${itineraryOptions.length - visibleOptions} 条购票路线</summary>
+      ${itineraryOptions.slice(visibleOptions).join("")}</details>` : ""}
     </section>`;
   }).join("");
 }
@@ -266,25 +328,26 @@ function renderTailResultCard(item, index, showRoute = true) {
       <span>${escapeHtml(cabinLabel(leg.cabin || item.cabin))}${leg.transfer_layover ? ` · 中转停留 ${escapeHtml(leg.transfer_layover)}` : ""}</span></div></div>`).join("");
   const difference = tailDecisionDifference(item);
   const details = item.flight_details || [];
-  const status = !fresh ? "已过期 / 时间未知" : valid ? "航段已核对 · 价格未复核" : "航段或报价待核实";
+  const status = valid ? "航段已核对 · 价格未复核" : "航段或报价待核实";
+  const observedLabel = item.observed_at ? `检索 ${formatQueryTime(item.observed_at)}` : "检索时间未知";
   const passengers = item.quote_terms?.requested_passengers || item.passengers;
-  const terms = `${{per_person:"每人", party_total:"全体乘客总价"}[item.quote_terms?.price_basis] || "每人/总价未确认"} · ${item.quote_terms?.tax_included === true ? "含税" : item.quote_terms?.tax_included === false ? "不含税" : "税费未确认"} · ${passengers ? `${passengers} 人` : "人数未知"} · ${item.quote_terms?.inventory_verified ? "人数库存已校验" : "人数库存未核实"}`;
+  const terms = `${{per_person:"每人", party_total:"全体乘客总价"}[item.quote_terms?.price_basis] || "每人/总价未确认"} · ${item.quote_terms?.tax_included === true ? "含税" : item.quote_terms?.tax_included === false ? "不含税" : "税费未确认"} · ${passengers ? `${passengers} 人` : "人数未知"}`;
   return `<article class="tail-result-card" data-provider="${escapeHtml(item.provider || "unknown")}">
     <div class="tail-result-summary">
       <div class="tail-result-main">${showRoute
         ? `<small>${valid && details.length > 1 ? "实际购票行程" : "候选购票行程 · 待核实"} · ${escapeHtml(providerLabel(item.provider))}</small><strong>${escapeHtml(tailFullRouteLabel(item))}</strong>`
-        : `<small>报价平台</small><strong>${escapeHtml(providerLabel(item.provider))}</strong>`}
+        : `<small>报价平台 · ${escapeHtml(providerLabel(item.provider))}</small>`}
         <span class="muted">${escapeHtml(cabinLabel(item.cabin))}</span>
         ${item.suitability?.airport_change ? '<span class="tail-warning">涉及换机场</span>' : ""}</div>
       <div class="tail-price"><strong>${escapeHtml(item.currency || "CNY")} ${Number(item.price || 0).toFixed(0)}</strong>
-        <small>${item.provider === "feizhu" ? "平台参考价 · 总价未核实" : "组合参考报价"}</small>
+        <small>${item.provider === "feizhu" ? "参考价 · 总价未核实" : "组合参考价"}</small>
         <small>${escapeHtml(terms)}</small>
       </div>
     </div>
     <div class="tail-result-decision">
       <span class="tail-decision-difference">${escapeHtml(difference)}</span>
       <div class="tail-quote-state"><span class="tail-status ${valid && fresh ? "verified" : "review"}">${status}</span>
-        <small>${item.observed_at ? `采集 ${escapeHtml(formatQueryTime(item.observed_at))}` : "采集时间未知"}</small>
+        <small>${escapeHtml(observedLabel)}</small>
       </div>
       <div class="tail-review-actions">
         ${item.id ? `<button type="button" class="ghost compact" data-tail-action="recheck" data-result-id="${key}" data-focus-key="recheck-${key}">重新查此行程</button>` : ""}
@@ -293,7 +356,7 @@ function renderTailResultCard(item, index, showRoute = true) {
     </div>
     ${item.recheck_outcome?.status === "failed" ? "<p class='tail-recheck-note'>最近复核失败，旧价待确认</p>" : ""}
     ${["inconclusive", "not_found"].includes(item.recheck_outcome?.status) ? "<p class='tail-recheck-note'>最近复核无法确认原行程，可重试；不代表已下架</p>" : ""}
-    <p class="tail-card-caveat">价格及出票需复核 · 行李、票规及后续航段影响未核实</p>
+    <p class="tail-card-caveat">出票、行李与票规需复核</p>
     <details class="tail-details" data-disclosure="quote-${key}">
       <summary data-focus-key="quote-details-${key}">完整行程、价差与待核实事项</summary>
       <p>${escapeHtml(tailPlaceLabel(item.origin))} → ${escapeHtml(tailPlaceLabel(item.transfer))} → ${escapeHtml(tailPlaceLabel(item.destination))} · ${escapeHtml(scope)}</p>

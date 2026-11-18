@@ -603,7 +603,7 @@ function renderTaskRow(task) {
     : task.departure_date;
   const groupLine = task.group_label ? `<br><span class="muted">${escapeHtml(task.group_label)}</span>` : "";
   const runDisabled = task.is_expired ? "disabled" : "";
-  const runTitle = task.is_expired ? 'title="航线日期已过期，不能查询"' : "";
+  const runTitle = task.is_expired ? 'title="航线日期较早，请更新日期后查询"' : "";
   const deleteAction = task.group_id
     ? `<button class="ghost compact danger" data-task-action="delete-group" data-group-id="${escapeHtml(task.group_id)}">删除整组</button>`
     : `<button class="ghost compact danger" data-task-action="delete-route" data-key="${escapeHtml(task.route_key)}">删除</button>`;
@@ -644,7 +644,7 @@ function renderTaskGroupRow(group) {
   const sampleTask = summary.tasks[0] || {};
   const best = summary.best;
   const runDisabled = summary.expired ? "disabled" : "";
-  const runTitle = summary.expired ? 'title="航线日期已过期，不能查询"' : "";
+  const runTitle = summary.expired ? 'title="航线日期较早，请更新日期后查询"' : "";
   const routePreview = summary.tasks.slice(0, 4).map(taskRouteDisplay).join(" / ");
   const detailRows = summary.tasks.map((task) => `
     <div class="multi-city-detail-row">
@@ -843,9 +843,14 @@ async function fetchDashboard() {
 async function fetchLog() {
   const logBox = document.getElementById("logBox");
   if (!logBox) return;
-  const response = await fetchApi("/api/log");
-  const data = await response.json();
-  document.getElementById("logBox").textContent = data.lines?.join("\n") || "暂无日志";
+  try {
+    const response = await fetchApi("/api/log");
+    if (!response.ok) throw new Error("log request failed");
+    const data = await response.json();
+    logBox.textContent = data.lines?.join("\n") || "暂无日志";
+  } catch {
+    logBox.textContent = "日志加载失败，请点击“刷新日志”重试。";
+  }
 }
 
 async function runAction(url, successMessage = "操作已完成") {

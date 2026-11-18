@@ -79,10 +79,11 @@ function ui() {
   assignTailState(ctx, {tailResultView:'history', tailResultsLoaded:true, tailSelectedJobId:'job'});
   for (const name of ['compareTailResults','tailQuoteFresh','tailQuoteVerified','prepareTailResults',
     'groupTailResultsByRoute','safeTailReviewUrl','tailQuoteTermsLabel','renderTailBaselines','renderTailFlightGroups',
+    'tailFlightGroupKey','groupTailFlightResults','selectTailRecommendationGroups','renderTailStaleResults','resetTailResultDisclosure',
     'tailFullRouteLabel','tailItineraryKey','renderTailItineraryGroups',
     'renderTailResultCard','renderTailRouteGroup','renderTailResults','updateTailSearchScope','renderTailPriorities',
     'tailAttemptPhaseLabel','tailPlaceLabel','replaceTailMarkup','tailConditionLabel',
-    'tailQueryDiffers','updateTailRunAction','updateTailResultContext','updateTailResultTools','tailActiveContext',
+    'tailQueryDiffers','updateTailRunAction','updateTailResultContext','updateTailResultTools','tailActiveContext','loadSelectedTailJobConditions',
     'tailComparableBaseline','tailDecisionDifference']) {
     const start = source.indexOf(`function ${name}(`);
     assert.ok(start>=0,name);
@@ -124,18 +125,90 @@ test('open destination controls preserve hidden budgets but disable them and res
 test('two flights to the same tail city both remain visible',()=>{
   const {ctx}=ui(); assert.equal(ctx.prepareTailResults([quote(),quote({itinerary_key:'two',first_leg_key:'CA1003'})]).length,2);
 });
-test('fresh verified and expired review partitions are separate',()=>{
+test('fresh verified and earlier retrieval partitions are separate',()=>{
   const {ctx,elements}=ui(); elements.tailTrustInput.value='verified';
-  assert.equal(ctx.prepareTailResults([quote(),quote({itinerary_key:'old',expires_at:'2020-01-01T00:00:00Z'})]).length,1);
+  assert.equal(ctx.prepareTailResults([quote(),quote({itinerary_key:'old',observed_at:'2020-01-01T00:00:00Z',expires_at:'2020-01-01T00:00:00Z'})]).length,1);
   elements.tailTrustInput.value='all';
-  ctx.renderTailResults([quote(),quote({itinerary_key:'old',expires_at:'2020-01-01T00:00:00Z'})]);
-  assert.match(elements.tailResults.innerHTML,/航段已核对/); assert.match(elements.tailResults.innerHTML,/已过期 \/ 时间未知/);
+  ctx.renderTailResults([quote(),quote({itinerary_key:'old',observed_at:'2020-01-01T00:00:00Z',expires_at:'2020-01-01T00:00:00Z'})]);
+  assert.match(elements.tailResults.innerHTML,/航段已核对/); assert.match(elements.tailResults.innerHTML,/检索 2020-01-01T00:00:00Z/);
 });
 test('same first flight groups tail alternatives without mixing currencies',()=>{
   const {ctx}=ui(); let html=ctx.renderTailFlightGroups([quote(),quote({destination:'SZX',itinerary_key:'two'})]);
   assert.equal((html.match(/<h4>/g)||[]).length,1);
   html=ctx.renderTailFlightGroups([quote(),quote({currency:'USD',itinerary_key:'two'})]);
   assert.equal((html.match(/<h4>/g)||[]).length,2);
+});
+test('results default to three recommended itineraries and collapse the rest',()=>{
+  const {ctx,elements}=ui();
+  const rows=['CAN','SZX','KMG','XMN','TAO'].map((destination,index)=>quote({
+    id:index+1,destination,first_leg_key:`CA${1000+index}`,itinerary_key:`route-${index}`,
+  }));
+  ctx.renderTailResults(rows);
+  const html=elements.tailResults.innerHTML;
+  const recommended=html.split('class="tail-all-results"')[0];
+  assert.equal((recommended.match(/class="tail-flight-group"/g)||[]).length,3);
+  assert.match(html,/展开其余 2 条报价/);
+  assert.doesNotMatch(html,/class="tail-all-results"[^>]* open/);
+});
+test('one first-leg group shows three routes and folds its remaining alternative',()=>{
+  const {ctx,elements}=ui();
+  const rows=['CAN','SZX','KMG','XMN'].map((destination,index)=>quote({
+    id:index+1,destination,itinerary_key:`same-leg-${index}`,
+  }));
+  ctx.renderTailResults(rows);
+  const html=elements.tailResults.innerHTML;
+  assert.equal((html.match(/class="tail-flight-group"/g)||[]).length,1);
+  assert.equal((html.match(/class="tail-itinerary-option/g)||[]).length,4);
+  assert.match(html,/比较其他 1 条购票路线/);
+  assert.doesNotMatch(html,/展开其余/);
+});
+test('all earlier-retrieved results are labelled by retrieval date',()=>{
+  const {ctx,elements}=ui();
+  const rows=['CAN','SZX','KMG','XMN'].map((destination,index)=>quote({
+    id:index+1,destination,first_leg_key:`OLD${index}`,itinerary_key:`old-${index}`,
+    observed_at:'2020-01-01T00:00:00Z',expires_at:'2020-01-01T00:00:00Z',
+  }));
+  ctx.renderTailResults(rows);
+  const html=elements.tailResults.innerHTML;
+  assert.match(html,/较早检索 <span>3 \/ 4<\/span>/);
+  assert.match(html,/展开其余 1 条报价/);
+  assert.match(html,/检索 2020-01-01T00:00:00Z/);
+});
+test('new-query disclosure reset clears result expansion state',()=>{
+  const {ctx}=ui();
+  ctx.tailState.results.disclosureState.set('tail-more-results',true);
+  ctx.tailState.results.disclosureState.set('stale-results',true);
+  ctx.resetTailResultDisclosure();
+  assert.equal(ctx.tailState.results.disclosureState.size,0);
+});
+test('selected task conditions can be loaded back into the query form',()=>{
+  const {ctx,elements}=ui();
+  const ids=['tailOriginInput','tailTransferInput','tailDateInput','tailProviderSelect','tailFeizhuScopeInput',
+    'tailCabinSelect','tailQueryMaxPriceInput','tailDepartureTimeStartInput','tailDepartureTimeEndInput',
+    'tailAirlineInput','tailFilterScopeInput','tailPassengersInput','tailSearchScopeInput','tailBudgetCitiesInput',
+    'tailBudgetMinutesInput','tailTargetInput','tailBaselineBudgetInput','tailFollowupBudgetInput',
+    'tailCallBudgetInput','tailCandidateProfileSelect','tailModeInput'];
+  for (const id of ids) elements[id]={value:'',disabled:false};
+  elements.tailQueryEditor={open:false};
+  assignTailState(ctx,{tailSelectedJobId:'job',tailSelectedJob:{job_id:'job',payload:{
+    origin:'JHG',transfer:'CTU',departure_date:'2027-01-03',provider:'feizhu',cabin:'economy',max_price:800,
+    departure_time_start:'08:00',departure_time_end:'20:00',preferred_airlines:['MU'],filter_scope:'first_leg',
+    passengers:1,search_scope:'candidates',candidates:['KMG','TAO'],max_candidates:6,max_minutes:10,
+    target_results:0,max_baseline_queries:1,max_followup_candidates:0,max_provider_calls:0,
+  }}});
+  ctx.normalizeCode=value=>String(value||'').toUpperCase();
+  for (const name of ['updateTailSearchScope','applyTailAirlineDefaults','updateTailCandidateSummary','updateTailFormSummary','saveTailForm','updateTailResultContext']) ctx[name]=()=>{};
+  ctx.loadSelectedTailJobConditions();
+  assert.equal(elements.tailOriginInput.value,'JHG');
+  assert.equal(elements.tailTransferInput.value,'CTU');
+  assert.equal(elements.tailDateInput.value,'2027-01-03');
+  assert.equal(elements.tailProviderSelect.value,'feizhu');
+  assert.equal(elements.tailQueryMaxPriceInput.value,'800');
+  assert.equal(elements.tailAirlineInput.value,'MU');
+  assert.equal(elements.tailBudgetCitiesInput.value,'6');
+  assert.equal(elements.tailCallBudgetInput.value,'0');
+  assert.deepEqual(Array.from(ctx.tailState.form.savedCandidates),['KMG','TAO']);
+  assert.equal(elements.tailQueryEditor.open,true);
 });
 test('unknown terms never show guaranteed savings and include recheck action',()=>{
   const {ctx}=ui(); const html=ctx.renderTailResultCard(quote(),1);
@@ -313,7 +386,7 @@ test('stale, unverified, unknown, inconsistent and legacy savings never become c
     comparableQuote({passengers:2}),
   ]) assert.equal(ctx.tailDecisionDifference(item),'无法判断能省多少');
   const stale=comparableQuote({expires_at:'2020-01-01'});
-  assert.match(ctx.tailDecisionDifference(stale),/历史报价/);
+  assert.match(ctx.tailDecisionDifference(stale),/价格比较待复核/);
   assert.doesNotMatch(ctx.renderTailResultCard(stale,1),/比同首段单买低/);
   for (const amount of [null,undefined,NaN,999]) {
     const item=comparableQuote();delete item.baselines.market;
@@ -341,8 +414,8 @@ test('cards distinguish desired first leg, actual full route and visible unresol
   assert.match(html,/完整购票行程/);
   assert.match(html,/PEK → SHA → CAN/);
   assert.ok(html.indexOf('我要乘坐')<html.indexOf('完整购票行程'));
-  assert.ok(html.indexOf('价格及出票需复核')<html.indexOf('<details'));
-  assert.ok(html.indexOf('人数库存未核实')<html.indexOf('<details'));
+  assert.ok(html.indexOf('出票、行李与票规需复核')<html.indexOf('<details'));
+  assert.match(html,/人数库存未核实/);
   assert.match(html,/航段已核对 · 价格未复核/);
   assert.match(ctx.renderTailResultCard(quote(),1),/候选购票行程 · 待核实/);
 });
@@ -611,7 +684,7 @@ test('cards show explicit state, taxes and airport-change warnings without raw q
   assert.match(html,/税费未确认/);
   assert.match(html,/涉及换机场/);
   assert.doesNotMatch(html,/高可信|中可信|>complete</);
-  assert.match(ctx.renderTailResultCard(quote({expires_at:'2020-01-01'}),1),/已过期 \/ 时间未知/);
+  assert.match(ctx.renderTailResultCard(quote({observed_at:'2020-01-01T00:00:00Z',expires_at:'2020-01-01'}),1),/检索 2020-01-01/);
 });
 
 test('empty states separate hidden results, first search, running and historical empty',()=>{
