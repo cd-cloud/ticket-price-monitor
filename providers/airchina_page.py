@@ -66,7 +66,7 @@ def classify_page(url: str, text: str, expected_url: str, *, http_status: int | 
         state = "unexpected_page"
     elif "停留时间过长" in text and "价格" in text:
         state = "stale_results"
-    elif "确认，查看下一个提示" in text:
+    elif "确认，查看下一个提示" in text or "我知道了" in text:
         state = "needs_notice_confirmation"
     else:
         state = "query_page_unverified"
@@ -84,7 +84,7 @@ def classify_page(url: str, text: str, expected_url: str, *, http_status: int | 
             "unexpected_page": "未停留在预期官方查询页面，不能据此判断航班或价格。",
             "http_error": "官网返回 HTTP 错误，未提取价格。",
             "stale_results": "官网提示结果已过期；不读取旧价格，不自动确认或重新查询。",
-            "needs_notice_confirmation": "乘机提示需要用户自行确认；程序不会自动确认或读取遮挡后的价格。",
+            "needs_notice_confirmation": "页面存在待处理提示；未读取遮挡后的价格。",
             "query_page_unverified": "已读取页面，但航班、舱位及价格绑定仍待验证；不保存报价。",
         }[state],
     }

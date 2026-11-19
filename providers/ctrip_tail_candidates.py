@@ -35,10 +35,10 @@ def network_candidate_confirms_date(match, route, transfer):
 
 def prepare_network_candidates(evidence, matches, route, transfer):
     """Return detached candidates and a report; a network proof is not UI proof."""
-    if evidence.get("overlay_visible") or evidence.get("status") == "mismatch":
+    ui_confirmed = evidence.get("matched") and evidence.get("status") == "confirmed"
+    if evidence.get("status") == "mismatch" or (evidence.get("overlay_visible") and not ui_confirmed):
         kind = "mismatch" if evidence.get("status") == "mismatch" else "unconfirmed"
         raise RuntimeError(f"Ctrip result date {kind}: conflicting date or open date editor.")
-    ui_confirmed = evidence.get("matched") and evidence.get("status") == "confirmed"
     if ui_confirmed:
         candidates = deepcopy(matches)
         for match in candidates:

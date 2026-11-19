@@ -29,6 +29,8 @@ def parse_product_fares(snapshot, route):
         return {**result, "reason": "product_loading_unconfirmed"}
     if snapshot.get("notice_confirmation_visible") is not False:
         return {**result, "reason": "manual_notice_confirmation_required"}
+    if snapshot.get("no_results_visible") is not False:
+        return {**result, "reason": "empty_state_unconfirmed"}
     reference_by_key = {
         (o["flight_no"], o["departure_time"], o["cabin"]): o for o in references["offers"]
     }

@@ -23,6 +23,17 @@ from config_manager import AppConfig, ProviderConfig
 
 
 LOGGER = logging.getLogger(__name__)
+
+
+class AirChinaSessionUnavailable(RuntimeError):
+    """Fixed public message; never include backend errors, URLs or profile data."""
+    def __init__(self):
+        super().__init__(
+            "国航所选浏览器或档案不可用；请正常退出占用该档案的项目 Chrome，并检查档案配置。"
+            "本次未发起查询，不会自动切换备用档案或浏览器后端，也不会删除锁文件。"
+        )
+
+
 CHROME_PROFILE_VERSION = "v2"
 CHROME_PROFILE_LOCK_FILES = ("SingletonLock", "SingletonCookie", "SingletonSocket")
 CHROME_PROFILE_RECOVERY_SUFFIXES = ("recovery", "recovery-2", "recovery-3")
@@ -116,10 +127,21 @@ class BrowserSessionManager:
             if not candidate_name:
                 continue
             try:
-                backend = await self._backend_manager.ensure_backend(candidate_name)
                 profile_name = self.profile_name_for_backend(provider, candidate_name)
                 if self._is_chrome_backend(candidate_name):
                     profile_name = self._select_healthy_chrome_profile(provider, candidate_name)
+                    if provider.name == "airchina":
+                        path = self.persistent_profile_path_for_backend(provider, candidate_name, profile_name)
+                        # A dangling lock symlink is also ambiguous. Never delete
+                        # it, assume it is stale, or silently use another identity.
+                        locked = any((path / name).exists() or (path / name).is_symlink()
+                                     for name in CHROME_PROFILE_LOCK_FILES)
+                        healthy, _ = self._chrome_profile_is_healthy(path)
+                        state = self._profile_state().get("airchina", {}).get("chrome", {})
+                        polluted = state.get("polluted_profiles") or {}
+                        if locked or not healthy or profile_name in polluted:
+                            raise AirChinaSessionUnavailable()
+                backend = await self._backend_manager.ensure_backend(candidate_name)
                 session_metadata = build_session_metadata(
                     backend_name=candidate_name,
                     storage_state_file=provider.storage_state_file,
@@ -137,6 +159,10 @@ class BrowserSessionManager:
                 page = await backend.new_page(context)
                 return page, context
             except Exception as exc:
+                if provider.name == "airchina":
+                    # Startup races (including a manual window still owning the
+                    # profile) must not fall through to a fresh backend either.
+                    raise AirChinaSessionUnavailable() from None
                 errors.append(f"{candidate_name}: {exc}")
                 LOGGER.warning("new page failed provider=%s backend=%s error=%s", provider.name, candidate_name, exc)
         raise RuntimeError(f"No browser backend available for provider={provider.name}: {' | '.join(errors)}")
@@ -433,6 +459,11 @@ class BrowserSessionManager:
             candidates = [*recovery_names, base_name]
         else:
             candidates = [base_name, *recovery_names]
+        if provider.name == "airchina":
+            # Manual preparation and inspection must target the same identity.
+            # Availability is checked by new_page; inspection UIs may still show
+            # the selected-but-locked profile without silently changing it.
+            return candidates[0]
         last_reason = ""
         polluted_fallback: str | None = None
         for profile_name in candidates:

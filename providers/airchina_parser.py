@@ -34,7 +34,7 @@ def parse_reference_fares(snapshot: dict, route: RouteQuery) -> dict:
     separately rejects past dates. Only the observed same-day single-flight DOM
     is accepted; unrecognized rows are skipped, never inferred from the request.
     """
-    result = {"status": "unverified", "offers": [], "rejected_rows": 0,
+    result = {"status": "unverified", "offers": [], "rejected_rows": 0, "row_rejection_reasons": {},
               "filtered_offers": 0, "quote_saved": False, "parser_ready": False,
               "coverage_complete": False}
 
@@ -53,6 +53,8 @@ def parse_reference_fares(snapshot: dict, route: RouteQuery) -> dict:
         return fail("results_loading")
     if snapshot.get("notice_confirmation_visible") is True:
         return fail("manual_notice_confirmation_required")
+    if snapshot.get("no_results_visible") is True:
+        return fail("page_reports_no_results")
     if (route.route_type != "one_way" or route.return_date or route.segments
             or route.passengers != 1 or route.transfer_policy not in {"any", "direct_only"}
             or route.cabin not in CABIN_FILTERS):
@@ -95,9 +97,11 @@ def parse_reference_fares(snapshot: dict, route: RouteQuery) -> dict:
     seen = {}
     conflicts = set()
     for row in rows:
-        offers = _row_offers(row, expected_date, origin, destination)
+        offers, rejection = _row_offers(row, expected_date, origin, destination)
         if offers is None:
             result["rejected_rows"] += 1
+            reasons = result["row_rejection_reasons"]
+            reasons[rejection] = reasons.get(rejection, 0) + 1
             continue
         for offer in offers:
             if (offer["cabin"] not in CABIN_FILTERS[route.cabin]
@@ -109,7 +113,7 @@ def parse_reference_fares(snapshot: dict, route: RouteQuery) -> dict:
                 conflicts.add(key)
             seen[key] = offer
     result["offers"] = sorted([o for k, o in seen.items() if k not in conflicts],
-                              key=lambda o: (o["reference_fare"], o["departure_time"], o["cabin"]))
+                              key=lambda o: (o["reference_fare"], o["departure_time"], o["cabin"], o["flight_no"]))
     result["conflicting_offers"] = len(conflicts)
     result["status"] = "reference_fares_observed" if result["offers"] else "inconclusive"
     result["reason"] = "starting_fares_not_final_quotes" if result["offers"] else "no_supported_visible_offer"
@@ -118,39 +122,39 @@ def parse_reference_fares(snapshot: dict, route: RouteQuery) -> dict:
 
 def _row_offers(row, departure_date, origin, destination):
     if not isinstance(row, dict):
-        return None
+        return None, "invalid_row"
     flights = row.get("flight_numbers")
     if (not isinstance(flights, list) or len(flights) != 1 or not isinstance(flights[0], str)
             or not re.fullmatch(r"[A-Z]{2}\d{3,4}", flights[0])):
-        return None  # Codeshare/multiple-leg layouts require their own evidence.
+        return None, "ambiguous_flight_numbers"
     if row.get("between_text") != "":
-        return None  # Missing, connecting or stopover indicators: never assume direct.
+        return None, "direct_flight_unconfirmed"
     for field, code in (("departure_airport", origin), ("arrival_airport", destination)):
         if not re.fullmatch(re.escape(code) + r"(?:\s+T[0-9A-Z]+)?", str(row.get(field) or "").strip()):
-            return None
+            return None, "row_airport_mismatch"
     times = [compact(row.get(f)) for f in ("departure_time", "arrival_time")]
     if not all(re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", t) for t in times):
-        return None  # "+1" needs explicit date handling before support.
+        return None, "unsupported_time_format"
     minutes = [int(t[:2]) * 60 + int(t[3:]) for t in times]
     duration = re.fullmatch(r"(?:(\d+)h)?(?:(\d+)m)?", compact(row.get("duration")))
     if not duration or not duration.group() or minutes[1] <= minutes[0]:
-        return None
+        return None, "unsupported_duration_or_overnight"
     duration_minutes = int(duration[1] or 0) * 60 + int(duration[2] or 0)
     if duration_minutes != minutes[1] - minutes[0]:
-        return None  # Timezone/connection ambiguity, not a guess.
+        return None, "duration_mismatch"
     cabins = row.get("cabins")
     if not isinstance(cabins, dict):
-        return None
+        return None, "missing_cabin_cells"
     offers = []
     for source, (_label, normalized) in CABINS.items():
         cell = cabins.get(source)
         if not isinstance(cell, dict):
-            return None
+            return None, "missing_cabin_cells"
         if cell.get("price_text") is None and compact(cell.get("cell_text")) == "--":
             continue
         price = re.fullmatch(r"[￥¥]([1-9]\d{0,6}(?:\.\d{1,2})?)起", compact(cell.get("price_text")))
         if not price:
-            return None  # Fail closed when product structure changes.
+            return None, "unknown_starting_fare_format"
         offers.append({
             "provider": "airchina", "origin": origin, "destination": destination,
             "departure_date": departure_date, "arrival_date": departure_date,
@@ -166,7 +170,7 @@ def _row_offers(row, departure_date, origin, destination):
             "inventory_confirmed": False, "bookable_confirmed": False,
             "fare_product_confirmed": False, "source": "airchina_visible_cabin_column",
         })
-    return offers
+    return offers, None
 
 
 async def collect_reference_fares(page, route: RouteQuery) -> dict:

@@ -334,3 +334,57 @@ def test_provider_entry_point_carries_selected_quote_end_to_end(mode):
         assert outcome.flight_details[0]["cabin"] == "economy"
         assert len(outcome.flight_details) == (1 if mode == "one_way" else 2)
     asyncio.run(run())
+
+
+def test_login_captcha_text_is_not_security_verification():
+    async def run():
+        automation = BrowserAutomation.__new__(BrowserAutomation)
+        page = SimpleNamespace(url="https://flights.ctrip.com/online/list/test")
+        page.locator = lambda selector: SimpleNamespace(inner_text=AsyncMock(return_value="账号密码登录 验证码登录"))
+        with patch("browser_automation.ctrip_page.has_login_overlay", AsyncMock(return_value=True)):
+            assert not await automation._ctrip_verification_detected(page)
+    asyncio.run(run())
+
+
+def test_security_verification_still_detected_with_login_overlay():
+    async def run():
+        automation = BrowserAutomation.__new__(BrowserAutomation)
+        page = SimpleNamespace(url="https://flights.ctrip.com/online/list/test")
+        page.locator = lambda selector: SimpleNamespace(inner_text=AsyncMock(return_value="账号密码登录 请完成安全验证"))
+        with patch("browser_automation.ctrip_page.has_login_overlay", AsyncMock(return_value=True)):
+            assert await automation._ctrip_verification_detected(page)
+    asyncio.run(run())
+
+
+def test_landing_pages_do_not_include_obsolete_404_entry():
+    assert all(url.startswith("https://flights.ctrip.com") for url in ctrip.CTRIP_LANDING_PAGES)
+    assert "https://www.ctrip.com/flights" not in ctrip.CTRIP_LANDING_PAGES
+
+
+def test_results_page_falls_back_to_verified_route_url_after_form_timeout():
+    async def run():
+        page = SimpleNamespace(url="https://flights.ctrip.com/online/channel/domestic")
+        page.wait_for_url = AsyncMock(side_effect=TimeoutError())
+        page.wait_for_load_state = AsyncMock()
+        page.locator = lambda selector: SimpleNamespace(press=AsyncMock())
+
+        async def goto(url, **kwargs):
+            page.url = url
+        page.goto = goto
+
+        await ctrip.ensure_results_page(page, 1000, route(origin="BJS", destination="CTU"))
+        assert "oneway-bjs-ctu" in page.url
+        assert "depdate=" + DAY in page.url
+    asyncio.run(run())
+
+
+def test_submit_uses_dom_click_when_overlay_blocks_normal_click():
+    async def run():
+        button = SimpleNamespace(click=AsyncMock(side_effect=TimeoutError()), evaluate=AsyncMock())
+        page = SimpleNamespace()
+        page.locator = lambda selector: button
+        with patch("providers.ctrip.random_scroll_and_pause", AsyncMock()):
+            await ctrip.submit_search(page, 45000)
+        button.click.assert_awaited_once()
+        button.evaluate.assert_awaited_once_with("(node) => node.click()")
+    asyncio.run(run())

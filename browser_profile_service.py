@@ -17,6 +17,12 @@ class BrowserProfileService:
     def refresh_config(self, config: AppConfig) -> None:
         self.config = config
 
+    @staticmethod
+    def _profile_available(provider) -> bool:
+        # Air China experiments intentionally remain outside production queries,
+        # but still need the same manual profile preparation entry as Ctrip.
+        return provider is not None and (provider.enabled or provider.name == "airchina")
+
     def browser_session_hints(self) -> list[dict[str, Any]]:
         if self.config.browser_backend != "chrome":
             return []
@@ -25,7 +31,7 @@ class BrowserProfileService:
         manager = BrowserSessionManager(self.config)
         hints: list[dict[str, Any]] = []
         for provider in self.config.providers.values():
-            if not provider.enabled:
+            if not self._profile_available(provider):
                 continue
             health = manager.chrome_profile_health(provider, "chrome")
             if health.get("ok"):
@@ -37,7 +43,11 @@ class BrowserProfileService:
                     "profile_path": health.get("profile_path"),
                     "reason": health.get("reason"),
                     "needs_login": True,
-                    "message": f"{provider.name} 的 Chrome 登录档案异常，已切换 recovery profile；下次查询可能需要重新登录。",
+                    "message": (
+                        "国航主档案存在占用或健康异常；不会自动切换档案，请正常退出项目 Chrome 后检查。"
+                        if provider.name == "airchina" else
+                        f"{provider.name} 的 Chrome 登录档案异常，已切换 recovery profile；下次查询可能需要重新登录。"
+                    ),
                 }
             )
         return hints
@@ -48,7 +58,7 @@ class BrowserProfileService:
         manager = BrowserSessionManager(self.config)
         providers: list[dict[str, Any]] = []
         for provider in self.config.providers.values():
-            if not provider.enabled:
+            if not self._profile_available(provider):
                 continue
             backend_order = manager.backend_names_for_provider(provider)
             health = manager.chrome_profile_health(provider, "chrome") if "chrome" in backend_order else None
@@ -76,7 +86,7 @@ class BrowserProfileService:
         attempts = self.repository.fetch_tail_discovery_attempts(limit=500)
         snapshots = self.repository.fetch_snapshots()
         for provider in self.config.providers.values():
-            if not provider.enabled:
+            if not self._profile_available(provider):
                 continue
             backend_order = manager.backend_names_for_provider(provider)
             chrome_enabled = "chrome" in backend_order
@@ -103,7 +113,7 @@ class BrowserProfileService:
         from browser_session_manager import BrowserSessionManager
 
         provider = self.config.providers.get(provider_name)
-        if not provider or not provider.enabled:
+        if not self._profile_available(provider):
             raise KeyError(provider_name)
         manager = BrowserSessionManager(self.config)
         profile_name = self._resolve_profile_name(manager, provider, profile)
@@ -124,17 +134,18 @@ class BrowserProfileService:
             stderr=subprocess.DEVNULL,
         )
         opened_at = self._now_iso()
-        if profile_name.endswith("-recovery"):
-            manager.set_chrome_profile_preference(provider.name, forced_profile="recovery", last_manual_opened_at=opened_at)
-        else:
-            manager.set_chrome_profile_preference(provider.name, forced_profile=None, last_manual_opened_at=opened_at)
+        base_name = manager.profile_name_for_backend(provider, "chrome")
+        manager.set_chrome_profile_preference(
+            provider.name, forced_profile=profile_name if profile_name != base_name else None,
+            last_manual_opened_at=opened_at,
+        )
         return {"opened": True, "provider": provider.name, "profile_name": profile_name, "profile_path": str(profile_path)}
 
     def switch_browser_profile(self, provider_name: str, *, profile: str) -> dict[str, Any]:
         from browser_session_manager import BrowserSessionManager
 
         provider = self.config.providers.get(provider_name)
-        if not provider or not provider.enabled:
+        if not self._profile_available(provider):
             raise KeyError(provider_name)
         manager = BrowserSessionManager(self.config)
         normalized = str(profile or "").strip().lower()
@@ -150,7 +161,7 @@ class BrowserProfileService:
         from browser_session_manager import BrowserSessionManager, CHROME_PROFILE_RECOVERY_SUFFIXES
 
         provider = self.config.providers.get(provider_name)
-        if not provider or not provider.enabled:
+        if not self._profile_available(provider):
             raise KeyError(provider_name)
         manager = BrowserSessionManager(self.config)
         base_name = manager.profile_name_for_backend(provider, "chrome")
@@ -173,7 +184,7 @@ class BrowserProfileService:
         from browser_session_manager import BrowserSessionManager
 
         provider = self.config.providers.get(provider_name)
-        if not provider or not provider.enabled:
+        if not self._profile_available(provider):
             raise KeyError(provider_name)
         manager = BrowserSessionManager(self.config)
         profile_name = self._resolve_profile_name(manager, provider, profile or "selected")

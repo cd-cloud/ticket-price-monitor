@@ -281,6 +281,8 @@ async def dismiss_login_overlays(page: Page, timeout_ms: int) -> None:
         pass
     await page.wait_for_timeout(150)
     selectors = [
+        "button:has-text('我知道了')",
+        "text=我知道了",
         "[class*='login'] [class*='close']",
         "[class*='Login'] [class*='close']",
         "[class*='login'] [class*='icon-close']",
@@ -304,18 +306,25 @@ async def dismiss_login_overlays(page: Page, timeout_ms: int) -> None:
         "text=以后再说",
         "text=暂不登录",
     ]
-    for selector in selectors:
-        try:
-            locator = page.locator(selector)
-            count = min(await locator.count(), 4)
-            for index in range(count):
-                item = locator.nth(index)
-                if await item.is_visible(timeout=500):
-                    await item.click(timeout=max(800, timeout_ms // 20), force=True)
-                    await page.wait_for_timeout(400)
-                    return
-        except Exception:
-            continue
+    for _ in range(3):
+        dismissed = False
+        for selector in selectors:
+            try:
+                locator = page.locator(selector)
+                count = min(await locator.count(), 4)
+                for index in range(count):
+                    item = locator.nth(index)
+                    if await item.is_visible(timeout=500):
+                        await item.click(timeout=max(800, timeout_ms // 20), force=True)
+                        await page.wait_for_timeout(400)
+                        dismissed = True
+                        break
+                if dismissed:
+                    break
+            except Exception:
+                continue
+        if not dismissed:
+            return
 
 
 async def has_login_overlay(page: Page) -> bool:
@@ -560,6 +569,7 @@ def city_candidate_matches(candidate_text: str, candidate_remark: str, airport_c
 
 async def click_matching_city_candidate(poi_scope, airport_code: str, city_code: str, timeout_ms: int) -> bool:
     selectors = [
+        ".cflt-poi-selector-new .address",
         ".city-picker-selector:not(.hide) li:not(.disabled)",
         ".city-picker-selector:not(.hide) [role='option']",
         ".city-picker-selector:not(.hide) .city-item",
@@ -830,7 +840,6 @@ async def settle_datepicker(page: Page, trigger, timeout_ms: int) -> None:
         pass
     await page.wait_for_timeout(180)
 
-    # Multi-city date headers can linger above the submit button even after a valid date click.
     for _ in range(3):
         if not await is_datepicker_overlay_visible(page):
             return
@@ -840,7 +849,18 @@ async def settle_datepicker(page: Page, trigger, timeout_ms: int) -> None:
             pass
         await page.wait_for_timeout(180)
         try:
-            await page.locator("body").click(position={"x": 24, "y": 24}, timeout=timeout_ms // 8, force=True)
+            viewport = page.viewport_size or {}
+            await page.mouse.click(max(20, int(viewport.get("width", 800)) - 30), 30)
+        except Exception:
+            try:
+                await page.locator("body").click(position={"x": 24, "y": 24}, timeout=timeout_ms // 8, force=True)
+            except Exception:
+                pass
+        await page.wait_for_timeout(220)
+        if not await is_datepicker_overlay_visible(page):
+            return
+        try:
+            await trigger.click(timeout=max(1000, timeout_ms // 8), force=True)
         except Exception:
             pass
         await page.wait_for_timeout(220)

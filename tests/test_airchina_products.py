@@ -21,6 +21,7 @@ def sample(cabin="economy"):
     data = json.loads((Path(__file__).parent / "fixtures" / f"airchina_expanded_{cabin}.json").read_text())
     # Simulated current guard for browser tests; original recording is unchanged.
     data["stale_visible"] = False
+    data["no_results_visible"] = False
     return data
 
 
@@ -66,6 +67,7 @@ def test_business_sample_is_separate_from_economy_and_seats_are_only_displayed()
     ("verification_visible", True), ("blocked_visible", True),
     ("loading_visible", True), ("loading_visible", None),
     ("notice_confirmation_visible", True), ("notice_confirmation_visible", None),
+    ("no_results_visible", True), ("no_results_visible", None),
     ("date_text", "2026年11月11日"), ("price_notice", "含税总价"),
 ])
 def test_wrong_page_or_transition_never_produces_product_fares(field, value):

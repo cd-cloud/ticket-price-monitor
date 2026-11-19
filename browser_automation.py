@@ -537,7 +537,9 @@ class BrowserAutomation:
             body = (await page.locator("body").inner_text(timeout=2500)).lower()
         except Exception:
             return False
-        return any(keyword.lower() in body for keyword in CTRIP_VERIFICATION_KEYWORDS)
+        if any(keyword.lower() in body for keyword in CTRIP_VERIFICATION_KEYWORDS if keyword != "验证码"):
+            return True
+        return "验证码" in body and not await ctrip_page.has_login_overlay(page)
 
     async def _query_single_route_offer(
         self,

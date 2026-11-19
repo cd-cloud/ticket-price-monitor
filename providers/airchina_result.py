@@ -5,6 +5,7 @@ fares into that contract until taxes and complete itinerary evidence exist.
 """
 
 MESSAGES = {
+    "form_entry_unverified": "表单条件或提交结果未能确认；未取得参考票价，不自动重试。",
     "reference_fares_observed": "已读取稳定的航班舱位不含税起价；不是含税总价，未保存报价。",
     "fare_products_observed": "已读取指定航班的具体票价产品及不含税基础票价；未确认税费或可出票性，未保存报价。",
     "needs_verification": "国航要求人工验证；停止读取，不自动重试或切换后端。",
