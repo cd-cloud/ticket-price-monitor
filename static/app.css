@@ -2124,15 +2124,21 @@ body[data-workspace="tail"] .workspace-tabs button { min-height: 36px; padding: 
 
 /* History jobs: query log first, quote details on demand. */
 #tailDiscoveryPanel .tail-history-panel { display: grid; gap: 0; margin-top: 8px; border: 1px solid var(--tail-border); border-radius: 12px; background: var(--tail-surface); overflow: hidden; }
-#tailDiscoveryPanel .tail-history-head { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 6px 12px; padding: 8px 12px; border-bottom: 1px solid var(--tail-border-soft); }
+#tailDiscoveryPanel .tail-history-head { display: flex; align-items: center; justify-content: flex-start; flex-wrap: wrap; gap: 6px 14px; padding: 8px 12px; border-bottom: 1px solid var(--tail-border-soft); }
 #tailDiscoveryPanel .tail-history-head h3 { font-size: 14px; margin: 0; }
 #tailDiscoveryPanel .tail-history-head p { margin: 4px 0 0; font-size: 12px; line-height: 1.5; }
-#tailDiscoveryPanel .tail-history-sort { display: inline-flex; align-items: center; gap: 6px; color: var(--tail-muted); font-size: 12px; }
-#tailDiscoveryPanel .tail-history-sort select { min-height: 28px; padding: 2px 6px; border: 1px solid var(--tail-border); border-radius: 8px; background: var(--tail-surface); color: var(--text); }
+#tailDiscoveryPanel .tail-history-sort { display: inline-flex; gap: 2px; padding: 2px; border: 1px solid var(--tail-border); border-radius: 9px; background: #f3f4f6; }
+#tailDiscoveryPanel .tail-history-sort button { min-height: 26px; padding: 2px 12px; border: 0; border-radius: 7px; background: transparent; color: var(--tail-muted); font-size: 12px; font-weight: 600; white-space: nowrap; cursor: pointer; }
+#tailDiscoveryPanel .tail-history-sort button[aria-pressed="true"] { background: var(--accent); color: #fff; }
 #tailDiscoveryPanel .tail-history-empty { margin: 0; padding: 10px 12px; font-size: 12px; }
 #tailDiscoveryPanel .tail-history-list { display: grid; }
-#tailDiscoveryPanel .tail-history-job { border-top: 1px solid var(--tail-border-soft); }
-#tailDiscoveryPanel .tail-history-job:first-child { border-top: 0; }
+#tailDiscoveryPanel .tail-history-job,
+#tailDiscoveryPanel .tail-history-group { border-top: 1px solid var(--tail-border-soft); }
+#tailDiscoveryPanel .tail-history-job:first-child,
+#tailDiscoveryPanel .tail-history-group:first-child { border-top: 0; }
+#tailDiscoveryPanel .tail-history-group-body { border-top: 1px solid var(--tail-border-soft); background: #fcfcfd; }
+#tailDiscoveryPanel .tail-history-group-body .tail-history-job { border-top: 1px solid var(--tail-border-soft); }
+#tailDiscoveryPanel .tail-history-group-body .tail-history-job:first-child { border-top: 0; }
 #tailDiscoveryPanel .tail-history-job-summary { display: grid; grid-template-columns: minmax(180px, 1.1fr) minmax(150px, .8fr) minmax(180px, .9fr); gap: 12px; align-items: center; padding: 10px 12px; cursor: pointer; list-style: none; }
 #tailDiscoveryPanel .tail-history-job-summary::-webkit-details-marker { display: none; }
 #tailDiscoveryPanel .tail-history-job-summary strong,

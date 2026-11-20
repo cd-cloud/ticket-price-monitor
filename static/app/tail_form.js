@@ -607,12 +607,13 @@ function ensureTailDiscoveryPanel() {
       loadTailHistoryJobResults(event.target).catch(error => showTailError(error.message));
     }
   }, true);
-  panel.addEventListener("change", event => {
-    if (event.target.id !== "tailHistorySortSelect") return;
-    tailState.results.historySort = event.target.value;
-    renderTailHistoryJobs();
-  });
   panel.addEventListener("click", async event => {
+    const sortChoice = event.target.closest("[data-history-sort]");
+    if (sortChoice) {
+      tailState.results.historySort = sortChoice.dataset.historySort;
+      renderTailHistoryJobs();
+      return;
+    }
     const historyJob = event.target.closest("[data-history-select-job]");
     if (historyJob) {
       setTailResultView("current");

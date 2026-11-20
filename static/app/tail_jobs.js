@@ -627,14 +627,59 @@ function renderTailHistoryJobs() {
     return;
   }
   const sort = tailState.results.historySort || "date";
+  const sortButton = (value, label) => `<button type="button" data-history-sort="${value}" aria-pressed="${sort === value}">${label}</button>`;
   panel.innerHTML = `<div class="tail-history-head"><h3>历史查询记录</h3>
-      <label class="tail-history-sort">排序<select id="tailHistorySortSelect">
-        <option value="date"${sort === "date" ? " selected" : ""}>出发日期</option>
-        <option value="origin"${sort === "origin" ? " selected" : ""}>出发地</option>
-        <option value="transfer"${sort === "transfer" ? " selected" : ""}>到达地</option>
-      </select></label>
+      <div class="tail-history-sort" role="group" aria-label="历史记录排序">${sortButton("date", "出发日期")}${sortButton("origin", "出发地")}${sortButton("transfer", "到达地")}</div>
     </div>
-    <div class="tail-history-list">${sortTailHistoryJobs(jobs).map(renderTailHistoryJob).join("")}</div>`;
+    <div class="tail-history-list">${groupTailHistoryJobs(sortTailHistoryJobs(jobs)).map(renderTailHistoryGroup).join("")}</div>`;
+}
+
+function tailHistoryPriceText(value) {
+  const minPrice = Number(value);
+  return Number.isFinite(minPrice) && minPrice > 0
+    ? `最低 ¥${Number.isInteger(minPrice) ? minPrice : minPrice.toFixed(2)}` : "暂无最低价";
+}
+
+function tailHistoryGroupKey(job) {
+  const payload = job.payload || {};
+  return [payload.origin || "", payload.transfer || "", payload.departure_date || ""].join("|");
+}
+
+function groupTailHistoryJobs(jobs) {
+  const groups = new Map();
+  for (const job of jobs) {
+    const key = tailHistoryGroupKey(job);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(job);
+  }
+  return [...groups.values()];
+}
+
+function tailHistoryGroupState(jobs) {
+  const totalSaved = jobs.reduce((sum, job) => sum + tailHistorySavedCount(job), 0);
+  if (totalSaved > 0) return { label: `有报价 · 共保存 ${totalSaved} 条`, tone: "good" };
+  if (jobs.some(job => ["failed", "needs_verification"].includes(String(job.status)))) return { label: "待人工验证", tone: "alert" };
+  if (jobs.some(job => ["queued", "running"].includes(String(job.status)))) return { label: "查询中", tone: "warn" };
+  if (jobs.every(job => ["cancelled", "cancelling"].includes(String(job.status)))) return { label: "已取消 · 未保存报价", tone: "neutral" };
+  return { label: "无报价", tone: "quiet" };
+}
+
+function renderTailHistoryGroup(jobs) {
+  if (jobs.length === 1) return renderTailHistoryJob(jobs[0]);
+  const payload = jobs[0].payload || {};
+  const route = `${tailPlaceLabel(payload.origin)} → ${tailPlaceLabel(payload.transfer)}`;
+  const state = tailHistoryGroupState(jobs);
+  const prices = jobs.map(job => Number(job.min_price)).filter(value => Number.isFinite(value) && value > 0);
+  const priceText = prices.length ? tailHistoryPriceText(Math.min(...prices)) : "暂无最低价";
+  const latest = jobs.reduce((a, b) => (String(a.updated_at || a.created_at || "") >= String(b.updated_at || b.created_at || "") ? a : b));
+  return `<details class="tail-history-group" data-disclosure="history-group-${escapeHtml(tailHistoryGroupKey(jobs[0]))}">
+    <summary class="tail-history-job-summary">
+      <span class="tail-history-route"><strong>${escapeHtml(route)}</strong><small>${jobs.length} 次查询</small></span>
+      <span class="tail-history-price"><strong>${escapeHtml(payload.departure_date || "日期未记录")}</strong><small>${escapeHtml(priceText)}</small></span>
+      <span class="tail-history-status"><strong class="tail-history-state ${escapeHtml(state.tone)}">${escapeHtml(state.label)}</strong><small>最近：${escapeHtml(tailJobStatusLabel(String(latest.status || "")))}</small></span>
+    </summary>
+    <div class="tail-history-group-body">${jobs.map(renderTailHistoryJob).join("")}</div>
+  </details>`;
 }
 
 function renderTailHistoryJob(job) {
@@ -646,14 +691,11 @@ function renderTailHistoryJob(job) {
   const message = job.error || progress.message || (Array.isArray(job.result?.errors) ? job.result.errors[0] : "") || "";
   const route = `${tailPlaceLabel(payload.origin)} → ${tailPlaceLabel(payload.transfer)}`;
   const state = tailHistoryResultState(job);
-  const minPrice = Number(job.min_price);
-  const priceText = Number.isFinite(minPrice) && minPrice > 0
-    ? `最低 ¥${Number.isInteger(minPrice) ? minPrice : minPrice.toFixed(2)}` : "暂无最低价";
   return `<details class="tail-history-job" data-disclosure="history-job-${escapeHtml(job.job_id)}" data-job-id="${escapeHtml(job.job_id)}">
     <summary class="tail-history-job-summary">
       <span class="tail-history-route"><strong>${escapeHtml(route)}</strong><small>${escapeHtml(tailJobStatusLabel(status))} · ${escapeHtml(tailHistoryScopeLabel(job))}</small></span>
+      <span class="tail-history-price"><strong>${escapeHtml(payload.departure_date || "日期未记录")}</strong><small>${escapeHtml(tailHistoryPriceText(job.min_price))}</small></span>
       <span class="tail-history-status"><strong class="tail-history-state ${escapeHtml(state.tone)}">${escapeHtml(state.label)}</strong><small>已查 ${escapeHtml(String(attempted))}${total ? ` / ${escapeHtml(String(total))}` : ""}</small></span>
-      <span class="tail-history-price"><strong>${escapeHtml(payload.departure_date || "日期未记录")}</strong><small>${escapeHtml(priceText)}</small></span>
     </summary>
     <div class="tail-history-job-body">
       ${message ? `<p class="tail-history-message">${escapeHtml(message)}</p>` : ""}

@@ -228,8 +228,11 @@ async def run(output: Path):
             assert "尾段：" not in history_text
             assert await page.locator("#tailAllHistoryHeading").is_visible()
             assert "全部历史报价" in await page.locator("#tailAllHistoryHeading").inner_text()
-            assert await page.locator("#tailHistorySortSelect").is_visible()
-            assert await page.locator("#tailHistorySortSelect").input_value() == "date"
+            assert await page.locator(".tail-history-sort").is_visible()
+            assert await page.locator('[data-history-sort="date"]').get_attribute("aria-pressed") == "true"
+            await page.locator('[data-history-sort="origin"]').click()
+            assert await page.locator('[data-history-sort="origin"]').get_attribute("aria-pressed") == "true"
+            assert await page.locator('[data-history-sort="date"]').get_attribute("aria-pressed") == "false"
             assert await page.locator("#tailTaskContextDetails").is_hidden()
             assert await page.locator("#tailDiscoveryForm").is_hidden()
             assert await page.locator("#tailJobSummary").is_hidden()

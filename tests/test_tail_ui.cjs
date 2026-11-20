@@ -88,7 +88,7 @@ function ui() {
     'renderTailResultCard','renderTailRouteGroup','renderTailResults','updateTailSearchScope','renderTailPriorities',
     'tailAttemptPhaseLabel','tailPlaceLabel','replaceTailMarkup','tailConditionLabel',
     'tailQueryDiffers','updateTailRunAction','updateTailResultContext','updateTailResultTools','tailActiveContext','loadSelectedTailJobConditions',
-    'renderTailSchedules','tailJobStatusLabel','tailHistoryScopeLabel','tailHistorySavedCount','tailHistoryEffectiveCandidates','tailHistoryResultState','tailHistoryCityName','tailHistoryDestinationPreview','tailHistoryConditionsSnapshot','tailHistorySortKey','sortTailHistoryJobs','renderTailHistoryJobs','renderTailHistoryJob',
+    'renderTailSchedules','tailJobStatusLabel','tailHistoryScopeLabel','tailHistorySavedCount','tailHistoryEffectiveCandidates','tailHistoryResultState','tailHistoryCityName','tailHistoryDestinationPreview','tailHistoryConditionsSnapshot','tailHistorySortKey','sortTailHistoryJobs','tailHistoryPriceText','tailHistoryGroupKey','groupTailHistoryJobs','tailHistoryGroupState','renderTailHistoryGroup','renderTailHistoryJobs','renderTailHistoryJob',
     'tailComparableBaseline','tailDecisionDifference']) {
     const start = source.indexOf(`function ${name}(`);
     assert.ok(start>=0,name);
@@ -268,6 +268,7 @@ test('history jobs render route, date, status, progress and escaped details',()=
   assert.match(html,/已查 6 \/ 6/);
   assert.match(html,/<strong>2027-01-03<\/strong>/);
   assert.match(html,/最低 ¥580/);
+  assert.ok(html.indexOf('2027-01-03') < html.indexOf('有报价 · 保存 11 条'), 'date column before result column');
   assert.match(html,/查询条件/);
   assert.match(html,/尾段城市/);
   assert.match(html,/指定城市/);
@@ -316,14 +317,36 @@ test('history jobs sort by departure date by default and support origin/transfer
   ]});
   const order=()=>[...elements.tailHistoryPanel.innerHTML.matchAll(/data-job-id="([^"]+)"/g)].map(m=>m[1]);
   ctx.renderTailHistoryJobs();
-  assert.match(elements.tailHistoryPanel.innerHTML,/id="tailHistorySortSelect"/);
-  assert.match(elements.tailHistoryPanel.innerHTML,/<option value="date" selected>/);
+  assert.match(elements.tailHistoryPanel.innerHTML,/data-history-sort="date" aria-pressed="true"/);
   assert.deepEqual(order(),['j2','j3','j1','j4']);
   ctx.tailState.results.historySort='origin';ctx.renderTailHistoryJobs();
-  assert.match(elements.tailHistoryPanel.innerHTML,/<option value="origin" selected>/);
+  assert.match(elements.tailHistoryPanel.innerHTML,/data-history-sort="origin" aria-pressed="true"/);
   assert.deepEqual(order(),['j4','j2','j3','j1']);
   ctx.tailState.results.historySort='transfer';ctx.renderTailHistoryJobs();
   assert.deepEqual(order(),['j3','j4','j1','j2']);
+});
+test('history jobs sharing route and date merge into one expandable group',()=>{
+  const {ctx,elements}=ui();
+  const job=(id,date,status,saved,minPrice,updated)=>({job_id:id,status,updated_at:updated,min_price:minPrice,
+    payload:{origin:'CTU',transfer:'JHG',departure_date:date,provider:'ctrip',search_scope:'candidates',candidates:['CAN']},
+    progress:{saved,attempted:6,total:6},result:null});
+  assignTailState(ctx,{tailHistoryJobs:[
+    job('g1','2027-01-01','finished',2,890,'2027-01-04T02:00:00Z'),
+    job('g2','2027-01-01','paused',4,610,'2027-01-04T03:00:00Z'),
+    job('g3','2027-01-01','cancelled',0,null,'2027-01-04T01:00:00Z'),
+    job('solo','2027-01-22','finished',0,null,'2027-01-04T04:00:00Z'),
+  ]});
+  ctx.renderTailHistoryJobs();
+  const html=elements.tailHistoryPanel.innerHTML;
+  assert.match(html,/tail-history-group/);
+  assert.match(html,/3 次查询/);
+  assert.match(html,/有报价 · 共保存 6 条/);
+  assert.match(html,/最低 ¥610/);
+  assert.match(html,/最近：已停止，可继续/);
+  const groupHtml=html.slice(html.indexOf('tail-history-group'),html.indexOf('data-job-id="solo"'));
+  assert.equal([...groupHtml.matchAll(/data-job-id="([^"]+)"/g)].length,3);
+  const solo=html.slice(html.indexOf('data-job-id="solo"'));
+  assert.doesNotMatch(solo,/次查询/);
 });
 test('unknown terms never show guaranteed savings and include recheck action',()=>{
   const {ctx}=ui(); const html=ctx.renderTailResultCard(quote(),1);
