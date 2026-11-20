@@ -110,6 +110,29 @@ def test_datepicker_overlay_distinguishes_low_price_strip(visible, low_price_cal
         assert asyncio.run(is_datepicker_overlay_visible(page)) is expected
 
 
+def test_open_calendar_accepts_matching_submitted_result_header_and_url():
+    page = DatePage(body="单程：北京上海01月05日周二")
+
+    evidence = asyncio.run(collect_date_evidence(page, DAY, overlay_visible=True))
+
+    assert evidence["matched"]
+    assert evidence["status"] == "confirmed"
+    assert evidence["matched_source"] == "page_header"
+    assert evidence["matched_value"] == DAY
+    assert evidence["url_date_matched"]
+
+
+def test_open_calendar_rejects_result_header_with_conflicting_url():
+    page = DatePage(body="单程：北京上海01月05日周二")
+    page.url = page.url.replace(DAY, "2027-01-06")
+
+    evidence = asyncio.run(collect_date_evidence(page, DAY, overlay_visible=True))
+
+    assert not evidence["matched"]
+    assert evidence["status"] == "unknown"
+    assert evidence["matched_source"] == "calendar_open"
+
+
 def test_url_alone_and_empty_body_do_not_confirm_date():
     evidence = asyncio.run(collect_date_evidence(DatePage(), DAY))
     assert evidence["url_date_matched"]

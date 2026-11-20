@@ -33,7 +33,6 @@ CTRIP_LANDING_PAGES = [
     "https://flights.ctrip.com/online/channel/domestic",
     "https://flights.ctrip.com/online/channel/international",
     "https://flights.ctrip.com",
-    "https://www.ctrip.com/flights",
 ]
 LOGGER = logging.getLogger(__name__)
 
@@ -477,46 +476,28 @@ async def submit_search(page: Page, timeout_ms: int) -> None:
     await random_scroll_and_pause(page, scroll_probability=0.3)
     button = page.locator("button.search-btn")
     try:
-        await hover_then_click(page, "button.search-btn", timeout_ms=timeout_ms)
+        await button.click(timeout=min(4000, max(1200, timeout_ms // 10)))
         return
     except Exception:
         pass
 
     try:
-        await page.keyboard.press("Escape")
-    except Exception:
-        pass
-    await page.wait_for_timeout(180)
-
-    try:
-        await page.locator("body").click(position={"x": 24, "y": 24}, timeout=timeout_ms // 8, force=True)
-    except Exception:
-        pass
-    await page.wait_for_timeout(220)
-
-    try:
-        await button.click(timeout=max(4000, timeout_ms // 3), force=True)
+        await button.evaluate("(node) => node.click()")
         return
     except Exception:
         pass
 
-    try:
-        await page.locator("form#searchForm").evaluate(
-            """(form) => {
-                if (form && typeof form.requestSubmit === 'function') {
-                    form.requestSubmit();
-                    return;
-                }
-                if (form && typeof form.submit === 'function') {
-                    form.submit();
-                }
-            }"""
-        )
-        return
-    except Exception:
-        pass
-
-    await button.evaluate("(node) => node.click()")
+    await page.locator("form#searchForm").evaluate(
+        """(form) => {
+            if (form && typeof form.requestSubmit === 'function') {
+                form.requestSubmit();
+                return;
+            }
+            if (form && typeof form.submit === 'function') {
+                form.submit();
+            }
+        }"""
+    )
 
 
 async def ensure_results_page(page: Page, timeout_ms: int, route: RouteQuery) -> None:
@@ -540,6 +521,13 @@ async def ensure_results_page(page: Page, timeout_ms: int, route: RouteQuery) ->
         await page.wait_for_url(lambda url: is_ctrip_results_url(url), timeout=timeout_ms // 3)
         await page.wait_for_load_state("domcontentloaded", timeout=timeout_ms)
         return
+    except Exception:
+        pass
+
+    try:
+        await page.goto(build_online_results_url(route), wait_until="domcontentloaded", timeout=timeout_ms)
+        if is_ctrip_results_url(page.url):
+            return
     except Exception:
         pass
 

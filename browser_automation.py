@@ -381,7 +381,6 @@ class BrowserAutomation:
         **kwargs,
     ) -> dict[str, object]:
         return await self.discover_tail_routes("feizhu", **kwargs)
-
     async def login(
         self,
         provider_name: str,

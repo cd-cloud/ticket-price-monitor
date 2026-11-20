@@ -78,6 +78,16 @@ def test_network_proof_never_overrides_conflict_editor_or_inspection_failure(ui)
         prepare_network_candidates(ui, [match()], route(), "SHA")
 
 
+def test_confirmed_result_header_is_accepted_with_calendar_overlay():
+    ui = evidence("confirmed", overlay_visible=True, matched_source="page_header")
+
+    selected, report = prepare_network_candidates(ui, [match()], route(), "SHA")
+
+    assert len(selected) == 1
+    assert report["matched"]
+    assert selected[0]["date_evidence"]["matched_source"] == "page_header"
+
+
 def test_network_dates_remain_scoped_to_each_quote():
     wrong = match(500)
     wrong["details"][0]["departure_date"] = "2027-06-21"

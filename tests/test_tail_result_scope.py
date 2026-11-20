@@ -23,6 +23,8 @@ def store(tmp_path):
                                     "payload": {"_checkpoint_job_id": "a"}, "progress": {}})
     for index, job in enumerate(("a", "a", "b")):
         item = quote(price=700 + index, provider="ctrip")
+        item["observed_at"] = f"2026-01-01T00:00:00.00000{index}+00:00"
+        item["scraped_at"] = item["observed_at"]
         item["raw_payload"]["validation"] = {"status": "valid"}
         repo.checkpoint_tail_candidate(
             root_job_id=job, fingerprint="scope",

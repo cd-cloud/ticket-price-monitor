@@ -116,10 +116,6 @@ async def collect_date_evidence(page, expected: str, *, return_date=None, overla
         "url_date_matched": False, "overlay_visible": overlay_visible, "matched": False,
         "matched_source": None, "matched_value": None, "status": "unknown",
     }
-    # Even a selected-looking input can be a not-yet-submitted calendar edit.
-    if overlay_visible:
-        evidence["matched_source"] = "calendar_open"
-        return evidence
     try:
         text = await page.locator("body").inner_text(timeout=2000)
     except Exception:
@@ -143,12 +139,25 @@ async def collect_date_evidence(page, expected: str, *, return_date=None, overla
             "expected": day, "input_values": values, "page_dates": header_dates, "url_dates": url_dates,
             "matched": confirmed, "status": "mismatch" if conflicting else "confirmed" if confirmed else "unknown",
             "year_confirmed": year_confirmed,
+            "result_header_confirmed": header_dates == [day],
             "matched_source": "date_conflict" if conflicting else "visible_control" if control_dates == [day]
                               else "page_header" if header_dates == [day] else None,
         }
     departure = roles.get("departure", {})
     evidence.update(input_values=departure.get("input_values", []), page_dates=departure.get("page_dates", []),
                     url_date_matched=departure.get("url_dates") == [expected], roles=roles)
+    if overlay_visible:
+        # An open editor can be an unsubmitted change, but a submitted result header
+        # plus the same date in the result URL is independent confirmation.
+        evidence["matched"] = bool(roles) and all(
+            item["matched"] and item["result_header_confirmed"] and item["url_dates"] == [item["expected"]]
+            for item in roles.values()
+        )
+        evidence["status"] = "confirmed" if evidence["matched"] else "unknown"
+        evidence["matched_source"] = "page_header" if evidence["matched"] else "calendar_open"
+        if evidence["matched"]:
+            evidence["matched_value"] = expected
+        return evidence
     evidence["matched"] = bool(roles) and all(item["matched"] for item in roles.values())
     evidence["status"] = ("mismatch" if any(item["status"] == "mismatch" for item in roles.values())
                           else "confirmed" if evidence["matched"] else "unknown")

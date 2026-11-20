@@ -7,6 +7,7 @@ from playwright.async_api import BrowserContext, Page
 from config_manager import ProviderConfig, RouteQuery
 from providers import ctrip_itinerary
 from providers import ctrip_network_parser
+from providers import ctrip_page
 from providers import ctrip_tail_discovery
 from providers import ctrip_tail_parser
 
@@ -213,7 +214,9 @@ class CtripTailOperations:
             body = (await page.locator("body").inner_text(timeout=2500)).lower()
         except Exception:
             return False
-        return any(keyword.lower() in body for keyword in CTRIP_VERIFICATION_KEYWORDS)
+        if any(keyword.lower() in body for keyword in CTRIP_VERIFICATION_KEYWORDS if keyword != "验证码"):
+            return True
+        return "验证码" in body and not await ctrip_page.has_login_overlay(page)
 
     def _extract_ctrip_tail_match_from_network(
         self,

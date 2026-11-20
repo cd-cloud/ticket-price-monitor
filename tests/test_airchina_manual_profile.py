@@ -86,7 +86,12 @@ def test_unavailable_manual_profile_never_selects_recovery_or_fallback(tmp_path,
     if fault == "socket_lock":
         (path / "SingletonSocket").write_text("owned")
     elif fault == "dangling_lock":
-        (path / "SingletonLock").symlink_to(path / "nonexistent-owner")
+        try:
+            (path / "SingletonLock").symlink_to(path / "nonexistent-owner")
+        except OSError as exc:
+            if getattr(exc, "winerror", None) == 1314:
+                pytest.skip("Windows symlink creation requires additional privileges")
+            raise
     elif fault == "invalid_preferences":
         (path / "Default").mkdir()
         (path / "Default" / "Preferences").write_text("malformed")
