@@ -5,7 +5,7 @@ function tailFormFieldIds() {
     "tailCabinSelect", "tailAirlineSelect", "tailAirlineInput", "tailFilterScopeInput",
     "tailSearchScopeInput", "tailFollowupBudgetInput", "tailCallBudgetInput", "tailPassengersInput",
     "tailBudgetCitiesInput", "tailBudgetMinutesInput", "tailTargetInput", "tailBaselineBudgetInput",
-    "tailCandidateProfileSelect"];
+    "tailCandidateProfileSelect", "tailScheduleIntervalInput", "tailScheduleTimeInput"];
 }
 
 
@@ -127,7 +127,7 @@ function updateTailRunAction() {
     ? "连接中断，后台状态待确认；请勿重复发起。"
     : busy ? "已完成的结果会逐步出现；停止查询会保留已保存结果。"
       : !job ? "填写我要乘坐的行程后开始查询；条件只保存在本机。"
-        : tailState.results.view === "history" ? "当前浏览历史报价；新查询使用上方表单条件，不改变历史结果。"
+        : tailState.results.view === "history" ? "当前浏览历史方案；新查询使用上方表单条件，不改变历史结果。"
           : differs ? "将使用已修改的条件开始新查询；下方仍为原任务结果。"
             : "使用上方表单条件开始新查询；已保存结果仍会保留。";
 }
@@ -147,10 +147,8 @@ function updateTailResultContext() {
     loadButton.disabled = tailBusy();
   }
   if (tailState.results.view === "history") {
-    context.textContent = "正在查看：历史报价 · 跨任务的已保存结果";
-    if (taskSummary) taskSummary.textContent = "查看历史报价范围";
-    notice.textContent = "上方条件仅用于新查询，不会改变历史报价；请使用列表筛选。";
-    notice.hidden = false;
+    context.textContent = "";
+    if (taskSummary) taskSummary.textContent = "查看历史查询范围";
     return;
   }
   const job = tailState.job.selected?.job_id === tailState.job.selectedId ? tailState.job.selected : null;
@@ -280,6 +278,76 @@ function updateTailResultTools() {
   updateTailResultContext();
 }
 
+async function fetchTailSchedules() {
+  const data = await tailGetJson("/api/tail-discovery/schedules");
+  renderTailSchedules(data.schedules || []);
+}
+
+function renderTailSchedules(schedules) {
+  const list = document.getElementById("tailScheduleList");
+  const summary = document.getElementById("tailScheduleSummary");
+  if (summary) summary.textContent = schedules.length ? `${schedules.length} 个计划` : "未设置";
+  if (!list) return;
+  if (!schedules.length) {
+    list.innerHTML = '<p class="muted">暂无定时查询。保存后按设定时间自动创建甩尾任务。</p>';
+    return;
+  }
+  list.innerHTML = schedules.map(item => {
+    const route = item.route || {};
+    const title = `${tailPlaceLabel(route.origin)} → ${tailPlaceLabel(route.transfer)} · ${route.departure_date || "日期未记录"} · ${providerLabel(route.provider)}`;
+    const frequency = Number(item.interval_days) === 1 ? "每天" : `每 ${item.interval_days} 天`;
+    const last = item.last_job_status
+      ? `上次 ${tailJobStatusLabel(item.last_job_status)}${item.last_job_saved != null ? ` · 保存 ${item.last_job_saved} 条` : ""}`
+      : "尚未运行";
+    return `<div class="tail-schedule-item ${item.enabled ? "" : "disabled"}" data-schedule-id="${escapeHtml(item.schedule_id)}">
+      <div><strong>${escapeHtml(title)}</strong>
+        <span>${frequency} ${escapeHtml(item.run_time)} · 下次 ${escapeHtml(formatQueryTime(item.next_run_at))}</span>
+        <small>${escapeHtml(last)}</small>
+        ${item.last_error ? `<p class="tail-warning">${escapeHtml(item.last_error)}</p>` : ""}</div>
+      <div class="tail-schedule-item-actions">
+        <button type="button" class="ghost compact" data-tail-schedule-action="toggle" data-schedule-enabled="${item.enabled ? "false" : "true"}">${item.enabled ? "停用" : "启用"}</button>
+        <button type="button" class="ghost compact danger" data-tail-schedule-action="delete">删除</button>
+      </div>
+    </div>`;
+  }).join("");
+}
+
+async function saveTailSchedule() {
+  const payload = buildTailQueryPayload();
+  const body = {
+    payload,
+    interval_days: Number(document.getElementById("tailScheduleIntervalInput")?.value || 1),
+    run_time: document.getElementById("tailScheduleTimeInput")?.value || "09:00",
+  };
+  const response = await fetchApi("/api/tail-discovery/schedules", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify(body),
+  });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.detail || "保存定时查询失败");
+  saveTailForm();
+  renderTailSchedules([data, ...((await tailGetJson("/api/tail-discovery/schedules")).schedules || []).filter(item => item.schedule_id !== data.schedule_id)]);
+  notifyComplete("定时查询已保存；服务运行时会按计划执行。");
+}
+
+async function updateTailScheduleEnabled(scheduleId, enabled) {
+  const response = await fetchApi(`/api/tail-discovery/schedules/${encodeURIComponent(scheduleId)}/enabled`, {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({enabled}),
+  });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.detail || "更新定时查询失败");
+  await fetchTailSchedules();
+}
+
+async function deleteTailSchedule(scheduleId) {
+  const response = await fetchApi(`/api/tail-discovery/schedules/${encodeURIComponent(scheduleId)}`, {method: "DELETE"});
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.detail || "删除定时查询失败");
+  await fetchTailSchedules();
+}
 
 function filterTailCandidateList() {
   const keyword = document.getElementById("tailCandidateSearch").value.trim().toLowerCase();
@@ -316,8 +384,11 @@ function ensureTailDiscoveryPanel() {
 
   panel.innerHTML = `
     <div class="panel-head">
-      <div><p class="eyebrow">Tail discovery</p><h2>找一程合适的航班</h2>
-      <p class="muted">先选实际乘坐的航班，再比较包含额外尾段的购票组合。例如想坐北京 → 上海，上海是实际乘坐的到达城市，不一定是购票行程终点。搜索报价不代表可出票。</p></div>
+      <div class="tail-subnav" role="group" aria-label="甩尾发现子页面">
+        <button type="button" data-tail-view="current" aria-pressed="true">新查询</button>
+        <button type="button" data-tail-view="history" aria-pressed="false">历史方案</button>
+      </div>
+      <h2>找一程合适的航班</h2>
     </div>
     <p id="tailActionError" role="alert" hidden></p>
     <form id="tailDiscoveryForm" class="tail-form">
@@ -414,6 +485,16 @@ function ensureTailDiscoveryPanel() {
                 </details>
               </div>
             </details>
+            <details class="tail-settings accordion-item" id="tailScheduleSettings">
+              <summary class="accordion-button"><span class="tail-settings-title">定时查询</span> <span id="tailScheduleSummary" class="muted">未设置</span></summary>
+              <div class="tail-settings-grid accordion-body">
+                <label>查询频率<select id="tailScheduleIntervalInput"><option value="1">每天</option><option value="2">每 2 天</option><option value="3">每 3 天</option><option value="7">每周</option></select></label>
+                <label>查询时间<input id="tailScheduleTimeInput" type="time" value="09:00" /></label>
+                <div class="tail-wide tail-schedule-actions"><button id="tailScheduleSaveBtn" class="ghost" type="button">保存当前条件为定时查询</button></div>
+                <p class="muted tail-wide">只有本机服务运行时才会执行；手机只是管理入口，查询仍在 Mac 上执行。错过多个周期只补跑一次，出发日期过后自动停用。</p>
+                <div id="tailScheduleList" class="tail-schedule-list tail-wide" aria-live="polite"></div>
+              </div>
+            </details>
           </div>
           </div>
         </fieldset>
@@ -431,10 +512,6 @@ function ensureTailDiscoveryPanel() {
     <section class="tail-results-workspace" aria-label="甩尾查询结果">
       <div class="tail-results-heading">
         <h3 id="tailResultsHeading" tabindex="-1">航班方案</h3>
-        <div class="tail-view-tabs" role="group" aria-label="结果来源">
-          <button type="button" data-tail-view="current" aria-pressed="true">任务报价</button>
-          <button type="button" data-tail-view="history" aria-pressed="false">历史报价</button>
-        </div>
         <button id="tailRefreshBtn" class="ghost compact" type="button" title="只重新读取已保存的结果，不查询平台">刷新已存结果</button>
       </div>
       <div class="tail-result-context">
@@ -446,6 +523,11 @@ function ensureTailDiscoveryPanel() {
           <p id="tailTaskConditions" class="muted"></p>
           <p id="tailResultScopeNote" class="muted">本次结果仅属于所选任务；继续任务会包含此前已完成的结果。</p>
         </details>
+        <section id="tailHistoryPanel" class="tail-history-panel" aria-label="历史查询记录" hidden></section>
+        <div id="tailAllHistoryHeading" class="tail-all-history-heading" hidden>
+          <h3>全部历史报价</h3>
+          <p class="muted">跨任务已保存报价；筛选和排序仅作用于下方已加载结果。</p>
+        </div>
       </div>
       <div class="tail-result-tools">
         <label class="tail-control">排序<select id="tailSortSelect"><option value="price">参考价从低到高</option><option value="savings">可比价差优先</option><option value="time">更新时间从新到旧</option><option value="confidence">行程证据优先</option></select></label>
@@ -520,7 +602,23 @@ function ensureTailDiscoveryPanel() {
     const key = event.target.dataset?.disclosure;
     if (key) tailState.results.disclosureState.set(key, event.target.open);
   }, true);
+  panel.addEventListener("toggle", event => {
+    if (event.target.matches?.(".tail-history-job") && event.target.open) {
+      loadTailHistoryJobResults(event.target).catch(error => showTailError(error.message));
+    }
+  }, true);
+  panel.addEventListener("change", event => {
+    if (event.target.id !== "tailHistorySortSelect") return;
+    tailState.results.historySort = event.target.value;
+    renderTailHistoryJobs();
+  });
   panel.addEventListener("click", async event => {
+    const historyJob = event.target.closest("[data-history-select-job]");
+    if (historyJob) {
+      setTailResultView("current");
+      await selectTailJob(historyJob.dataset.historySelectJob).catch(error => showTailError(error.message));
+      return;
+    }
     const choice = event.target.closest("[data-candidates]");
     if (choice) {
       tailState.form.touched = true;
@@ -574,6 +672,23 @@ function ensureTailDiscoveryPanel() {
   });
   document.getElementById("tailLoadMoreBtn").addEventListener("click", () => fetchTailResults({append:true}).catch(() => {}));
   document.getElementById("tailClearFiltersBtn").addEventListener("click", clearTailResultFilters);
+  document.getElementById("tailScheduleSaveBtn").addEventListener("click", () => {
+    tailState.form.touched = true;
+    saveTailSchedule().catch(error => showTailError(error.message));
+  });
+  document.getElementById("tailScheduleList").addEventListener("click", event => {
+    const button = event.target.closest("button[data-tail-schedule-action]");
+    if (!button) return;
+    const item = button.closest("[data-schedule-id]");
+    if (!item) return;
+    const action = button.dataset.tailScheduleAction;
+    button.disabled = true;
+    showTailError("");
+    const operation = action === "toggle"
+      ? updateTailScheduleEnabled(item.dataset.scheduleId, button.dataset.scheduleEnabled === "true")
+      : deleteTailSchedule(item.dataset.scheduleId);
+    operation.catch(error => showTailError(error.message)).finally(() => { button.disabled = false; });
+  });
   document.getElementById("tailJobPicker").addEventListener("change", event => selectTailJob(event.target.value).catch(error => showTailError(error.message)));
   for (const id of ["tailTrustInput", "tailSortSelect", "tailDateFilter", "tailLatestOnlyInput", "tailMaxPriceInput", "tailResultProviderFilter"]) {
     document.getElementById(id).addEventListener(id === "tailMaxPriceInput" ? "input" : "change", () => renderTailResults(tailState.results.items));

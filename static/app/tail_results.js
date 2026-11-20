@@ -1,5 +1,3 @@
-const TAIL_RECOMMENDATION_LIMIT = 3;
-
 function tailQuoteFresh(item) {
   return Boolean(item.expires_at) && Date.parse(item.expires_at) > Date.now();
 }
@@ -27,17 +25,66 @@ function groupTailFlightResults(items, state = "") {
   }));
 }
 
-function selectTailRecommendationGroups(items, limit = TAIL_RECOMMENDATION_LIMIT) {
-  let quota = Math.max(0, Number(limit) || 0);
-  const selected = [], deferred = [];
-  for (const group of groupTailFlightResults(items, "recommended")) {
-    const visibleOptions = Math.min(quota, group.optionCount);
-    if (visibleOptions > 0) {
-      selected.push({...group, visibleOptions});
-      quota -= visibleOptions;
-    } else deferred.push(group);
-  }
-  return {selected, deferred};
+function buildTailRouteTimeSummaries(items, state = "") {
+  return groupTailFlightResults(items, state).map(group => {
+    const sorted = [...group.items].sort(compareTailResults);
+    const best = sorted[0] || {};
+    const providerPrices = [];
+    const seenProviders = new Set();
+    for (const item of sorted) {
+      const provider = item.provider || "unknown";
+      if (seenProviders.has(provider) || !Number.isFinite(Number(item.price))) continue;
+      seenProviders.add(provider);
+      providerPrices.push(item);
+    }
+    return {group, best, providerPrices, optionCount: group.optionCount, itemCount: group.items.length,
+      fresh: tailQuoteFresh(best)};
+  }).sort((left, right) => {
+    const comparison = compareTailResults(left.best, right.best);
+    if (comparison !== 0) return comparison;
+    return `${left.best.origin || ""}${left.best.transfer || ""}${left.best.departure_date || ""}`
+      .localeCompare(`${right.best.origin || ""}${right.best.transfer || ""}${right.best.departure_date || ""}`);
+  });
+}
+
+function tailOverviewPriceLabel(entry) {
+  if (!entry.providerPrices.length) return '<span><small>参考低价</small><strong>暂无</strong></span>';
+  return entry.providerPrices.map(item => `<span><small>${escapeHtml(providerLabel(item.provider))}</small><strong>${escapeHtml(item.currency || "CNY")} ${Number(item.price || 0).toFixed(0)}</strong></span>`).join("");
+}
+
+function renderTailRouteTimeOverview(items, state = "", options = {}) {
+  const summaries = buildTailRouteTimeSummaries(items, state);
+  if (!summaries.length) return "";
+  const title = options.title || (state === "stale" ? "较早检索" : "路线价格总览");
+  const note = options.note || (state === "stale"
+    ? "以下均为较早检索；展开查看完整行程，价格与库存需重新核实"
+    : "按航线、日期和首段航班时间聚合；点击一组查看完整行程与平台报价");
+  return `<section class="tail-state-section tail-route-overview">
+    <h3>${title} <span>${summaries.length} 组</span><small>${note}</small></h3>
+    ${summaries.map(entry => renderTailRouteTimeItem(entry, state, options)).join("")}</section>`;
+}
+
+function renderTailRouteTimeItem(entry, state = "", options = {}) {
+  const group = entry.group;
+  const leg = group.leg;
+  const first = group.items[0] || {};
+  const key = escapeHtml(`overview-${group.key}`);
+  const open = options.openItems ? " open" : "";
+  const route = `${tailPlaceLabel(first.origin)} → ${tailPlaceLabel(first.transfer)}`;
+  const date = first.departure_date || "未标日期";
+  const flight = `${leg.flight_no || "航班号待确认"} ${leg.departure_time || "--:--"} → ${leg.arrival_time || "--:--"}`;
+  const airports = `${airportCodeDisplayText(leg.departure_airport || leg.origin)} → ${airportCodeDisplayText(leg.arrival_airport || leg.destination)}`;
+  const freshness = entry.fresh ? "近期检索" : "较早检索";
+  const observed = entry.best.observed_at ? ` · ${formatQueryTime(entry.best.observed_at)}` : "";
+  return `<details class="tail-overview-item" data-disclosure="${key}"${open}>
+    <summary data-focus-key="${key}">
+      <span class="tail-overview-route"><strong>${escapeHtml(route)}</strong><small>${escapeHtml(date)}</small></span>
+      <span class="tail-overview-flight"><strong>${escapeHtml(flight)}</strong><small>${escapeHtml(airports)}</small></span>
+      <span class="tail-overview-meta"><strong>${entry.optionCount} 条路线 · ${entry.itemCount} 条报价</strong><small>${freshness}${escapeHtml(observed)}</small></span>
+      <span class="tail-overview-prices">${tailOverviewPriceLabel(entry)}</span>
+    </summary>
+    <div class="tail-overview-details">${renderTailFlightGroups(group.items, state, {visibleOptions: 3})}</div>
+  </details>`;
 }
 
 function renderTailStaleResults(items) {
@@ -109,39 +156,21 @@ function renderTailResults(results) {
   } else {
     const trust = document.getElementById("tailTrustInput")?.value || "all";
     if (trust === "stale") {
-      const content = groupTailResultsByRoute(visible).map(group => renderTailRouteGroup({...group, state: "stale"})).join("");
+      const content = renderTailRouteTimeOverview(visible, "stale", {openItems: true});
       replaceTailMarkup(container, `<details class="tail-state-section tail-stale-group" data-disclosure="stale-results" open>
         <summary data-focus-key="stale-results">较早检索 <span>${visible.length}</span><small>点击收起</small></summary>${content}</details>`);
-      const staleGroup = container.querySelector(".tail-stale-group");
+      const staleGroup = container.querySelector?.(".tail-stale-group");
       if (staleGroup) staleGroup.open = true;
       tailState.results.disclosureState.set("stale-results", true);
     } else {
       const freshItems = visible.filter(tailQuoteFresh);
-      const recommendationSource = freshItems.length ? freshItems : visible;
-      const {selected} = selectTailRecommendationGroups(recommendationSource);
-      const selectedItems = new Set(selected.flatMap(group => group.items));
-      const deferredItems = visible.filter(item => !selectedItems.has(item));
-      const deferredFresh = deferredItems.filter(tailQuoteFresh);
-      const deferredStale = deferredItems.filter(item => !tailQuoteFresh(item));
-      const recommendedCount = selected.reduce((total, group) => total + group.visibleOptions, 0);
-      const staleRecommended = selected.length > 0 && selected.every(group => group.items.every(item => !tailQuoteFresh(item)));
-      const recommendedTitle = staleRecommended ? "较早检索" : "优选方案";
-      const recommendedCountLabel = staleRecommended ? `${recommendedCount} / ${visible.length}` : String(recommendedCount);
-      const recommendedNote = staleRecommended
-        ? "当前结果均为较早检索；展示排序靠前路线，价格与库存请重新核实"
-        : "按当前筛选和排序展示前 3 条完整购票路线；近期检索且已核对的报价优先";
-      const recommendedHtml = selected.map(group => renderTailFlightGroups(group.items, "recommended", {
-        visibleOptions: group.visibleOptions,
-      })).join("");
-      const remainingFreshHtml = groupTailResultsByRoute(deferredFresh)
-        .map(group => renderTailRouteGroup({...group, state: ""})).join("");
-      const staleHtml = renderTailStaleResults(deferredStale);
-      let markup = `<section class="tail-state-section tail-recommended-results">
-        <h3>${recommendedTitle} <span>${recommendedCountLabel}</span><small>${recommendedNote}</small></h3>${recommendedHtml}</section>`;
-      if (deferredItems.length) {
-        markup += `<details class="tail-all-results" data-disclosure="tail-more-results">
-          <summary data-focus-key="tail-more-results">展开其余 ${deferredItems.length} 条报价<small>包含当前筛选下的其他购票路线</small></summary>
-          <div class="tail-all-results-body">${remainingFreshHtml}${staleHtml}</div></details>`;
+      const staleItems = visible.filter(item => !tailQuoteFresh(item));
+      let markup = "";
+      if (freshItems.length) markup += renderTailRouteTimeOverview(freshItems);
+      if (staleItems.length) {
+        markup += freshItems.length
+          ? renderTailStaleResults(staleItems)
+          : renderTailRouteTimeOverview(staleItems, "stale");
       }
       replaceTailMarkup(container, markup);
     }

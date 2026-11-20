@@ -53,6 +53,7 @@ async def run(output: Path):
         actions = []
         live = {"status":"running", "offline":False, "quote_error":False, "recheck_error":False}
         dual = {"status":"running", "payload":None, "rows":None}
+        schedules = []
         def dual_job():
             return {"job_id":"dual-demo", "status":dual["status"], "payload":dual["payload"],
                 "progress":{"saved":5, "message":"模拟双平台进度；已完成结果分别保留", "children":[
@@ -64,6 +65,17 @@ async def run(output: Path):
                      "error":None if dual["status"] == "running" else "模拟平台暂时不可用，已保存结果保留",
                      "progress":{"message":"已返回开放发现报价"}},
                 ]}}
+        def public_schedule(item):
+            payload = item["payload"]
+            return {"schedule_id": item["schedule_id"], "enabled": item["enabled"],
+                "interval_days": item["interval_days"], "run_time": item["run_time"],
+                "next_run_at": item["next_run_at"], "last_run_at": item.get("last_run_at"),
+                "last_job_id": item.get("last_job_id"), "last_error": item.get("last_error"),
+                "created_at": item.get("created_at"), "updated_at": item.get("updated_at"),
+                "route": {"origin": payload.get("origin"), "transfer": payload.get("transfer"),
+                    "departure_date": payload.get("departure_date"), "provider": payload.get("provider"),
+                    "search_scope": payload.get("search_scope"), "candidates": len(payload.get("candidates") or [])},
+                "last_job_status": item.get("last_job_status"), "last_job_saved": item.get("last_job_saved")}
         live_reads = []
         async with async_playwright() as p:
             browser = await p.chromium.launch(channel="chrome", headless=True)
@@ -73,9 +85,27 @@ async def run(output: Path):
                 url = urlsplit(route.request.url)
                 # Every URL is intercepted, including any accidentally introduced third-party request.
                 assert url.hostname == "127.0.0.1", f"Unexpected external request: {url.hostname}"
+                if route.request.method == "DELETE" and url.path.startswith("/api/tail-discovery/schedules/"):
+                    schedule_id = url.path.rsplit("/", 1)[-1]
+                    schedules[:] = [item for item in schedules if item["schedule_id"] != schedule_id]
+                    return await route.fulfill(status=200, json={"deleted": True, "schedule_id": schedule_id})
                 if route.request.method == "POST":
                     actions.append((url.path, route.request.post_data))
                     submitted = json.loads(route.request.post_data or "{}")
+                    if url.path == "/api/tail-discovery/schedules":
+                        payload = submitted.get("payload") or {}
+                        item = {"schedule_id": f"schedule-{len(schedules) + 1}", "enabled": True,
+                            "payload": payload, "interval_days": submitted.get("interval_days", 1),
+                            "run_time": submitted.get("run_time", "09:00"), "next_run_at": "2027-06-21T01:00:00Z",
+                            "last_run_at": None, "last_job_id": None, "last_error": None,
+                            "created_at": "2026-11-18T00:00:00Z", "updated_at": "2026-11-18T00:00:00Z"}
+                        schedules.append(item)
+                        return await route.fulfill(status=200, json=public_schedule(item))
+                    if url.path.startswith("/api/tail-discovery/schedules/") and url.path.endswith("/enabled"):
+                        schedule_id = url.path.split("/")[-2]
+                        item = next(item for item in schedules if item["schedule_id"] == schedule_id)
+                        item["enabled"] = bool(submitted.get("enabled"))
+                        return await route.fulfill(status=200, json=public_schedule(item))
                     if live["recheck_error"] and url.path.endswith("/recheck"):
                         return await route.fulfill(status=503, json={"detail":"模拟复核失败，请稍后重试"})
                     if url.path == "/api/tail-discovery/run" and submitted.get("provider") == "both":
@@ -98,6 +128,8 @@ async def run(output: Path):
                         "job_id":"live", "status":live["status"],
                         "payload":{"origin":"BJS","transfer":"SHA","departure_date":"2027-06-20"},
                         "progress":{"saved":4,"attempted":1,"total":5,"message":"模拟查询中"}})
+                if url.path == "/api/tail-discovery/schedules":
+                    return await route.fulfill(status=200, json={"schedules": [public_schedule(item) for item in schedules]})
                 if url.path == "/api/tail-discovery/results":
                     job_id = parse_qs(url.query).get("job_id", [""])[0]
                     if job_id == "dual-demo":
@@ -128,8 +160,8 @@ async def run(output: Path):
             assert await page.locator("button[data-tail-action='explore']").is_hidden()
             assert "2027-06-20" in await page.locator("#tailResultIdentity").inner_text()
             assert "已停止，可继续" in await page.locator("#tailTaskContextSummary").inner_text()
-            assert "完整购票行程" in await page.locator(".tail-itinerary-option").first.inner_text()
-            assert "同口径参考" in await page.locator(".tail-decision-difference").first.inner_text()
+            assert "完整购票行程" in await page.locator(".tail-itinerary-option").first.text_content()
+            assert "同口径参考" in await page.locator(".tail-decision-difference").first.text_content()
             assert "primary" in await page.locator("button[data-tail-action='resume']").get_attribute("class")
             assert await page.locator("button[data-tail-action='resume']").inner_text() == "继续此任务"
             assert "ghost" in await page.locator("#tailRunBtn").get_attribute("class")
@@ -162,10 +194,12 @@ async def run(output: Path):
             await page.locator("#tailViewResultsBtn").click()
             assert await page.locator("#tailResultsHeading").evaluate("el => el === document.activeElement")
             assert await page.locator(".tail-flight-group").count() == 1
-            assert await page.locator(".tail-recommended-results").count() == 1
-            assert await page.locator(".tail-recommended-results > .tail-flight-group > .tail-itinerary-option").count() == 3
-            assert await page.locator(".tail-recommended-results .tail-alternatives").evaluate("el => !el.open")
-            assert "比较其他 1 条购票路线" in await page.locator(".tail-recommended-results .tail-alternatives > summary").inner_text()
+            assert await page.locator(".tail-route-overview").count() == 1
+            assert await page.locator(".tail-overview-item").count() == 1
+            assert not await page.locator(".tail-overview-item").evaluate("el => el.open")
+            assert "4 条路线 · 4 条报价" in await page.locator(".tail-overview-item > summary").inner_text()
+            overview_top = await page.locator(".tail-overview-item").evaluate("el => el.getBoundingClientRect().top")
+            assert overview_top < 780, f"compact overview starts too low: {overview_top}"
             assert await page.locator("#tailProviderSelect").input_value() == "both"
             assert not await page.locator("#tailSearchSettings").get_attribute("open")
             assert not await page.locator("#tailFilters").get_attribute("open")
@@ -173,23 +207,51 @@ async def run(output: Path):
             assert await page.locator("#tailProviderQuickFilter").is_hidden()
             assert await page.locator("#tailCallBudgetInput").evaluate("el => !el.disabled")
             await page.screenshot(path=str(output / "tail-desktop.png"), full_page=True)
+            subnav_box_current = await page.locator(".tail-subnav").bounding_box()
+            await page.locator(".tail-overview-item > summary").first.click()
+            assert await page.locator(".tail-overview-item").evaluate("el => el.open")
             await page.locator(".tail-alternatives > summary").first.click()
             await page.locator(".tail-details > summary").first.click()
             await page.evaluate("fetchTailResults()")
+            assert await page.locator(".tail-overview-item").evaluate("el => el.open")
             assert await page.locator(".tail-alternatives").first.evaluate("el => el.open")
             assert await page.locator(".tail-details").first.evaluate("el => el.open")
             await page.locator("[data-tail-view='history']").click()
             await page.wait_for_function("document.querySelectorAll('.tail-result-card').length === 5")
-            assert await page.locator(".tail-flight-group").count() == 2
-            assert "跨任务" in await page.locator("#tailResultIdentity").inner_text()
-            assert not await page.locator(".tail-stale-group").evaluate("el => el.open")
+            await page.wait_for_function("document.querySelectorAll('#tailHistoryPanel .tail-history-job').length >= 1")
+            assert await page.evaluate("getComputedStyle(document.documentElement).scrollbarGutter.includes('stable')")
+            history_text = await page.locator("#tailHistoryPanel").inner_text()
+            assert "北京" in history_text and "上海" in history_text
+            assert "部分完成 · 保存 4 条" in history_text
+            assert "实际查询" in history_text or "个尾段城市" in history_text
+            assert "最低 ¥" in history_text
+            assert "尾段：" not in history_text
+            assert await page.locator("#tailAllHistoryHeading").is_visible()
+            assert "全部历史报价" in await page.locator("#tailAllHistoryHeading").inner_text()
+            assert await page.locator("#tailHistorySortSelect").is_visible()
+            assert await page.locator("#tailHistorySortSelect").input_value() == "date"
+            assert await page.locator("#tailTaskContextDetails").is_hidden()
+            assert await page.locator("#tailDiscoveryForm").is_hidden()
+            assert await page.locator("#tailJobSummary").is_hidden()
+            subnav_box_history = await page.locator(".tail-subnav").bounding_box()
+            assert abs(subnav_box_history["x"] - subnav_box_current["x"]) < 2
+            assert abs(subnav_box_history["y"] - subnav_box_current["y"]) < 2
+            await page.locator(".tail-history-job > summary").first.click()
+            await page.wait_for_function("document.querySelector('.tail-history-job-results .tail-overview-item')")
+            assert await page.locator(".tail-history-job-results .tail-overview-item").count() == 1
+            history_body = await page.locator(".tail-history-job-body").first.inner_text()
+            assert "查询条件" in history_body and "出发日期" in history_body and "尾段城市" in history_body
+            await page.locator(".tail-history-job > summary").first.click()
+            assert await page.locator("#tailResults .tail-flight-group").count() == 2
+            assert await page.locator("#tailResultIdentity").is_hidden()
+            assert not await page.locator("#tailResults .tail-stale-group").evaluate("el => el.open")
             await page.locator("#tailResultFilters > summary").click()
             await page.locator("#tailTrustInput").select_option("stale")
             assert not errors, errors
-            assert await page.locator(".tail-stale-group").evaluate("el => el.open")
-            assert await page.locator(".tail-stale-group .tail-result-card").count() == 1
-            assert await page.locator(".tail-stale-group .tail-result-card").first.is_visible()
-            assert await page.locator(".tail-result-card").count() == 1
+            assert await page.locator("#tailResults .tail-stale-group").evaluate("el => el.open")
+            assert await page.locator("#tailResults .tail-stale-group .tail-result-card").count() == 1
+            assert await page.locator("#tailResults .tail-stale-group .tail-result-card").first.is_visible()
+            assert await page.locator("#tailResults .tail-result-card").count() == 1
             await page.locator("#tailClearFiltersBtn").click()
             await page.locator("[data-tail-view='current']").click()
             await page.wait_for_function("document.querySelectorAll('.tail-result-card').length === 4")
@@ -302,10 +364,12 @@ async def run(output: Path):
             assert await page.locator("#tailRunBtn").is_disabled()
             await page.locator("[data-tail-view='history']").click()
             await page.wait_for_function("document.querySelectorAll('.tail-result-card').length === 5")
-            assert "下方结果另有所属" in await page.locator("#tailJobSummary").inner_text()
+            assert await page.locator("#tailJobSummary").is_hidden()
+            assert await page.locator("#tailDiscoveryForm").is_hidden()
             live["quote_error"] = False
             await page.locator("[data-tail-view='current']").click()
             await page.wait_for_function("document.querySelectorAll('.tail-result-card').length === 4")
+            assert await page.locator("#tailJobSummary").is_visible()
             assert "下方结果另有所属" not in await page.locator("#tailJobSummary").inner_text()
             await page.locator("#tailTaskContextDetails > summary").click()
             await page.locator("#tailJobPicker").select_option("offline-demo")
@@ -392,9 +456,9 @@ async def run(output: Path):
                 await preview.locator("#tailViewResultsBtn").click()
                 assert await preview.locator("#tailResultsHeading").evaluate("el => el === document.activeElement")
                 # Read-only refresh must not jump back to the form or reopen settings.
-                before = await preview.locator(".tail-flight-group").first.evaluate("el => el.getBoundingClientRect().top")
+                before = await preview.locator(".tail-overview-item").first.evaluate("el => el.getBoundingClientRect().top")
                 await preview.evaluate("fetchTailResults({background:true})")
-                after = await preview.locator(".tail-flight-group").first.evaluate("el => el.getBoundingClientRect().top")
+                after = await preview.locator(".tail-overview-item").first.evaluate("el => el.getBoundingClientRect().top")
                 assert abs(before-after) < 3
                 assert not await preview.locator("#tailQueryEditor").evaluate("el => el.open")
                 await preview.close()
@@ -411,12 +475,16 @@ async def run(output: Path):
             assert len(actions) == 2, "invalid input must not dispatch a query"
             await page.evaluate("document.querySelector('#tailPassengersInput').value='1'")
             assert await page.locator(".tail-result-card").count() > 0, await page.locator("#tailResults").inner_text()
+            if not await page.locator(".tail-overview-item").first.evaluate("el => el.open"):
+                await page.locator(".tail-overview-item > summary").first.click()
             await page.locator("button[data-tail-action='recheck']").first.click()
             await page.wait_for_function("document.querySelector('#tailRunBtn').disabled === false")
             assert any(path.endswith("/recheck") for path, _ in actions)
             await page.locator("#tailTaskContextDetails > summary").click()
             await page.locator("#tailJobPicker").select_option("offline-demo")
             await page.wait_for_function("document.querySelectorAll('.tail-result-card').length === 4")
+            if not await page.locator(".tail-overview-item").first.evaluate("el => el.open"):
+                await page.locator(".tail-overview-item > summary").first.click()
             live["recheck_error"] = True
             await page.locator("button[data-tail-action='recheck']").first.click()
             await page.wait_for_function("document.querySelector('#completionToast')?.textContent.includes('模拟复核失败')")
@@ -453,6 +521,7 @@ async def run(output: Path):
             assert await page.locator(".tail-flight-group").count() == 1, await page.locator(".tail-flight-group").evaluate_all("els => els.map(el => ({key:el.dataset.stableKey, text:el.innerText}))")
             assert await page.locator(".tail-result-card").count() == 5
             assert await page.locator(".tail-itinerary-option").count() == 4
+            await page.locator(".tail-overview-item > summary").first.click()
             shared = page.locator(".tail-itinerary-option.has-multiple-providers")
             assert await shared.count() == 1
             assert "厦门 (XMN)" in await shared.locator(".tail-itinerary-heading").inner_text()
@@ -503,6 +572,21 @@ async def run(output: Path):
             assert await page.locator(".tail-result-card").count() == 5
             await page.locator("#tailResultFilterSummary").click()
             await page.evaluate("document.querySelector('#tailTaskContextDetails').open=false")
+            await page.locator("#tailQueryEditor > summary").click()
+            await page.locator("#tailScheduleSettings > summary").click()
+            run_actions_before = sum(1 for path, _ in actions if path == "/api/tail-discovery/run")
+            await page.locator("#tailScheduleIntervalInput").select_option("2")
+            await page.locator("#tailScheduleTimeInput").fill("09:30")
+            await page.locator("#tailScheduleSaveBtn").click()
+            await page.wait_for_function("document.querySelectorAll('.tail-schedule-item').length === 1")
+            assert "每 2 天 09:30" in await page.locator("#tailScheduleList").inner_text()
+            assert "1 个计划" in await page.locator("#tailScheduleSummary").inner_text()
+            assert sum(1 for path, _ in actions if path == "/api/tail-discovery/run") == run_actions_before
+            await page.locator("[data-tail-schedule-action='toggle']").click()
+            await page.wait_for_function("document.querySelector('.tail-schedule-item')?.classList.contains('disabled')")
+            await page.locator("[data-tail-schedule-action='delete']").click()
+            await page.wait_for_function("document.querySelectorAll('.tail-schedule-item').length === 0")
+            await page.evaluate("document.querySelector('#tailQueryEditor').open=false")
             for width in (1280, 390, 320):
                 await page.set_viewport_size({"width":width,"height":900})
                 await page.evaluate("document.activeElement?.blur(); window.scrollTo(0,0)")

@@ -32,6 +32,7 @@ const tailStateFields = {
   activeTailJobId: ['job', 'activeId'],
   activeTailJobTimer: ['job', 'activeTimer'],
   tailDiscoveryJobs: ['job', 'items'],
+  tailHistoryJobs: ['job', 'historyItems'],
   tailSelectedJobId: ['job', 'selectedId'],
   tailSelectedJob: ['job', 'selected'],
   tailPollFailures: ['job', 'pollFailures'],
@@ -62,6 +63,9 @@ function ui() {
     tailSearchScopeInput:{value:'open'},tailProviderSelect:{value:'feizhu'},tailModeInput:{value:'explore'},
     tailOpenScopeNotice:{hidden:true},tailBudgetCitiesInput:{value:'10'},tailTargetInput:{value:'2'},
     tailHybridScopeNotice:{hidden:true},tailFollowupBudgetInput:{value:'5'},tailCallBudgetInput:{value:'20'},
+    tailScheduleIntervalInput:{value:'2'},tailScheduleTimeInput:{value:'09:00'},
+    tailScheduleSummary:{textContent:''},tailScheduleList:{innerHTML:''},
+    tailHistoryPanel:{innerHTML:'',hidden:false},
     candidates:{hidden:false},
   };
   const ctx = vm.createContext({URL, URLSearchParams, Date, AbortController,
@@ -79,11 +83,12 @@ function ui() {
   assignTailState(ctx, {tailResultView:'history', tailResultsLoaded:true, tailSelectedJobId:'job'});
   for (const name of ['compareTailResults','tailQuoteFresh','tailQuoteVerified','prepareTailResults',
     'groupTailResultsByRoute','safeTailReviewUrl','tailQuoteTermsLabel','renderTailBaselines','renderTailFlightGroups',
-    'tailFlightGroupKey','groupTailFlightResults','selectTailRecommendationGroups','renderTailStaleResults','resetTailResultDisclosure',
+    'tailFlightGroupKey','groupTailFlightResults','buildTailRouteTimeSummaries','tailOverviewPriceLabel','renderTailRouteTimeOverview','renderTailRouteTimeItem','renderTailStaleResults','resetTailResultDisclosure',
     'tailFullRouteLabel','tailItineraryKey','renderTailItineraryGroups',
     'renderTailResultCard','renderTailRouteGroup','renderTailResults','updateTailSearchScope','renderTailPriorities',
     'tailAttemptPhaseLabel','tailPlaceLabel','replaceTailMarkup','tailConditionLabel',
     'tailQueryDiffers','updateTailRunAction','updateTailResultContext','updateTailResultTools','tailActiveContext','loadSelectedTailJobConditions',
+    'renderTailSchedules','tailJobStatusLabel','tailHistoryScopeLabel','tailHistorySavedCount','tailHistoryEffectiveCandidates','tailHistoryResultState','tailHistoryCityName','tailHistoryDestinationPreview','tailHistoryConditionsSnapshot','tailHistorySortKey','sortTailHistoryJobs','renderTailHistoryJobs','renderTailHistoryJob',
     'tailComparableBaseline','tailDecisionDifference']) {
     const start = source.indexOf(`function ${name}(`);
     assert.ok(start>=0,name);
@@ -138,31 +143,42 @@ test('same first flight groups tail alternatives without mixing currencies',()=>
   html=ctx.renderTailFlightGroups([quote(),quote({currency:'USD',itinerary_key:'two'})]);
   assert.equal((html.match(/<h4>/g)||[]).length,2);
 });
-test('results default to three recommended itineraries and collapse the rest',()=>{
+test('results default to collapsed route-time overview groups',()=>{
   const {ctx,elements}=ui();
   const rows=['CAN','SZX','KMG','XMN','TAO'].map((destination,index)=>quote({
     id:index+1,destination,first_leg_key:`CA${1000+index}`,itinerary_key:`route-${index}`,
   }));
   ctx.renderTailResults(rows);
   const html=elements.tailResults.innerHTML;
-  const recommended=html.split('class="tail-all-results"')[0];
-  assert.equal((recommended.match(/class="tail-flight-group"/g)||[]).length,3);
-  assert.match(html,/展开其余 2 条报价/);
-  assert.doesNotMatch(html,/class="tail-all-results"[^>]* open/);
+  assert.match(html,/路线价格总览 <span>5 组<\/span>/);
+  assert.equal((html.match(/class="tail-overview-item"/g)||[]).length,5);
+  assert.equal((html.match(/class="tail-flight-group"/g)||[]).length,5);
+  assert.doesNotMatch(html,/class="tail-overview-item"[^>]* open/);
+  assert.doesNotMatch(html,/tail-all-results/);
 });
-test('one first-leg group shows three routes and folds its remaining alternative',()=>{
+test('one first-leg overview keeps all itineraries inside its collapsed details',()=>{
   const {ctx,elements}=ui();
   const rows=['CAN','SZX','KMG','XMN'].map((destination,index)=>quote({
     id:index+1,destination,itinerary_key:`same-leg-${index}`,
   }));
   ctx.renderTailResults(rows);
   const html=elements.tailResults.innerHTML;
+  assert.equal((html.match(/class="tail-overview-item"/g)||[]).length,1);
+  assert.match(html,/CA1001 09:00 → 11:00/);
+  assert.match(html,/4 条路线 · 4 条报价/);
   assert.equal((html.match(/class="tail-flight-group"/g)||[]).length,1);
   assert.equal((html.match(/class="tail-itinerary-option/g)||[]).length,4);
-  assert.match(html,/比较其他 1 条购票路线/);
-  assert.doesNotMatch(html,/展开其余/);
 });
-test('all earlier-retrieved results are labelled by retrieval date',()=>{
+test('overview lists provider low prices separately instead of merging platforms',()=>{
+  const {ctx,elements}=ui();
+  ctx.renderTailResults([quote({id:1,provider:'ctrip',price:800,itinerary_key:'ctrip-route'}),
+    quote({id:2,provider:'feizhu',price:700,itinerary_key:'feizhu-route'})]);
+  const html=elements.tailResults.innerHTML;
+  assert.match(html,/ctrip<\/small><strong>CNY 800/);
+  assert.match(html,/feizhu<\/small><strong>CNY 700/);
+  assert.doesNotMatch(html,/全网|合并最低价/);
+});
+test('all earlier-retrieved results use an earlier-retrieval overview with dates',()=>{
   const {ctx,elements}=ui();
   const rows=['CAN','SZX','KMG','XMN'].map((destination,index)=>quote({
     id:index+1,destination,first_leg_key:`OLD${index}`,itinerary_key:`old-${index}`,
@@ -170,9 +186,19 @@ test('all earlier-retrieved results are labelled by retrieval date',()=>{
   }));
   ctx.renderTailResults(rows);
   const html=elements.tailResults.innerHTML;
-  assert.match(html,/较早检索 <span>3 \/ 4<\/span>/);
-  assert.match(html,/展开其余 1 条报价/);
+  assert.match(html,/较早检索 <span>4 组<\/span>/);
+  assert.equal((html.match(/class="tail-overview-item"/g)||[]).length,4);
   assert.match(html,/检索 2020-01-01T00:00:00Z/);
+  assert.doesNotMatch(html,/tail-all-results/);
+});
+test('explicit earlier-retrieval filter opens overview details',()=>{
+  const {ctx,elements}=ui();
+  elements.tailTrustInput.value='stale';
+  ctx.renderTailResults([quote({id:1,observed_at:'2020-01-01T00:00:00Z',expires_at:'2020-01-01T00:00:00Z'})]);
+  const html=elements.tailResults.innerHTML;
+  assert.match(html,/class="tail-state-section tail-stale-group" data-disclosure="stale-results" open/);
+  assert.match(html,/class="tail-overview-item" data-disclosure="[^"]+" open/);
+  assert.match(html,/data-provider="feizhu"/);
 });
 test('new-query disclosure reset clears result expansion state',()=>{
   const {ctx}=ui();
@@ -209,6 +235,95 @@ test('selected task conditions can be loaded back into the query form',()=>{
   assert.equal(elements.tailCallBudgetInput.value,'0');
   assert.deepEqual(Array.from(ctx.tailState.form.savedCandidates),['KMG','TAO']);
   assert.equal(elements.tailQueryEditor.open,true);
+});
+test('tail schedules render next run, last status and management actions safely',()=>{
+  const {ctx,elements}=ui();
+  loadFunctions(ctx,['tailFormFieldIds']);
+  ctx.renderTailSchedules([{schedule_id:'<bad>',enabled:true,interval_days:2,run_time:'09:00',
+    next_run_at:'2027-01-01T01:00:00Z',last_error:'<script>bad</script>',
+    route:{origin:'BJS',transfer:'CTU',departure_date:'2027-01-01',provider:'feizhu'},
+    last_job_status:'finished',last_job_saved:4}]);
+  const html=elements.tailScheduleList.innerHTML;
+  assert.equal(elements.tailScheduleSummary.textContent,'1 个计划');
+  assert.match(html,/每 2 天 09:00/);
+  assert.match(html,/上次 已完成 · 保存 4 条/);
+  assert.match(html,/&lt;script&gt;bad&lt;\/script&gt;/);
+  assert.doesNotMatch(html,/<script>bad/);
+  assert.match(html,/data-tail-schedule-action="toggle"/);
+  assert.match(html,/data-tail-schedule-action="delete"/);
+  assert.ok(ctx.tailFormFieldIds().includes('tailScheduleIntervalInput'));
+  assert.ok(ctx.tailFormFieldIds().includes('tailScheduleTimeInput'));
+});
+test('history jobs render route, date, status, progress and escaped details',()=>{
+  const {ctx,elements}=ui();
+  assignTailState(ctx,{tailHistoryJobs:[{job_id:'job-1',status:'finished',updated_at:'2027-01-02T01:00:00Z',min_price:580,
+    payload:{origin:'BJS',transfer:'CTU',departure_date:'2027-01-03',provider:'both',search_scope:'candidates',candidates:['CAN','SHA']},
+    progress:{saved:11,attempted:6,total:6,message:'<script>bad</script>'},result:null}]});
+  ctx.renderTailHistoryJobs();
+  const html=elements.tailHistoryPanel.innerHTML;
+  assert.match(html,/历史查询记录/);
+  assert.match(html,/BJS → CTU/);
+  assert.match(html,/有报价 · 保存 11 条/);
+  assert.match(html,/已完成 · 2 个尾段城市/);
+  assert.match(html,/已查 6 \/ 6/);
+  assert.match(html,/<strong>2027-01-03<\/strong>/);
+  assert.match(html,/最低 ¥580/);
+  assert.match(html,/查询条件/);
+  assert.match(html,/尾段城市/);
+  assert.match(html,/指定城市/);
+  assert.match(html,/data-history-select-job="job-1"/);
+  assert.match(html,/&lt;script&gt;bad&lt;\/script&gt;/);
+  assert.doesNotMatch(html,/<script>bad/);
+});
+test('history jobs surface result state, preview and effective candidate count',()=>{
+  const {ctx,elements}=ui();
+  assignTailState(ctx,{tailHistoryJobs:[
+    {job_id:'job-eff',status:'paused',updated_at:'2027-01-02T01:00:00Z',
+      payload:{origin:'BJS',transfer:'CTU',departure_date:'2027-01-03',provider:'ctrip',search_scope:'candidates',
+        candidates:['CAN','SHA','SZX','KMG','HGH','NKG','WUH'],cabin:'economy',passengers:2,max_price:1500},
+      progress:{saved:4,attempted:6,total:6,effective_candidates:['CAN','SHA','SZX','KMG','HGH','NKG']},result:null},
+    {job_id:'job-open',status:'cancelled',
+      payload:{origin:'SHA',transfer:'CTU',departure_date:'2027-02-01',provider:'feizhu',search_scope:'open',candidates:[]},
+      progress:{},result:null},
+    {job_id:'job-none',status:'finished',
+      payload:{origin:'SHA',transfer:'PEK',departure_date:'2027-03-01',provider:'ctrip',search_scope:'candidates',candidates:['CAN']},
+      progress:{saved:0},result:null},
+  ]});
+  ctx.renderTailHistoryJobs();
+  const html=elements.tailHistoryPanel.innerHTML;
+  assert.match(html,/部分完成 · 保存 4 条/);
+  assert.match(html,/实际查询 6 个城市/);
+  assert.doesNotMatch(html,/7 个尾段城市/);
+  assert.match(html,/尾段城市<\/dt><dd>CAN \/ SHA \/ SZX \+4/);
+  assert.match(html,/暂无最低价/);
+  assert.match(html,/economy/);
+  assert.match(html,/2 人/);
+  assert.match(html,/¥1500/);
+  assert.match(html,/已取消 · 未保存报价/);
+  assert.match(html,/开放目的地发现/);
+  assert.match(html,/无报价/);
+});
+test('history jobs sort by departure date by default and support origin/transfer sort',()=>{
+  const {ctx,elements}=ui();
+  const job=(id,origin,transfer,date)=>({job_id:id,status:'finished',
+    payload:{origin,transfer,departure_date:date,provider:'ctrip',search_scope:'candidates',candidates:[]},
+    progress:{},result:null});
+  assignTailState(ctx,{tailHistoryJobs:[
+    job('j1','SHA','CTU','2027-03-01'),
+    job('j2','BJS','SHA','2027-01-15'),
+    job('j3','CAN','BJS','2027-02-01'),
+    job('j4','BJS','CTU',''),
+  ]});
+  const order=()=>[...elements.tailHistoryPanel.innerHTML.matchAll(/data-job-id="([^"]+)"/g)].map(m=>m[1]);
+  ctx.renderTailHistoryJobs();
+  assert.match(elements.tailHistoryPanel.innerHTML,/id="tailHistorySortSelect"/);
+  assert.match(elements.tailHistoryPanel.innerHTML,/<option value="date" selected>/);
+  assert.deepEqual(order(),['j2','j3','j1','j4']);
+  ctx.tailState.results.historySort='origin';ctx.renderTailHistoryJobs();
+  assert.match(elements.tailHistoryPanel.innerHTML,/<option value="origin" selected>/);
+  assert.deepEqual(order(),['j4','j2','j3','j1']);
+  ctx.tailState.results.historySort='transfer';ctx.renderTailHistoryJobs();
+  assert.deepEqual(order(),['j3','j4','j1','j2']);
 });
 test('unknown terms never show guaranteed savings and include recheck action',()=>{
   const {ctx}=ui(); const html=ctx.renderTailResultCard(quote(),1);
@@ -338,8 +453,8 @@ test('result identity stays tied to selected task while draft changes, history h
   assert.doesNotMatch(elements.tailResultIdentity.textContent,/BJS/);
   assert.match(elements.tailResultIdentity.textContent,/正在读取/);
   ctx.tailState.results.view='history';ctx.updateTailResultContext();
-  assert.match(elements.tailResultIdentity.textContent,/跨任务/);
-  assert.match(elements.tailDraftNotice.textContent,/不会改变历史报价/);
+  assert.equal(elements.tailResultIdentity.textContent,'');
+  assert.equal(elements.tailDraftNotice.hidden,true);
   assert.equal(elements.tailTaskConditions.textContent,'');
 });
 
@@ -632,13 +747,13 @@ test('new search is secondary to an existing task and clearly distinguishes edit
   ctx.tailBusy=()=>true;ctx.updateTailRunAction();
   assert.equal(elements.tailRunBtn.textContent,'查询进行中');
   ctx.tailBusy=()=>false;ctx.tailState.results.view='history';ctx.updateTailRunAction();
-  assert.match(elements.tailRunHint.textContent,/历史报价/);
+  assert.match(elements.tailRunHint.textContent,/历史方案/);
   assert.equal(viewClasses.has('primary'),true);
   ctx.tailState.results.view='current';ctx.tailState.job.selected={job_id:'paused',payload,status:'finished'};ctx.updateTailRunAction();
   assert.equal(viewClasses.has('primary'),true);assert.equal(elements.tailViewResultsBtn.textContent,'查看方案 ↓');
   ctx.tailBusy=()=>true;ctx.updateTailRunAction();assert.equal(viewClasses.has('primary'),false);
   ctx.tailBusy=()=>false;ctx.tailState.results.view='history';ctx.updateTailRunAction();
-  assert.match(elements.tailRunHint.textContent,/历史报价/);
+  assert.match(elements.tailRunHint.textContent,/历史方案/);
   ctx.tailState.job.selectedId='';ctx.tailState.job.selected=null;ctx.tailState.results.view='current';ctx.updateTailRunAction();
   assert.equal(elements.tailRunBtn.textContent,'开始查询');assert.equal(classes.has('primary'),true);
 });

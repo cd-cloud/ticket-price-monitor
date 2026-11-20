@@ -19,6 +19,7 @@ from run_summary import RunSummaryStore
 from scheduling.auto_worker import AutoQueryWorker
 from scheduler import TaskScheduler
 from tail_discovery_manager import TailDiscoveryManager
+from tail_schedule_service import TailScheduleService
 
 
 def configure_logging(log_file: Path) -> None:
@@ -90,6 +91,12 @@ class FlightPriceApplication:
             run_lock=self._run_lock,
             safe_batch_size=self.TAIL_DISCOVERY_SAFE_BATCH_SIZE,
             on_finished=self._mark_run_summary_finished,
+        )
+        self.tail_schedule_service = TailScheduleService(
+            repository=self.repository,
+            submit_tail_discovery=self.submit_tail_discovery,
+            get_config=lambda: self.config,
+            get_job=self.tail_discovery_job,
         )
 
     def refresh_config(self) -> None:
@@ -278,6 +285,20 @@ class FlightPriceApplication:
     def tail_discovery_results(self, limit: int = 100, *, job_id: str | None = None,
                                offset: int = 0) -> list[dict[str, Any]]:
         return self.tail_discovery_manager.tail_discovery_results(limit=limit, job_id=job_id, offset=offset)
+
+    def list_tail_schedules(self) -> list[dict[str, Any]]:
+        return self.tail_schedule_service.list_schedules()
+
+    def save_tail_schedule(self, payload: dict[str, Any]) -> dict[str, Any]:
+        self.refresh_config()
+        return self.tail_schedule_service.save_schedule(payload)
+
+    def set_tail_schedule_enabled(self, schedule_id: str, enabled: bool) -> dict[str, Any]:
+        self.refresh_config()
+        return self.tail_schedule_service.set_enabled(schedule_id, enabled)
+
+    def delete_tail_schedule(self, schedule_id: str) -> bool:
+        return self.tail_schedule_service.delete_schedule(schedule_id)
 
     def run_once_via_cli(self, provider_filter: str | None = None) -> dict[str, Any]:
         return self.legacy_run_service.run_once_via_cli(provider_filter=provider_filter)

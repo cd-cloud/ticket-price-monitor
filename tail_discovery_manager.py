@@ -286,7 +286,33 @@ class TailDiscoveryManager:
         return self.job_manager.latest()
 
     def tail_discovery_jobs(self, limit: int = 20) -> list[dict[str, Any]]:
-        return self.job_manager.list_recent(limit=limit)
+        jobs = self.job_manager.list_recent(limit=limit)
+        roots_by_job: dict[str, list[str]] = {}
+        all_roots: list[str] = []
+        for job in jobs:
+            roots = self._tail_checkpoint_roots(job)
+            roots_by_job[str(job.get("job_id") or "")] = roots
+            all_roots.extend(roots)
+        prices = self.repository.fetch_tail_checkpoint_min_prices(all_roots)
+        for job in jobs:
+            values = [prices[root] for root in roots_by_job.get(str(job.get("job_id") or ""), []) if root in prices]
+            if values:
+                job["min_price"] = min(values)
+        return jobs
+
+    def _tail_checkpoint_roots(self, job: dict[str, Any]) -> list[str]:
+        payload = job.get("payload") or {}
+        if payload.get("provider") == "both":
+            refs = batch_children(job) or payload.get("_batch_children", [])
+            roots = []
+            for ref in refs:
+                child = self.repository.fetch_tail_discovery_job(ref["job_id"])
+                roots.append(checkpoint_root(child) if child else ref["payload"].get("_checkpoint_job_id") or ref["job_id"])
+            return roots
+        root = str((job.get("result") or {}).get("checkpoint_job_id")
+                   or (job.get("progress") or {}).get("checkpoint_job_id")
+                   or payload.get("_checkpoint_job_id") or job.get("job_id") or "")
+        return [root] if root else []
 
     def tail_discovery_attempts(self, job_id: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
         return self.repository.fetch_tail_discovery_attempts(job_id=job_id, limit=limit)

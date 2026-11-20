@@ -324,6 +324,40 @@ def create_app(config_path: str | None = None) -> FastAPI:
     async def tail_discovery_candidates() -> dict:
         return service.tail_discovery_candidates()
 
+    @app.get("/api/tail-discovery/schedules")
+    async def tail_discovery_schedules() -> dict:
+        return {"schedules": await asyncio.to_thread(service.list_tail_schedules)}
+
+    @app.post("/api/tail-discovery/schedules")
+    async def save_tail_discovery_schedule(payload: dict = Body(...)) -> dict:
+        try:
+            return await asyncio.to_thread(service.save_tail_schedule, payload)
+        except (ValueError, TypeError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        except KeyError:
+            raise HTTPException(status_code=404, detail="Tail discovery schedule not found")
+
+    @app.post("/api/tail-discovery/schedules/{schedule_id}/enabled")
+    async def set_tail_discovery_schedule_enabled(schedule_id: str, payload: dict = Body(...)) -> dict:
+        try:
+            return await asyncio.to_thread(
+                service.set_tail_schedule_enabled, schedule_id, bool(payload.get("enabled", False))
+            )
+        except (ValueError, TypeError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        except KeyError:
+            raise HTTPException(status_code=404, detail="Tail discovery schedule not found")
+
+    @app.delete("/api/tail-discovery/schedules/{schedule_id}")
+    async def delete_tail_discovery_schedule(schedule_id: str) -> dict:
+        try:
+            deleted = await asyncio.to_thread(service.delete_tail_schedule, schedule_id)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="Tail discovery schedule not found")
+        if not deleted:
+            raise HTTPException(status_code=404, detail="Tail discovery schedule not found")
+        return {"deleted": True, "schedule_id": schedule_id}
+
     @app.get("/api/tail-discovery/results")
     async def tail_discovery_results(limit: int = Query(100, ge=1, le=200),
                                      offset: int = Query(0, ge=0),

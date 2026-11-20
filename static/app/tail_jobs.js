@@ -127,10 +127,30 @@ function setTailResultView(view) {
   document.querySelectorAll("[data-tail-view]").forEach(button => {
     button.setAttribute("aria-pressed", String(button.dataset.tailView === tailState.results.view));
   });
+  const taskContext = document.getElementById("tailTaskContextDetails");
+  if (taskContext) taskContext.hidden = tailState.results.view === "history";
   document.getElementById("tailJobPickerLabel").hidden = tailState.results.view === "history";
+  const historyPanel = document.getElementById("tailHistoryPanel");
+  if (historyPanel) {
+    historyPanel.hidden = tailState.results.view !== "history";
+    if (tailState.results.view !== "history") historyPanel.innerHTML = "";
+    else historyPanel.innerHTML = '<div class="tail-history-head"><h3>历史查询记录</h3><p class="muted">正在读取历史任务…</p></div>';
+  }
+  const allHistoryHeading = document.getElementById("tailAllHistoryHeading");
+  if (allHistoryHeading) allHistoryHeading.hidden = tailState.results.view !== "history";
+  const panel = document.getElementById("tailDiscoveryPanel");
+  if (panel) panel.dataset.resultView = tailState.results.view;
   document.getElementById("tailResultScopeNote").textContent = tailState.results.view === "history"
-    ? "所有任务的已保存报价；筛选仅作用于已加载条目。更新列表不会重新查询平台。"
+    ? "先按历史任务查看查过的路线和结果概况；下方仍可浏览全部已保存报价。"
     : "仅所选任务的已保存报价（含继续任务的此前结果）；更新列表不重新查价。";
+  if (tailState.results.view === "history") {
+    fetchTailHistoryJobs().catch(() => {
+      const historyList = document.getElementById("tailHistoryPanel");
+      if (historyList && tailState.results.view === "history" && !historyList.querySelector(".tail-history-job")) {
+        historyList.innerHTML = '<div class="tail-history-head"><h3>历史查询记录</h3><p class="muted">历史任务读取失败，请稍后刷新重试。</p></div>';
+      }
+    });
+  }
   renderTailResults([]);
   fetchTailResults().catch(() => {});
 }
@@ -151,6 +171,7 @@ async function initializeTailWorkspace() {
   updateTailBusyControls();
   try {
     if (!tailState.form.candidatesLoaded) await fetchTailCandidates();
+    await fetchTailSchedules().catch(() => {});
     await fetchTailJobs();
     await resumeLatestTailJob();
   }
@@ -490,7 +511,179 @@ async function fetchTailJobs() {
     tailState.job.selectedId = tailState.job.selected.job_id;
   }
   renderTailJobPicker();
+  if (tailState.results.view === "history") fetchTailHistoryJobs().catch(() => {});
   updateWorkspaceTabs();
+}
+
+async function fetchTailHistoryJobs() {
+  const data = await tailGetJson("/api/tail-discovery/jobs?limit=100");
+  tailState.job.historyItems = data.jobs || [];
+  renderTailHistoryJobs();
+}
+
+function tailHistoryEffectiveCandidates(job) {
+  const sources = [job.result?.effective_candidates, job.progress?.effective_candidates, job.result?.progress?.effective_candidates];
+  for (const source of sources) {
+    if (Array.isArray(source)) return source.length;
+    const value = Number(source);
+    if (Number.isFinite(value) && value > 0) return value;
+  }
+  return null;
+}
+
+function tailHistoryScopeLabel(job) {
+  const payload = job.payload || {};
+  const scope = payload.search_scope || "candidates";
+  if (scope === "open") return "开放目的地发现";
+  const effective = tailHistoryEffectiveCandidates(job);
+  const fallback = Array.isArray(payload.candidates) ? payload.candidates.length : 0;
+  if (scope === "hybrid") return effective ? `开放发现 + 实际补查 ${effective} 个城市` : `开放发现 + ${fallback} 个种子城市`;
+  return effective ? `实际查询 ${effective} 个城市` : `${fallback} 个尾段城市`;
+}
+
+function tailHistorySavedCount(job) {
+  return job.result?.saved ?? job.progress?.saved ?? 0;
+}
+
+function tailHistoryResultState(job) {
+  const status = String(job.status || "");
+  const saved = tailHistorySavedCount(job);
+  if (["cancelled", "cancelling"].includes(status)) {
+    return saved ? { label: `已取消 · 保存 ${saved} 条`, tone: "neutral" } : { label: "已取消 · 未保存报价", tone: "neutral" };
+  }
+  if (["failed", "needs_verification"].includes(status)) {
+    return saved ? { label: `待人工验证 · 保存 ${saved} 条`, tone: "alert" } : { label: "待人工验证", tone: "alert" };
+  }
+  if (status === "finished") {
+    return saved ? { label: `有报价 · 保存 ${saved} 条`, tone: "good" } : { label: "无报价", tone: "quiet" };
+  }
+  if (["queued", "running"].includes(status) && !saved) return { label: "查询中 · 暂无保存报价", tone: "warn" };
+  if (saved) return { label: `部分完成 · 保存 ${saved} 条`, tone: "warn" };
+  return { label: "无报价", tone: "quiet" };
+}
+
+function tailHistoryCityName(code) {
+  const entries = typeof AIRPORT_SUGGESTIONS === "undefined" ? [] : AIRPORT_SUGGESTIONS;
+  const entry = entries.find(item => item.code === String(code || "").toUpperCase());
+  return entry ? entry.city : String(code || "");
+}
+
+function tailHistoryDestinationPreview(payload) {
+  const scope = payload.search_scope || "candidates";
+  if (scope === "open") return "开放目的地发现";
+  const cities = (Array.isArray(payload.candidates) ? payload.candidates : []).map(tailHistoryCityName).filter(Boolean);
+  if (!cities.length) return scope === "hybrid" ? "开放目的地发现" : "未记录尾段城市";
+  const preview = cities.slice(0, 3).join(" / ") + (cities.length > 3 ? ` +${cities.length - 3}` : "");
+  return scope === "hybrid" ? `开放发现 + ${preview}` : preview;
+}
+
+function tailHistoryConditionsSnapshot(payload) {
+  const scope = payload.search_scope || "candidates";
+  const scopeText = { candidates: "指定城市", open: "开放发现（非全量）", hybrid: "开放发现 + 定向补查" }[scope] || scope;
+  const feizhuText = payload.provider === "both"
+    ? `；飞猪：${({ candidates: "同城市查询", open: "开放发现（非全量）", hybrid: "开放 + 定向补查" })[payload.feizhu_search_scope || "open"] || "开放发现"}`
+    : "";
+  const items = [
+    ["路线", payload.origin && payload.transfer ? `${tailPlaceLabel(payload.origin)} → ${tailPlaceLabel(payload.transfer)}` : "未记录"],
+    ["出发日期", payload.departure_date || "未记录"],
+    ["平台", payload.provider ? providerLabel(payload.provider) : "未记录"],
+    ["检索范围", `${scopeText}${feizhuText}`],
+    ["尾段城市", tailHistoryDestinationPreview(payload)],
+  ];
+  if (payload.cabin) items.push(["舱位", cabinLabel(payload.cabin)]);
+  if (payload.passengers) items.push(["人数", `${payload.passengers} 人`]);
+  if (Object.hasOwn(payload, "max_price")) items.push(["价格上限", payload.max_price ? `¥${payload.max_price}` : "不限"]);
+  return `<dl class="tail-history-conditions">${items.map(([term, value]) => `<div><dt>${escapeHtml(term)}</dt><dd>${escapeHtml(String(value))}</dd></div>`).join("")}</dl>`;
+}
+
+function tailHistorySortKey(job, field) {
+  const payload = job.payload || {};
+  if (field === "origin") return tailPlaceLabel(payload.origin) || "";
+  if (field === "transfer") return tailPlaceLabel(payload.transfer) || "";
+  return payload.departure_date || "9999-12-31";
+}
+
+function sortTailHistoryJobs(jobs) {
+  const field = tailState.results.historySort || "date";
+  const fields = field === "origin" ? ["origin", "transfer", "date"]
+    : field === "transfer" ? ["transfer", "origin", "date"]
+      : ["date", "origin", "transfer"];
+  const collator = new Intl.Collator("zh-Hans-CN", { numeric: true });
+  return [...jobs].sort((a, b) => {
+    for (const key of fields) {
+      const diff = collator.compare(tailHistorySortKey(a, key), tailHistorySortKey(b, key));
+      if (diff) return diff;
+    }
+    return 0;
+  });
+}
+
+function renderTailHistoryJobs() {
+  const panel = document.getElementById("tailHistoryPanel");
+  if (!panel) return;
+  const jobs = tailState.job.historyItems || [];
+  if (!jobs.length) {
+    panel.innerHTML = '<div class="tail-history-head"><h3>历史查询记录</h3></div><p class="muted tail-history-empty">暂无历史任务。</p>';
+    return;
+  }
+  const sort = tailState.results.historySort || "date";
+  panel.innerHTML = `<div class="tail-history-head"><h3>历史查询记录</h3>
+      <label class="tail-history-sort">排序<select id="tailHistorySortSelect">
+        <option value="date"${sort === "date" ? " selected" : ""}>出发日期</option>
+        <option value="origin"${sort === "origin" ? " selected" : ""}>出发地</option>
+        <option value="transfer"${sort === "transfer" ? " selected" : ""}>到达地</option>
+      </select></label>
+    </div>
+    <div class="tail-history-list">${sortTailHistoryJobs(jobs).map(renderTailHistoryJob).join("")}</div>`;
+}
+
+function renderTailHistoryJob(job) {
+  const payload = job.payload || {};
+  const progress = job.progress || {};
+  const status = String(job.status || "unknown");
+  const attempted = progress.attempted ?? job.result?.progress?.attempted ?? 0;
+  const total = progress.total ?? job.result?.progress?.total ?? (Array.isArray(payload.candidates) ? payload.candidates.length : 0);
+  const message = job.error || progress.message || (Array.isArray(job.result?.errors) ? job.result.errors[0] : "") || "";
+  const route = `${tailPlaceLabel(payload.origin)} → ${tailPlaceLabel(payload.transfer)}`;
+  const state = tailHistoryResultState(job);
+  const minPrice = Number(job.min_price);
+  const priceText = Number.isFinite(minPrice) && minPrice > 0
+    ? `最低 ¥${Number.isInteger(minPrice) ? minPrice : minPrice.toFixed(2)}` : "暂无最低价";
+  return `<details class="tail-history-job" data-disclosure="history-job-${escapeHtml(job.job_id)}" data-job-id="${escapeHtml(job.job_id)}">
+    <summary class="tail-history-job-summary">
+      <span class="tail-history-route"><strong>${escapeHtml(route)}</strong><small>${escapeHtml(tailJobStatusLabel(status))} · ${escapeHtml(tailHistoryScopeLabel(job))}</small></span>
+      <span class="tail-history-status"><strong class="tail-history-state ${escapeHtml(state.tone)}">${escapeHtml(state.label)}</strong><small>已查 ${escapeHtml(String(attempted))}${total ? ` / ${escapeHtml(String(total))}` : ""}</small></span>
+      <span class="tail-history-price"><strong>${escapeHtml(payload.departure_date || "日期未记录")}</strong><small>${escapeHtml(priceText)}</small></span>
+    </summary>
+    <div class="tail-history-job-body">
+      ${message ? `<p class="tail-history-message">${escapeHtml(message)}</p>` : ""}
+      <div class="tail-history-snapshot"><h4>查询条件</h4>${tailHistoryConditionsSnapshot(payload)}</div>
+      <div class="tail-history-actions"><button type="button" class="ghost compact" data-history-select-job="${escapeHtml(job.job_id)}">查看此任务</button></div>
+      <div class="tail-history-job-results" aria-live="polite"></div>
+    </div>
+  </details>`;
+}
+
+async function loadTailHistoryJobResults(details) {
+  if (!details || details.dataset.loaded === "true") return;
+  const jobId = details.dataset.jobId;
+  const target = details.querySelector(".tail-history-job-results");
+  if (!jobId || !target) return;
+  details.dataset.loaded = "true";
+  target.innerHTML = '<p class="muted">正在读取该次查询的报价…</p>';
+  try {
+    const data = await tailGetJson(`/api/tail-discovery/results?job_id=${encodeURIComponent(jobId)}&limit=200&offset=0`);
+    const rows = data.results || [];
+    if (!rows.length) {
+      target.innerHTML = '<p class="muted">该任务未保存符合条件的报价。</p>';
+      return;
+    }
+    const state = rows.every(item => !tailQuoteFresh(item)) ? "stale" : "";
+    target.innerHTML = renderTailRouteTimeOverview(rows, state);
+  } catch (error) {
+    details.dataset.loaded = "";
+    target.innerHTML = `<p class="tail-warning">历史报价读取失败：${escapeHtml(error.message)}</p>`;
+  }
 }
 
 function showTailError(message) {

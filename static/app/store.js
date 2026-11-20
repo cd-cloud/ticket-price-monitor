@@ -38,6 +38,7 @@ const tailState = {
     activeId: "",
     activeTimer: null,
     items: [],
+    historyItems: [],
     selectedId: "",
     selected: null,
     pollFailures: 0,
@@ -50,6 +51,7 @@ const tailState = {
     hasMore: false,
     loaded: false,
     disclosureState: new Map(),
+    historySort: "date",
   },
   connection: {
     unknown: false,

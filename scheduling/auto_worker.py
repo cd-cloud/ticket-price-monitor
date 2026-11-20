@@ -106,12 +106,22 @@ class AutoQueryWorker:
             return utc_now()
         return self._last_query_started_at + timedelta(minutes=self.min_gap_minutes)
 
+    def process_tail_schedules(self) -> None:
+        tail_schedules = getattr(self.service, "tail_schedule_service", None)
+        if tail_schedules is None:
+            return
+        tail_schedules.process_due()
+
     def _loop(self) -> None:
         while not self._stop.is_set():
             try:
                 self.process()
             except Exception:
                 logging.exception("auto query worker cycle failed")
+            try:
+                self.process_tail_schedules()
+            except Exception:
+                logging.exception("tail schedule worker cycle failed")
             self._stop.wait(60)
 
 

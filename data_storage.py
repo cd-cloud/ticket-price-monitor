@@ -122,6 +122,23 @@ CREATE TABLE IF NOT EXISTS tail_discovery_jobs (
 CREATE INDEX IF NOT EXISTS idx_tail_discovery_jobs_updated
 ON tail_discovery_jobs(updated_at);
 
+CREATE TABLE IF NOT EXISTS tail_discovery_schedules (
+    schedule_id TEXT PRIMARY KEY,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    payload TEXT NOT NULL,
+    interval_days INTEGER NOT NULL,
+    run_time TEXT NOT NULL,
+    next_run_at TEXT NOT NULL,
+    last_run_at TEXT,
+    last_job_id TEXT,
+    last_error TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_tail_schedules_due
+ON tail_discovery_schedules(enabled, next_run_at);
+
 CREATE TABLE IF NOT EXISTS tail_discovery_attempts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     job_id TEXT,
@@ -829,6 +846,22 @@ class PriceRepository:
             results.append(item)
         return results
 
+    def fetch_tail_checkpoint_min_prices(self, job_ids: list[str]) -> dict[str, float]:
+        roots = list(dict.fromkeys(str(item) for item in job_ids if item))
+        if not roots:
+            return {}
+        placeholders = ",".join("?" for _ in roots)
+        sql = f"""
+            SELECT c.job_id AS job_id, MIN(r.price) AS min_price
+            FROM tail_candidate_checkpoints AS c, json_each(c.result_ids) AS j
+            JOIN tail_discovery_results AS r ON r.id = CAST(j.value AS INTEGER)
+            WHERE c.job_id IN ({placeholders})
+            GROUP BY c.job_id
+        """
+        with self.connect() as conn:
+            rows = conn.execute(sql, roots).fetchall()
+        return {str(row["job_id"]): float(row["min_price"]) for row in rows if row["min_price"] is not None}
+
     def insert_tail_discovery_attempt(self, attempt: TailDiscoveryAttempt | dict[str, Any]) -> int:
         attempt = coerce_tail_attempt(attempt).to_record()
         with self.connect() as conn:
@@ -984,6 +1017,114 @@ class PriceRepository:
                 str(row["last_result_at"] or ""),
             ) or None
         return stats
+
+    def upsert_tail_schedule(self, schedule: dict[str, Any]) -> None:
+        now = self.now_iso()
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO tail_discovery_schedules (
+                    schedule_id, enabled, payload, interval_days, run_time, next_run_at,
+                    last_run_at, last_job_id, last_error, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(schedule_id) DO UPDATE SET
+                    enabled = excluded.enabled,
+                    payload = excluded.payload,
+                    interval_days = excluded.interval_days,
+                    run_time = excluded.run_time,
+                    next_run_at = excluded.next_run_at,
+                    last_run_at = excluded.last_run_at,
+                    last_job_id = excluded.last_job_id,
+                    last_error = excluded.last_error,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    schedule["schedule_id"],
+                    1 if schedule.get("enabled", True) else 0,
+                    json.dumps(schedule.get("payload") or {}, ensure_ascii=False),
+                    int(schedule["interval_days"]),
+                    schedule["run_time"],
+                    schedule["next_run_at"],
+                    schedule.get("last_run_at"),
+                    schedule.get("last_job_id"),
+                    schedule.get("last_error"),
+                    schedule.get("created_at") or now,
+                    schedule.get("updated_at") or now,
+                ),
+            )
+
+    def fetch_tail_schedule(self, schedule_id: str) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM tail_discovery_schedules WHERE schedule_id = ?",
+                (schedule_id,),
+            ).fetchone()
+        return self._decode_tail_schedule(row)
+
+    def fetch_tail_schedules(self, *, enabled_only: bool = False, limit: int = 100) -> list[dict[str, Any]]:
+        sql = "SELECT * FROM tail_discovery_schedules"
+        params: list[Any] = []
+        if enabled_only:
+            sql += " WHERE enabled = 1"
+        sql += " ORDER BY next_run_at, schedule_id LIMIT ?"
+        params.append(max(1, min(int(limit), 200)))
+        with self.connect() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return [item for row in rows if (item := self._decode_tail_schedule(row)) is not None]
+
+    def set_tail_schedule_enabled(self, schedule_id: str, enabled: bool, *, last_error: str | None = None) -> bool:
+        with self.connect() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE tail_discovery_schedules
+                SET enabled = ?, last_error = ?, updated_at = ?
+                WHERE schedule_id = ?
+                """,
+                (1 if enabled else 0, last_error, self.now_iso(), schedule_id),
+            )
+        return cursor.rowcount > 0
+
+    def record_tail_schedule_run(self, schedule_id: str, **changes: Any) -> bool:
+        columns = {
+            "next_run_at": "next_run_at",
+            "last_run_at": "last_run_at",
+            "last_job_id": "last_job_id",
+            "last_error": "last_error",
+        }
+        assignments = [f"{column} = ?" for key, column in columns.items() if key in changes]
+        params = [changes[key] for key in columns if key in changes]
+        if not assignments:
+            return False
+        assignments.append("updated_at = ?")
+        params.append(self.now_iso())
+        params.append(schedule_id)
+        with self.connect() as conn:
+            cursor = conn.execute(
+                f"UPDATE tail_discovery_schedules SET {', '.join(assignments)} WHERE schedule_id = ?",
+                params,
+            )
+        return cursor.rowcount > 0
+
+    def delete_tail_schedule(self, schedule_id: str) -> bool:
+        with self.connect() as conn:
+            cursor = conn.execute(
+                "DELETE FROM tail_discovery_schedules WHERE schedule_id = ?",
+                (schedule_id,),
+            )
+        return cursor.rowcount > 0
+
+    @staticmethod
+    def _decode_tail_schedule(row: sqlite3.Row | None) -> dict[str, Any] | None:
+        if row is None:
+            return None
+        item = dict(row)
+        item["enabled"] = bool(item.get("enabled"))
+        try:
+            payload = json.loads(item.get("payload") or "{}")
+        except Exception:
+            payload = {}
+        item["payload"] = payload if isinstance(payload, dict) else {}
+        return item
 
     def upsert_tail_discovery_job(self, job: dict[str, Any]) -> None:
         with self.connect() as conn:

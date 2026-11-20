@@ -398,6 +398,8 @@ def test_http_api_submits_one_parent_and_paginates_both_providers(env, tmp_path,
             assert "raw_payload" not in first["results"][0]
             jobs = client.get("/api/tail-discovery/jobs").json()["jobs"]
             assert len(jobs) == 1 and jobs[0]["job_id"] == job_id
+            expected_min = min(float(first["results"][0]["price"]), float(second["results"][0]["price"]))
+            assert jobs[0]["min_price"] == expected_min
             assert client.get("/api/tail-discovery/jobs/latest").json()["job"]["job_id"] == job_id
             # A result-level recheck stays a single-provider job.
             quote_id = first["results"][0]["id"]
