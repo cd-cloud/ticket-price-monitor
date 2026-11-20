@@ -47,6 +47,8 @@ async def query_single_route_offer(
     page: Page,
     response_store: list[dict],
 ):
+    if route.return_date:
+        raise RuntimeError("Provider priceline currently supports one-way queries only; round-trip automation is not verified.")
     await runtime.throttle(provider)
     await page.goto(PRICELINE_FLIGHTS_URL, wait_until="domcontentloaded", timeout=provider.timeout_ms)
     await page.wait_for_timeout(2500)
@@ -136,7 +138,7 @@ async def fill_airport(page: Page, selectors, value: str, field_name: str, timeo
             try:
                 await input_box.fill("")
             except Exception:
-                await page.keyboard.press("Control+A")
+                await page.keyboard.press("ControlOrMeta+A")
                 await page.keyboard.press("Backspace")
             await input_box.fill(value)
             await page.wait_for_timeout(700)

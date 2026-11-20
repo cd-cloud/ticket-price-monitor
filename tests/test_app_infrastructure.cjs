@@ -99,3 +99,103 @@ test('tail candidate names retain their window compatibility mirror', () => {
   assert.equal(vm.runInContext('tailState.form.candidateNames.CA', ctx), '中国国航');
   assert.equal(vm.runInContext('tailState.form.candidateNames === window.tailCandidateNames', ctx), true);
 });
+
+test('fetchApi attaches X-Flight-Tracker-Token from URL query or sessionStorage', async () => {
+  let call;
+  const storage = new Map();
+  const ctx = vm.createContext({
+    URLSearchParams,
+    window: {
+      location: {search: '?token=secret-ui-token'},
+      sessionStorage: {
+        getItem: key => storage.get(key) || null,
+        setItem: (key, val) => storage.set(key, val),
+      },
+    },
+    fetch: async (...args) => { call = args; return {ok: true}; },
+  });
+  vm.runInContext(apiSource, ctx);
+  await vm.runInContext('fetchApi("/api/dashboard")', ctx);
+  assert.equal(call[1].headers['X-Flight-Tracker-Token'], 'secret-ui-token');
+  assert.equal(storage.get('flight_tracker_ui_token'), 'secret-ui-token');
+});
+
+test('dashboard render functions escape untrusted route and snapshot text', () => {
+  const commonSource = fs.readFileSync(path.join(__dirname, '../static/app/common.js'), 'utf8');
+  const dashboardSource = fs.readFileSync(path.join(__dirname, '../static/app/dashboard.js'), 'utf8');
+  const createdElements = [];
+  function makeElement(tag) {
+    return {
+      tagName: tag,
+      className: '',
+      innerHTML: '',
+      value: '',
+      textContent: '',
+      classList: {add() {}, toggle() {}},
+      appendChild(child) { createdElements.push(child); },
+    };
+  }
+  const elementsById = {
+    providerCheckboxes: makeElement('div'),
+    providerFilter: makeElement('select'),
+    routeList: makeElement('div'),
+  };
+  const ctx = vm.createContext({
+    window: {},
+    Intl,
+    Date,
+    JSON,
+    Number,
+    String,
+    Boolean,
+    Array,
+    Set,
+    Map,
+    document: {
+      getElementById: id => elementsById[id] || null,
+      createElement: tag => makeElement(tag),
+    },
+    dashboardState: {routeRenderSignature: '', activeTaskView: 'all', data: {tasks: []}},
+    airportCodeDisplayText: code => String(code || ''),
+  });
+  vm.runInContext(commonSource, ctx);
+  vm.runInContext(dashboardSource, ctx);
+
+  vm.runInContext('renderProviderOptions(["ctrip\\"><img src=x onerror=alert(1)>"])', ctx);
+  assert.ok(!createdElements[0].innerHTML.includes('<img src=x'));
+
+  const row = vm.runInContext(`renderTaskRow(${JSON.stringify({
+    status: 'ok',
+    provider: 'ctrip',
+    route_key: 'SHA|PEK|2099-01-01"><script>alert(1)</script>',
+    origin: 'SHA',
+    destination: 'PEK',
+    departure_date: '2099-01-01',
+    cabin: '<b>evil</b>',
+    transfer_policy: '<i>evil</i>',
+    preferred_airlines: ['<svg onload=1>'],
+    latest_price: 500,
+    currency: '<img src=x onerror=1>',
+  })})`, ctx);
+  assert.ok(!row.innerHTML.includes('<script>'));
+  assert.ok(!row.innerHTML.includes('<svg onload=1>'));
+  assert.ok(!row.innerHTML.includes('<img src=x onerror=1>'));
+
+  vm.runInContext(`renderRoutes([${JSON.stringify({
+    route_key: 'SHA|PEK"><img src=x onerror=1>',
+    route_type: 'one_way',
+    origin: 'SHA',
+    destination: 'PEK',
+    departure_date: '2099-01-01',
+    cabin: 'economy',
+    transfer_policy: 'any',
+    passengers: '<script>1</script>',
+    providers: ['<b>ctrip</b>'],
+    preferred_airlines: ['<i>CA</i>'],
+    auto_query_enabled: false,
+  })}])`, ctx);
+  const card = createdElements[createdElements.length - 1];
+  assert.ok(!card.innerHTML.includes('<img src=x onerror=1>'));
+  assert.ok(!card.innerHTML.includes('<b>ctrip</b>'));
+  assert.ok(!card.innerHTML.includes('<i>CA</i>'));
+});

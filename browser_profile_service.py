@@ -84,7 +84,8 @@ class BrowserProfileService:
         manager = BrowserSessionManager(self.config)
         providers: list[dict[str, Any]] = []
         attempts = self.repository.fetch_tail_discovery_attempts(limit=500)
-        snapshots = self.repository.fetch_snapshots()
+        fetch_recent = getattr(self.repository, "fetch_recent_snapshots_per_route", None)
+        snapshots = fetch_recent(per_pair_limit=1) if callable(fetch_recent) else self.repository.fetch_snapshots()
         for provider in self.config.providers.values():
             if not self._profile_available(provider):
                 continue

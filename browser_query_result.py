@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from browser_session_policy import BrowserSessionMetadata
@@ -58,7 +58,7 @@ def build_query_result(
             "departure_time": outcome.departure_time,
             "row_text": outcome.row_text,
         },
-        "captured_at": datetime.utcnow().isoformat() + "Z",
+        "captured_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "network_hits": response_store[-20:],
     }
     raw_payload.update(outcome.extra_payload)
@@ -79,7 +79,7 @@ def build_query_result(
         route=route,
         price=outcome.price,
         currency="USD" if provider_name == "priceline" else default_currency,
-        observed_at=datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
+        observed_at=datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
         notes=notes,
         raw_payload=raw_payload,
     )

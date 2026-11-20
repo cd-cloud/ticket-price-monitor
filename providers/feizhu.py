@@ -33,15 +33,22 @@ async def query(
     """Query Feizhu via flyai-cli and return the cheapest flight offer."""
     if route.is_multi_city or route.return_date:
         raise RuntimeError("Feizhu provider currently supports one-way queries only.")
+    if route.passengers != 1:
+        raise RuntimeError(
+            "Feizhu CLI currently returns single-passenger fares only; refusing to save multi-passenger quote without party pricing."
+        )
 
     # Rate-limiting is still applied even though we're using a CLI.
     await runtime.throttle(provider)
 
+    requested_cabin = (route.cabin or "economy").lower()
+    journey_type = "1" if route.transfer_policy == "direct_only" else ("2" if route.transfer_policy == "transfer_only" else None)
     offers = await feizhu_flyai_adapter.search_flights(
         origin=route.origin,
         destination=route.destination,
         departure_date=route.departure_date,
-        cabin=route.cabin or "economy",
+        cabin=requested_cabin,
+        journey_type=journey_type,
         timeout_seconds=max(10, provider.timeout_ms // 1000),
     )
 
@@ -50,7 +57,30 @@ async def query(
             f"No Feizhu flights found for {route.origin}→{route.destination} on {route.departure_date}."
         )
 
-    best = offers[0]
+    from tail_quotes import cabin_matches
+    from providers.ctrip_tail_parser import details_match_airlines
+
+    filtered_offers = []
+    for offer in offers:
+        details = offer.get("flight_details") or []
+        if route.transfer_policy == "direct_only" and len(details) != 1:
+            continue
+        if route.transfer_policy == "transfer_only" and len(details) < 2:
+            continue
+        if route.preferred_airlines and not details_match_airlines(details, route.preferred_airlines):
+            continue
+        if any(leg.get("cabin") and not cabin_matches(leg["cabin"], requested_cabin) for leg in details):
+            continue
+        if requested_cabin not in {"economy", "economy_plus", "any"} and any(not leg.get("cabin") for leg in details):
+            continue
+        filtered_offers.append(offer)
+
+    if not filtered_offers:
+        raise RuntimeError(
+            f"No Feizhu flights matched cabin/transfer/airline conditions for {route.origin}→{route.destination} on {route.departure_date}."
+        )
+
+    best = filtered_offers[0]
     return ParsedProviderResult(
         provider="feizhu",
         price=best["price"],

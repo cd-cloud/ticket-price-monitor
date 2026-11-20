@@ -11,7 +11,7 @@ import argparse
 import asyncio
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -51,7 +51,7 @@ def build_smoke_parser() -> argparse.ArgumentParser:
 async def run_internal_smoke_test(args: argparse.Namespace) -> int:
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     prefix = output_dir / f"smoke_{stamp}"
     viewport = parse_viewport(args.viewport)
     headers = cloudflare_access_headers(args.access_service_token_env)
@@ -73,7 +73,7 @@ async def run_internal_smoke_test(args: argparse.Namespace) -> int:
             "timezone": args.timezone,
             "viewport": viewport,
             "used_cloudflare_access_headers": bool(headers),
-            "started_at": datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
+            "started_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
         }
         exit_code = 0
         try:
@@ -105,7 +105,7 @@ async def run_internal_smoke_test(args: argparse.Namespace) -> int:
                 prefix.with_suffix(".html").write_text(await page.content(), encoding="utf-8")
             except Exception:
                 pass
-            result["finished_at"] = datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+            result["finished_at"] = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
             prefix.with_suffix(".json").write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
             await context.close()
             await browser.close()

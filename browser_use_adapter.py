@@ -14,7 +14,7 @@ import logging
 import os
 import sys
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -235,7 +235,7 @@ class BrowserUseAdapter:
         if self.runtime_dir is None:
             return None
         safe_kind = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in kind)[:80]
-        stamp = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         assist_dir = self.runtime_dir / "browseruse" / "assist"
         assist_dir.mkdir(parents=True, exist_ok=True)
         prefix = assist_dir / f"{safe_kind}_{stamp}"
@@ -267,7 +267,7 @@ class BrowserUseAdapter:
                 "url": getattr(page, "url", ""),
                 "title": title,
                 "page_state": page_state,
-                "captured_at": datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
+                "captured_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
             }
             meta_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
             return meta_path

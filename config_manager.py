@@ -2,16 +2,20 @@ import base64
 import json
 import logging
 import os
+import tempfile
+import threading
 from dataclasses import dataclass
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from dotenv import load_dotenv
 
-from airport_aliases import CLEAN_AIRPORT_ALIAS_CODE_MAP
+from airport_aliases import AIRPORT_NAME_SUFFIXES, CLEAN_AIRPORT_ALIAS_CODE_MAP
 from providers.registry import provider_definition
 from browser_environment import BrowserEnvironment, parse_browser_environment, expand_environment_preset
 from browser_fingerprint import default_fingerprint
@@ -28,271 +32,7 @@ TRANSFER_POLICY_ALIASES = {
     "transfer": "transfer_only",
     "transfer_only": "transfer_only",
 }
-AIRPORT_ALIAS_CODE_MAP = {
-    "北京": "BJS",
-    "首都": "PEK",
-    "首都机场": "PEK",
-    "大兴": "PKX",
-    "大兴机场": "PKX",
-    "上海": "SHA",
-    "虹桥": "SHA",
-    "虹桥机场": "SHA",
-    "浦东": "PVG",
-    "浦东机场": "PVG",
-    "广州": "CAN",
-    "深圳": "SZX",
-    "成都": "CTU",
-    "成都双机场": "CTU",
-    "成都两个机场": "CTU",
-    "成都全部机场": "CTU",
-    "双流": "CTU",
-    "天府": "TFU",
-    "青岛": "TAO",
-    "流亭": "TAO",
-    "胶东": "TAO",
-    "西安": "XIY",
-    "重庆": "CKG",
-    "杭州": "HGH",
-    "南京": "NKG",
-    "武汉": "WUH",
-    "天津": "TSN",
-    "厦门": "XMN",
-    "昆明": "KMG",
-    "香港": "HKG",
-    "澳门": "MFM",
-    "台北": "TPE",
-    "高雄": "KHH",
-    "新加坡": "SIN",
-    "樟宜": "SIN",
-    "曼谷": "BKK",
-    "吉隆坡": "KUL",
-    "东京": "TYO",
-    "成田": "NRT",
-    "羽田": "HND",
-    "大阪": "OSA",
-    "关西": "KIX",
-    "名古屋": "NGO",
-    "福冈": "FUK",
-    "札幌": "SPK",
-    "冲绳": "OKA",
-    "首尔": "SEL",
-    "仁川": "ICN",
-    "金浦": "GMP",
-    "釜山": "PUS",
-    "济州": "CJU",
-    "河内": "HAN",
-    "胡志明": "SGN",
-    "胡志明市": "SGN",
-    "岘港": "DAD",
-    "普吉": "HKT",
-    "清迈": "CNX",
-    "雅加达": "JKT",
-    "巴厘岛": "DPS",
-    "登巴萨": "DPS",
-    "马尼拉": "MNL",
-    "宿务": "CEB",
-    "金边": "PNH",
-    "暹粒": "REP",
-    "万象": "VTE",
-    "仰光": "RGN",
-    "加德满都": "KTM",
-    "新德里": "DEL",
-    "孟买": "BOM",
-    "班加罗尔": "BLR",
-    "科伦坡": "CMB",
-    "马累": "MLE",
-    "伦敦": "LHR",
-    "巴黎": "PAR",
-    "戴高乐": "CDG",
-    "雅典": "ATH",
-    "米兰": "MIL",
-    "罗马": "ROM",
-    "马德里": "MAD",
-    "巴塞罗那": "BCN",
-    "法兰克福": "FRA",
-    "慕尼黑": "MUC",
-    "柏林": "BER",
-    "汉堡": "HAM",
-    "苏黎世": "ZRH",
-    "日内瓦": "GVA",
-    "维也纳": "VIE",
-    "布拉格": "PRG",
-    "布达佩斯": "BUD",
-    "华沙": "WAW",
-    "哥本哈根": "CPH",
-    "斯德哥尔摩": "STO",
-    "奥斯陆": "OSL",
-    "赫尔辛基": "HEL",
-    "布鲁塞尔": "BRU",
-    "都柏林": "DUB",
-    "里斯本": "LIS",
-    "波尔图": "OPO",
-    "威尼斯": "VCE",
-    "佛罗伦萨": "FLR",
-    "莫斯科": "MOW",
-    "伊尔库茨克": "IKT",
-    "海参崴": "VVO",
-    "符拉迪沃斯托克": "VVO",
-    "阿姆斯特丹": "AMS",
-    "纽约": "JFK",
-    "芝加哥": "CHI",
-    "波士顿": "BOS",
-    "华盛顿": "WAS",
-    "西雅图": "SEA",
-    "洛杉矶": "LAX",
-    "旧金山": "SFO",
-    "拉斯维加斯": "LAS",
-    "迈阿密": "MIA",
-    "奥兰多": "ORL",
-    "休斯顿": "HOU",
-    "达拉斯": "DFW",
-    "温哥华": "YVR",
-    "多伦多": "YTO",
-    "蒙特利尔": "YMQ",
-    "卡尔加里": "YYC",
-    "墨西哥城": "MEX",
-    "坎昆": "CUN",
-    "圣保罗": "SAO",
-    "里约": "GIG",
-    "里约热内卢": "GIG",
-    "布宜诺斯艾利斯": "BUE",
-    "利马": "LIM",
-    "圣地亚哥": "SCL",
-    "悉尼": "SYD",
-    "墨尔本": "MEL",
-    "布里斯班": "BNE",
-    "珀斯": "PER",
-    "奥克兰": "AKL",
-    "迪拜": "DXB",
-    "阿布扎比": "AUH",
-    "多哈": "DOH",
-    "伊斯坦布尔": "IST",
-    "利雅得": "RUH",
-    "吉达": "JED",
-    "特拉维夫": "TLV",
-    "开罗": "CAI",
-    "约翰内斯堡": "JNB",
-    "开普敦": "CPT",
-    "内罗毕": "NBO",
-    "卡萨布兰卡": "CMN",
-    "beijing": "BJS",
-    "shanghai": "SHA",
-    "guangzhou": "CAN",
-    "shenzhen": "SZX",
-    "chengdu": "CTU",
-    "qingdao": "TAO",
-    "hong kong": "HKG",
-    "hongkong": "HKG",
-    "macau": "MFM",
-    "macao": "MFM",
-    "taipei": "TPE",
-    "singapore": "SIN",
-    "bangkok": "BKK",
-    "kuala lumpur": "KUL",
-    "tokyo": "TYO",
-    "osaka": "OSA",
-    "nagoya": "NGO",
-    "fukuoka": "FUK",
-    "sapporo": "SPK",
-    "okinawa": "OKA",
-    "seoul": "SEL",
-    "incheon": "ICN",
-    "gimpo": "GMP",
-    "busan": "PUS",
-    "jeju": "CJU",
-    "hanoi": "HAN",
-    "ho chi minh": "SGN",
-    "danang": "DAD",
-    "da nang": "DAD",
-    "phuket": "HKT",
-    "chiang mai": "CNX",
-    "jakarta": "JKT",
-    "bali": "DPS",
-    "manila": "MNL",
-    "cebu": "CEB",
-    "phnom penh": "PNH",
-    "siem reap": "REP",
-    "vientiane": "VTE",
-    "yangon": "RGN",
-    "kathmandu": "KTM",
-    "delhi": "DEL",
-    "mumbai": "BOM",
-    "bangalore": "BLR",
-    "colombo": "CMB",
-    "male": "MLE",
-    "london": "LHR",
-    "paris": "PAR",
-    "athens": "ATH",
-    "milan": "MIL",
-    "rome": "ROM",
-    "madrid": "MAD",
-    "barcelona": "BCN",
-    "frankfurt": "FRA",
-    "munich": "MUC",
-    "berlin": "BER",
-    "hamburg": "HAM",
-    "zurich": "ZRH",
-    "geneva": "GVA",
-    "vienna": "VIE",
-    "prague": "PRG",
-    "budapest": "BUD",
-    "warsaw": "WAW",
-    "copenhagen": "CPH",
-    "stockholm": "STO",
-    "oslo": "OSL",
-    "helsinki": "HEL",
-    "brussels": "BRU",
-    "dublin": "DUB",
-    "lisbon": "LIS",
-    "porto": "OPO",
-    "venice": "VCE",
-    "florence": "FLR",
-    "moscow": "MOW",
-    "irkutsk": "IKT",
-    "vladivostok": "VVO",
-    "amsterdam": "AMS",
-    "new york": "JFK",
-    "chicago": "CHI",
-    "boston": "BOS",
-    "washington": "WAS",
-    "seattle": "SEA",
-    "los angeles": "LAX",
-    "san francisco": "SFO",
-    "las vegas": "LAS",
-    "miami": "MIA",
-    "orlando": "ORL",
-    "houston": "HOU",
-    "dallas": "DFW",
-    "vancouver": "YVR",
-    "toronto": "YTO",
-    "montreal": "YMQ",
-    "calgary": "YYC",
-    "mexico city": "MEX",
-    "cancun": "CUN",
-    "sao paulo": "SAO",
-    "rio": "GIG",
-    "rio de janeiro": "GIG",
-    "buenos aires": "BUE",
-    "lima": "LIM",
-    "santiago": "SCL",
-    "sydney": "SYD",
-    "melbourne": "MEL",
-    "brisbane": "BNE",
-    "perth": "PER",
-    "auckland": "AKL",
-    "dubai": "DXB",
-    "abu dhabi": "AUH",
-    "doha": "DOH",
-    "istanbul": "IST",
-    "riyadh": "RUH",
-    "jeddah": "JED",
-    "tel aviv": "TLV",
-    "cairo": "CAI",
-    "johannesburg": "JNB",
-    "cape town": "CPT",
-    "nairobi": "NBO",
-    "casablanca": "CMN",
-}
+AIRPORT_ALIAS_CODE_MAP = dict(CLEAN_AIRPORT_ALIAS_CODE_MAP)
 
 
 @dataclass(slots=True)
@@ -334,6 +74,35 @@ class RouteQuery:
 
     @property
     def route_key(self) -> str:
+        airlines = sorted({str(code).strip().upper() for code in (self.preferred_airlines or []) if str(code).strip()})
+        airline_suffix = [",".join(airlines)] if airlines else []
+        if self.is_multi_city:
+            segment_part = "^".join(segment.segment_key for segment in self.segments or [])
+            return "|".join(
+                [
+                    "multi_city",
+                    segment_part,
+                    self.cabin.lower(),
+                    self.transfer_policy.lower(),
+                    str(self.passengers),
+                    *airline_suffix,
+                ]
+            )
+        return "|".join(
+            [
+                self.origin.upper(),
+                self.destination.upper(),
+                self.departure_date,
+                self.return_date or "",
+                self.cabin.lower(),
+                self.transfer_policy.lower(),
+                str(self.passengers),
+                *airline_suffix,
+            ]
+        )
+
+    @property
+    def legacy_route_key(self) -> str:
         if self.is_multi_city:
             segment_part = "^".join(segment.segment_key for segment in self.segments or [])
             return "|".join(
@@ -473,31 +242,8 @@ def normalize_airport_code(value: Any) -> str:
     if len(text) == 3 and text.isascii() and text.isalpha():
         return text.upper()
 
-    compact = text.replace("国际机场", "").replace("机场", "").strip()
-    alias_candidates = [
-        text,
-        compact,
-        text.lower(),
-        compact.lower(),
-        text.replace(" ", "").lower(),
-        compact.replace(" ", "").lower(),
-    ]
-    for candidate in alias_candidates:
-        code = AIRPORT_ALIAS_CODE_MAP.get(candidate)
-        if code:
-            return code
-    return text.upper()
-
-
-def normalize_airport_code(value: Any) -> str:
-    text = str(value or "").strip()
-    if not text:
-        return ""
-    if len(text) == 3 and text.isascii() and text.isalpha():
-        return text.upper()
-
     compact = text
-    for suffix in ["国际机场", "机场", "國際機場", "機場", "鍥介檯鏈哄満", "鏈哄満"]:
+    for suffix in AIRPORT_NAME_SUFFIXES:
         compact = compact.replace(suffix, "")
     compact = compact.strip()
     alias_candidates = [
@@ -512,10 +258,85 @@ def normalize_airport_code(value: Any) -> str:
         code = CLEAN_AIRPORT_ALIAS_CODE_MAP.get(candidate)
         if code:
             return code
-        code = AIRPORT_ALIAS_CODE_MAP.get(candidate)
-        if code:
-            return code
     return text.upper()
+
+
+def _atomic_write_bytes(path: Path, data: bytes, *, mode: int | None = None) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    try:
+        if mode is not None:
+            try:
+                os.fchmod(descriptor, mode)
+            except (AttributeError, OSError):
+                pass
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+        if mode is not None:
+            try:
+                os.chmod(path, mode)
+            except OSError:
+                pass
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def _shift_expired_example_routes(raw: dict[str, Any], *, today: date | None = None) -> dict[str, Any]:
+    tz_name = str((raw.get("scheduler") or {}).get("timezone") or "Asia/Shanghai")
+    try:
+        current_day = today or datetime.now(ZoneInfo(tz_name)).date()
+    except Exception:
+        current_day = today or date.today()
+
+    routes = raw.get("routes")
+    if not isinstance(routes, list) or not routes:
+        return raw
+
+    parsed_dates: list[date] = []
+    for route in routes:
+        if not isinstance(route, dict):
+            continue
+        for key in ("departure_date", "return_date"):
+            value = route.get(key)
+            if isinstance(value, str) and value:
+                try:
+                    parsed_dates.append(date.fromisoformat(value))
+                except ValueError:
+                    pass
+        for segment in route.get("segments") or []:
+            if isinstance(segment, dict) and isinstance(segment.get("departure_date"), str):
+                try:
+                    parsed_dates.append(date.fromisoformat(segment["departure_date"]))
+                except ValueError:
+                    pass
+
+    if not parsed_dates or min(parsed_dates) >= current_day:
+        return raw
+
+    offset = (current_day + timedelta(days=30)) - min(parsed_dates)
+
+    def _shift(value: Any) -> Any:
+        if not isinstance(value, str) or not value:
+            return value
+        try:
+            return (date.fromisoformat(value) + offset).isoformat()
+        except ValueError:
+            return value
+
+    for route in routes:
+        if not isinstance(route, dict):
+            continue
+        route["departure_date"] = _shift(route.get("departure_date"))
+        if route.get("return_date"):
+            route["return_date"] = _shift(route.get("return_date"))
+        for segment in route.get("segments") or []:
+            if isinstance(segment, dict) and segment.get("departure_date"):
+                segment["departure_date"] = _shift(segment.get("departure_date"))
+    return raw
 
 
 def normalize_transfer_policy(value: Any) -> str:
@@ -546,19 +367,21 @@ class ConfigManager:
         self.config_path = config_path or DEFAULT_CONFIG_PATH
         self.env_path = env_path or (self.config_path.parent / ".env" if config_path else DEFAULT_ENV_PATH)
         load_dotenv(self.env_path, override=False)
+        self.lock = threading.RLock()
         self._config_cache: AppConfig | None = None
 
     def load(self) -> AppConfig:
-        if self._config_cache is not None:
-            return self._config_cache
+        with self.lock:
+            if self._config_cache is not None:
+                return self._config_cache
 
-        if not self.config_path.exists():
-            raise FileNotFoundError(
-                f"Missing config file: {self.config_path}. "
-                "Run `python main.py init-config` to create a local config.json from config.example.json."
-            )
+            if not self.config_path.exists():
+                raise FileNotFoundError(
+                    f"Missing config file: {self.config_path}. "
+                    "Run `python main.py init-config` to create a local config.json from config.example.json."
+                )
 
-        raw = _read_json(self.config_path)
+            raw = _read_json(self.config_path)
         storage = raw.get("storage", {})
         runtime_dir = _expand_path(storage.get("runtime_dir", "./runtime"), self.config_path.parent)
         output_dir = _expand_path(storage.get("output_dir", "./output"), self.config_path.parent)
@@ -677,7 +500,7 @@ class ConfigManager:
         if app_config.salt_file.exists():
             return app_config.salt_file.read_bytes()
         salt = os.urandom(16)
-        app_config.salt_file.write_bytes(salt)
+        _atomic_write_bytes(app_config.salt_file, salt, mode=0o600)
         return salt
 
     def _require_master_passphrase(self) -> str:
@@ -695,31 +518,33 @@ class ConfigManager:
         return Fernet(_derive_key(passphrase, salt))
 
     def save_credentials(self, provider: str, username: str, password: str) -> Path:
-        app_config = self.load()
-        fernet = self._build_fernet(app_config)
-        current = self.load_credentials(allow_missing=True)
-        current[provider] = {"username": username, "password": password}
-        encrypted = fernet.encrypt(json.dumps(current, ensure_ascii=False).encode("utf-8"))
-        app_config.encrypted_credentials_path.write_bytes(encrypted)
-        return app_config.encrypted_credentials_path
+        with self.lock:
+            app_config = self.load()
+            fernet = self._build_fernet(app_config)
+            current = self.load_credentials(allow_missing=True)
+            current[provider] = {"username": username, "password": password}
+            encrypted = fernet.encrypt(json.dumps(current, ensure_ascii=False).encode("utf-8"))
+            _atomic_write_bytes(app_config.encrypted_credentials_path, encrypted, mode=0o600)
+            return app_config.encrypted_credentials_path
 
     def load_credentials(self, allow_missing: bool = False) -> dict[str, dict[str, str]]:
-        app_config = self.load()
-        path = app_config.encrypted_credentials_path
-        if not path.exists():
-            if allow_missing:
-                return self._load_env_credentials()
-            raise FileNotFoundError(
-                f"Encrypted credentials file not found: {path}. "
-                "Use the CLI command to save local credentials first."
-            )
+        with self.lock:
+            app_config = self.load()
+            path = app_config.encrypted_credentials_path
+            if not path.exists():
+                if allow_missing:
+                    return self._load_env_credentials()
+                raise FileNotFoundError(
+                    f"Encrypted credentials file not found: {path}. "
+                    "Use the CLI command to save local credentials first."
+                )
 
-        fernet = self._build_fernet(app_config)
-        decrypted = fernet.decrypt(path.read_bytes())
-        payload = json.loads(decrypted.decode("utf-8"))
-        merged = self._load_env_credentials()
-        merged.update(payload)
-        return merged
+            fernet = self._build_fernet(app_config)
+            decrypted = fernet.decrypt(path.read_bytes())
+            payload = json.loads(decrypted.decode("utf-8"))
+            merged = self._load_env_credentials()
+            merged.update(payload)
+            return merged
 
     def _load_env_credentials(self) -> dict[str, dict[str, str]]:
         credentials: dict[str, dict[str, str]] = {}
@@ -737,25 +562,28 @@ class ConfigManager:
 
     def export_example_config(self, destination: Path) -> Path:
         example_path = ROOT / "config.example.json"
-        destination.write_text(example_path.read_text(encoding="utf-8"), encoding="utf-8")
+        raw = _shift_expired_example_routes(_read_json(example_path))
+        _atomic_write_bytes(destination, json.dumps(raw, ensure_ascii=False, indent=2).encode("utf-8"))
         return destination
 
     def init_config(self, *, overwrite: bool = False) -> Path:
-        if self.config_path.exists() and not overwrite:
-            raise FileExistsError(
-                f"Config file already exists: {self.config_path}. "
-                "Pass --overwrite only if you intentionally want to replace it."
-            )
-        self.export_example_config(self.config_path)
-        self._config_cache = None
-        return self.config_path
+        with self.lock:
+            if self.config_path.exists() and not overwrite:
+                raise FileExistsError(
+                    f"Config file already exists: {self.config_path}. "
+                    "Pass --overwrite only if you intentionally want to replace it."
+                )
+            self.export_example_config(self.config_path)
+            self._config_cache = None
+            return self.config_path
 
     def save_routes(self, routes: list[RouteQuery]) -> Path:
-        raw = _read_json(self.config_path)
-        raw["routes"] = [route.to_dict() for route in routes]
-        self.config_path.write_text(json.dumps(raw, ensure_ascii=False, indent=2), encoding="utf-8")
-        self._config_cache = None
-        return self.config_path
+        with self.lock:
+            raw = _read_json(self.config_path)
+            raw["routes"] = [route.to_dict() for route in routes]
+            _atomic_write_bytes(self.config_path, json.dumps(raw, ensure_ascii=False, indent=2).encode("utf-8"))
+            self._config_cache = None
+            return self.config_path
 
     @staticmethod
     def _validate_route_providers(routes: list[RouteQuery], providers: dict[str, ProviderConfig]) -> None:

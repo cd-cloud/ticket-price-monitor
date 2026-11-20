@@ -3,7 +3,7 @@ import json
 import logging
 import random
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 from urllib.parse import quote
@@ -135,7 +135,7 @@ class BrowserAutomation:
 
             dump_dir = self.app_config.runtime_dir / "inspections"
             dump_dir.mkdir(parents=True, exist_ok=True)
-            stamp = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+            stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
             prefix = f"{provider_name}_{route.origin}_{route.destination}_{stamp}"
             screenshot_path = dump_dir / f"{prefix}.png"
             html_path = dump_dir / f"{prefix}.html"
@@ -153,7 +153,7 @@ class BrowserAutomation:
                 "network_log": network_log[-80:],
                 "screenshot_path": str(screenshot_path),
                 "html_path": str(html_path),
-                "captured_at": datetime.utcnow().isoformat() + "Z",
+                "captured_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
             }
             json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
             if pause:

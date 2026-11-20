@@ -1,7 +1,8 @@
+import json
 import logging
 import random
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
@@ -1047,9 +1048,9 @@ async def dump_datepicker_debug(page: Page, departure_date: str, trigger_selecto
             "departure_date": departure_date,
             "trigger_selector": trigger_selector,
             "url": page.url,
-            "captured_at": datetime.utcnow().isoformat() + "Z",
+            "captured_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         }
-        prefix.with_suffix(".json").write_text(str(meta), encoding="utf-8")
+        prefix.with_suffix(".json").write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
         LOGGER.warning("saved ctrip datepicker debug artifacts to %s", prefix)
     except Exception:
         LOGGER.exception("failed to dump ctrip datepicker debug artifacts for %s", departure_date)

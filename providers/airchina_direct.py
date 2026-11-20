@@ -184,7 +184,12 @@ def flyclaw_records_from_report(report: dict, route: RouteQuery) -> list[dict]:
             continue
         if not all(re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}", t) for t in (departure, arrival)):
             continue
-        duration = _duration_minutes(departure, arrival)
+        raw_duration = offer.get("duration_minutes")
+        duration = (
+            int(raw_duration)
+            if isinstance(raw_duration, int) and not isinstance(raw_duration, bool) and raw_duration > 0
+            else _duration_minutes(departure, arrival)
+        )
         if duration is None:
             continue
         segment = {

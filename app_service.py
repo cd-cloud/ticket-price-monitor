@@ -350,7 +350,7 @@ class FlightPriceApplication:
         return self.auto_query_worker.process()
 
     def dashboard_payload(self) -> dict[str, Any]:
-        snapshots = self.repository.fetch_snapshots()
+        snapshots = self.repository.fetch_recent_snapshots_per_route(per_pair_limit=4)
         report_paths = self.report_service.artifact_paths()
         return build_dashboard_payload(
             config=self.config,

@@ -450,9 +450,6 @@ class BrowserSessionManager:
             "chrome_profile": self.chrome_profile_health(provider, backend_name),
         }
 
-    def _select_healthy_chrome_profile(self, provider: ProviderConfig, backend_name: str | None) -> str:
-        return self._select_healthy_chrome_profile(provider, backend_name, log=True)
-
     def _select_healthy_chrome_profile(
         self,
         provider: ProviderConfig,

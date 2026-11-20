@@ -1,4 +1,5 @@
 import asyncio
+import hmac
 import logging
 import os
 from pathlib import Path
@@ -21,17 +22,35 @@ ROOT = Path(__file__).resolve().parent
 templates = Jinja2Templates(directory=str(ROOT / "templates"))
 MUTATING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1"}
+UI_TOKEN_COOKIE = "flight_tracker_ui_token"
 LOGGER = logging.getLogger(__name__)
 
 
-def _is_local_origin(value: str | None) -> bool:
+def _request_hostname(request: Request) -> str:
+    host = (request.headers.get("host") or "").strip()
+    if not host:
+        return ""
+    try:
+        return (urlparse(f"http://{host}").hostname or "").lower()
+    except Exception:
+        return ""
+
+
+def _is_allowed_origin(value: str | None, *, request_host: str = "", token_protected: bool = False) -> bool:
     if not value:
         return True
     try:
         parsed = urlparse(value)
     except Exception:
         return False
-    return (parsed.hostname or "").lower() in LOCAL_HOSTS
+    hostname = (parsed.hostname or "").lower()
+    if hostname in LOCAL_HOSTS:
+        return True
+    return bool(token_protected and request_host and hostname == request_host)
+
+
+def _valid_ui_token(supplied: str | None, expected: str) -> bool:
+    return bool(supplied) and hmac.compare_digest(supplied, expected)
 
 
 def create_app(config_path: str | None = None) -> FastAPI:
@@ -63,14 +82,42 @@ def create_app(config_path: str | None = None) -> FastAPI:
 
     @app.middleware("http")
     async def protect_local_admin_api(request: Request, call_next):
+        path = request.url.path
+        request_host = _request_hostname(request)
         if request.method in MUTATING_METHODS:
-            if not _is_local_origin(request.headers.get("origin")):
+            sec_fetch_site = (request.headers.get("sec-fetch-site") or "").strip().lower()
+            if sec_fetch_site == "cross-site":
+                return Response("Forbidden cross-site request", status_code=403)
+            origin = request.headers.get("origin")
+            referer = request.headers.get("referer")
+            if not _is_allowed_origin(origin, request_host=request_host, token_protected=bool(ui_token)):
                 return Response("Forbidden origin", status_code=403)
-            if ui_token:
-                supplied = request.headers.get("x-flight-tracker-token") or request.query_params.get("token")
-                if supplied != ui_token:
-                    return Response("Missing or invalid UI token", status_code=401)
-        return await call_next(request)
+            if not origin and referer and not _is_allowed_origin(
+                referer, request_host=request_host, token_protected=bool(ui_token)
+            ):
+                return Response("Forbidden referer", status_code=403)
+
+        requires_token = bool(ui_token) and path != "/api/health" and not path.startswith("/static/")
+        query_token = request.query_params.get("token")
+        if requires_token:
+            supplied = (
+                request.headers.get("x-flight-tracker-token")
+                or query_token
+                or request.cookies.get(UI_TOKEN_COOKIE)
+            )
+            if not _valid_ui_token(supplied, ui_token):
+                return Response("Missing or invalid UI token", status_code=401)
+
+        response = await call_next(request)
+        if ui_token and _valid_ui_token(query_token, ui_token):
+            response.set_cookie(
+                key=UI_TOKEN_COOKIE,
+                value=ui_token,
+                httponly=True,
+                samesite="strict",
+                secure=request.url.scheme == "https",
+            )
+        return response
 
     @app.get("/", response_class=HTMLResponse)
     async def index(request: Request) -> HTMLResponse:
@@ -294,17 +341,15 @@ def create_app(config_path: str | None = None) -> FastAPI:
                 raise HTTPException(status_code=404, detail="Provider not found in route group")
 
             def run_and_report() -> None:
-                providers = [provider] if provider else _route_group_providers(routes)
-                for provider_name in providers:
-                    try:
-                        service.run_route_group_once_blocking(group_id, provider_name)
-                        service.report()
-                    except Exception:
-                        LOGGER.exception(
-                            "background route group query failed: group_id=%s provider=%s",
-                            group_id,
-                            provider_name,
-                        )
+                try:
+                    service.run_route_group_once_blocking(group_id, provider)
+                    service.report()
+                except Exception:
+                    LOGGER.exception(
+                        "background route group query failed: group_id=%s provider=%s",
+                        group_id,
+                        provider,
+                    )
 
             asyncio.create_task(asyncio.to_thread(run_and_report))
             return {
@@ -454,34 +499,36 @@ def create_app(config_path: str | None = None) -> FastAPI:
     @app.post("/api/routes")
     async def save_route(payload: dict = Body(...)) -> dict:
         try:
-            return service.upsert_route(payload)
+            return await asyncio.to_thread(service.upsert_route, payload)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
 
     @app.post("/api/routes/{route_key:path}/auto-query")
     async def update_route_auto_query(route_key: str, payload: dict = Body(...)) -> dict:
         try:
-            return service.update_route_auto_query(route_key, enabled=bool(payload.get("enabled", False)))
+            return await asyncio.to_thread(
+                service.update_route_auto_query, route_key, enabled=bool(payload.get("enabled", False))
+            )
         except KeyError:
             raise HTTPException(status_code=404, detail="Route not found")
 
     @app.delete("/api/routes/{route_key:path}")
     async def delete_route(route_key: str) -> dict:
-        deleted = service.delete_route(route_key)
+        deleted = await asyncio.to_thread(service.delete_route, route_key)
         if not deleted:
             raise HTTPException(status_code=404, detail="Route not found")
         return {"deleted": True}
 
     @app.delete("/api/route-groups/{group_id:path}")
     async def delete_route_group(group_id: str) -> dict:
-        deleted = service.delete_route_group(group_id)
+        deleted = await asyncio.to_thread(service.delete_route_group, group_id)
         if not deleted:
             raise HTTPException(status_code=404, detail="Route group not found")
         return {"deleted": True}
 
     @app.get("/download/csv")
     async def download_csv() -> FileResponse:
-        csv_path = service.export_csv()
+        csv_path = await asyncio.to_thread(service.export_csv)
         return FileResponse(csv_path, filename=csv_path.name)
 
     @app.get("/api/log")

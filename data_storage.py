@@ -260,6 +260,8 @@ class PriceRepository:
 
     def initialize(self) -> None:
         with self.connect() as conn:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")
             conn.executescript(SCHEMA)
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS experimental_query_jobs (
@@ -393,6 +395,28 @@ class PriceRepository:
         with self.connect() as conn:
             rows = conn.execute(sql, params).fetchall()
 
+        return [dict(row) for row in rows]
+
+    def fetch_recent_snapshots_per_route(self, *, per_pair_limit: int = 4) -> list[dict[str, Any]]:
+        limit = max(2, min(int(per_pair_limit), 20))
+        sql = """
+            SELECT id, provider, route_key, origin, destination, departure_date, return_date,
+                   cabin, passengers, currency, price, observed_at, scraped_at, notes,
+                   parser, parser_confidence, detail_quality, detail_source, browser_backend,
+                   raw_payload
+            FROM (
+                SELECT *,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY provider, route_key
+                           ORDER BY observed_at DESC, id DESC
+                       ) AS rn
+                FROM price_snapshots
+            )
+            WHERE rn <= ?
+            ORDER BY observed_at ASC, id ASC
+        """
+        with self.connect() as conn:
+            rows = conn.execute(sql, (limit,)).fetchall()
         return [dict(row) for row in rows]
 
     def export_csv(self, output_path: Path, snapshots: list[dict[str, Any]] | None = None) -> Path:

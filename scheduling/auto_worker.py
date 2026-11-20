@@ -1,3 +1,4 @@
+from contextlib import nullcontext
 import logging
 import threading
 from datetime import datetime, timedelta, timezone
@@ -81,18 +82,20 @@ class AutoQueryWorker:
             self._cycle_lock.release()
 
     def update_route_next_run(self, route_key: str, started_at: datetime) -> None:
-        self.service.refresh_config()
-        routes = list(self.service.config.routes)
-        route = next((item for item in routes if item.route_key == route_key), None)
-        if route is None or not route.auto_query_enabled:
-            return
+        lock = getattr(self.service.config_manager, "lock", None)
+        with lock if lock is not None else nullcontext():
+            self.service.refresh_config()
+            routes = list(self.service.config.routes)
+            route = next((item for item in routes if item.route_key == route_key), None)
+            if route is None or not route.auto_query_enabled:
+                return
 
-        previous_due = parse_iso_datetime(route.auto_query_next_run_at) if route.auto_query_next_run_at else started_at
-        interval = timedelta(hours=max(route.auto_query_interval_hours, self.interval_hours))
-        route.auto_query_next_run_at = format_iso_datetime(max(started_at + interval, previous_due + interval))
-        self.rebalance(routes)
-        self.service.config_manager.save_routes(routes)
-        self.service.refresh_config()
+            previous_due = parse_iso_datetime(route.auto_query_next_run_at) if route.auto_query_next_run_at else started_at
+            interval = timedelta(hours=max(route.auto_query_interval_hours, self.interval_hours))
+            route.auto_query_next_run_at = format_iso_datetime(max(started_at + interval, previous_due + interval))
+            self.rebalance(routes)
+            self.service.config_manager.save_routes(routes)
+            self.service.refresh_config()
 
     def rebalance(self, routes: list[RouteQuery]) -> None:
         rebalance_auto_query_schedule(

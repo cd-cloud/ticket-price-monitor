@@ -7,6 +7,7 @@ import random
 import threading
 from datetime import date, datetime, timezone
 from typing import Any, Callable
+from zoneinfo import ZoneInfo
 
 from config_manager import AppConfig, ConfigManager, RouteQuery
 from data_storage import PriceRepository, PriceSnapshot
@@ -384,27 +385,41 @@ class QueryService:
                 "recent_failures": [],
             }
         )
-        if provider_filter == "feizhu":
+        CLI_PROVIDERS = {"feizhu"}
+        cli_targets = [target for target in targets if target[1] in CLI_PROVIDERS]
+        browser_targets = [target for target in targets if target[1] not in CLI_PROVIDERS]
+
+        if cli_targets:
             (
-                saved,
-                completed_targets,
-                saved_pairs,
-                recent_successes,
-                recent_failures,
+                cli_saved,
+                cli_completed,
+                cli_pairs,
+                cli_successes,
+                cli_failures,
             ) = await self._query_cli_provider_routes(
                 config,
-                targets,
+                cli_targets,
                 errors,
-                provider_filter,
                 total_targets=total_targets,
+                completed_offset=completed_targets,
+                saved_offset=saved,
+                saved_pairs_seed=saved_pairs,
+                recent_successes_seed=recent_successes,
+                recent_failures_seed=recent_failures,
             )
-        else:
+            saved += cli_saved
+            completed_targets += cli_completed
+            saved_pairs.extend(cli_pairs)
+            recent_successes = (recent_successes + cli_successes)[-8:]
+            recent_failures = (recent_failures + cli_failures)[-8:]
+
+        if browser_targets:
             try:
                 automation_context = self.automation_factory(config, credentials)
                 if backend_override and hasattr(automation_context, "backend_override"):
                     automation_context.backend_override = backend_override
                 async with automation_context as automation:
-                    for route, provider_name, provider_cfg in targets:
+                    for route, provider_name, provider_cfg in browser_targets:
                         self._set_summary(
                             {
                                 **self.last_run_summary,
@@ -528,9 +543,13 @@ class QueryService:
         config: AppConfig,
         targets: list[tuple[RouteQuery, str, Any]],
         errors: list[str],
-        provider_filter: str,
         *,
         total_targets: int,
+        completed_offset: int = 0,
+        saved_offset: int = 0,
+        saved_pairs_seed: list[dict[str, Any]] | None = None,
+        recent_successes_seed: list[dict[str, Any]] | None = None,
+        recent_failures_seed: list[dict[str, Any]] | None = None,
     ) -> tuple[int, int, list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
         saved = 0
         completed_targets = 0
@@ -538,20 +557,24 @@ class QueryService:
         recent_successes: list[dict[str, Any]] = []
         recent_failures: list[dict[str, Any]] = []
         runtime = CliProviderRuntime()
-        provider_module = importlib.import_module(f"providers.{provider_filter}")
+        modules: dict[str, Any] = {}
         for route, provider_name, provider_cfg in targets:
+            provider_module = modules.get(provider_name)
+            if provider_module is None:
+                provider_module = importlib.import_module(f"providers.{provider_name}")
+                modules[provider_name] = provider_module
             self._set_summary(
                 {
                     **self.last_run_summary,
                     "running": True,
                     "current_target": self._target_payload(route, provider_name),
-                    "completed_targets": completed_targets,
+                    "completed_targets": completed_offset + completed_targets,
                     "total_targets": total_targets,
-                    "saved": saved,
+                    "saved": saved_offset + saved,
                     "errors": list(errors),
-                    "saved_pairs": list(saved_pairs),
-                    "recent_successes": list(recent_successes),
-                    "recent_failures": list(recent_failures),
+                    "saved_pairs": [*(saved_pairs_seed or []), *saved_pairs],
+                    "recent_successes": ([*(recent_successes_seed or []), *recent_successes])[-8:],
+                    "recent_failures": ([*(recent_failures_seed or []), *recent_failures])[-8:],
                 }
             )
             try:
@@ -634,13 +657,13 @@ class QueryService:
                     **self.last_run_summary,
                     "running": True,
                     "current_target": self._target_payload(route, provider_name),
-                    "completed_targets": completed_targets,
+                    "completed_targets": completed_offset + completed_targets,
                     "total_targets": total_targets,
-                    "saved": saved,
+                    "saved": saved_offset + saved,
                     "errors": list(errors),
-                    "saved_pairs": list(saved_pairs),
-                    "recent_successes": list(recent_successes),
-                    "recent_failures": list(recent_failures),
+                    "saved_pairs": [*(saved_pairs_seed or []), *saved_pairs],
+                    "recent_successes": ([*(recent_successes_seed or []), *recent_successes])[-8:],
+                    "recent_failures": ([*(recent_failures_seed or []), *recent_failures])[-8:],
                 }
             )
         return saved, completed_targets, saved_pairs, recent_successes, recent_failures
@@ -652,8 +675,9 @@ class QueryService:
         *,
         provider_filter: str | None = None,
     ):
+        current_day = self._today_for_config(config)
         for route in routes:
-            if self._route_is_expired(route):
+            if self._route_is_expired(route, today=current_day):
                 logging.info("skipping expired route=%s", route.route_key)
                 continue
             providers = route.providers or list(config.providers.keys())
@@ -767,9 +791,17 @@ class QueryService:
         return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
     @staticmethod
-    def _route_is_expired(route: RouteQuery) -> bool:
+    def _today_for_config(config: AppConfig | None) -> date:
+        tz_name = str(getattr(config, "timezone", "") or "Asia/Shanghai")
+        try:
+            return datetime.now(ZoneInfo(tz_name)).date()
+        except Exception:
+            return date.today()
+
+    @staticmethod
+    def _route_is_expired(route: RouteQuery, *, today: date | None = None) -> bool:
         completion = QueryService._route_completion_date(route)
-        return bool(completion and completion < date.today())
+        return bool(completion and completion < (today or date.today()))
 
     @staticmethod
     def _route_completion_date(route: RouteQuery) -> date | None:

@@ -1,4 +1,4 @@
-from datetime import datetime
+from time import monotonic
 from pathlib import Path
 from typing import Callable
 
@@ -110,8 +110,8 @@ class CtripTailOperations:
             "Ctrip is showing a security verification screen. Wait for the user to finish it manually, then continue.",
             {"provider": "ctrip", "safety": "manual_verification_only"},
         )
-        deadline = datetime.utcnow().timestamp() + 15 * 60
-        while datetime.utcnow().timestamp() < deadline:
+        deadline = monotonic() + 15 * 60
+        while monotonic() < deadline:
             if cancel_checker and cancel_checker():
                 return False
             if verification_continue_checker and verification_continue_checker():

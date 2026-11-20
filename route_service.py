@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from contextlib import nullcontext
 import re
 from datetime import date, datetime
 from typing import Any, Callable
+from zoneinfo import ZoneInfo
 
 from config_manager import (
     AppConfig,
@@ -73,116 +75,125 @@ class RouteService:
             for route in config.routes
         ]
 
+    def _config_guard(self):
+        lock = getattr(self.config_manager, "lock", None)
+        return lock if lock is not None else nullcontext()
+
     def upsert_route(self, payload: dict[str, Any]) -> dict[str, Any]:
-        if payload_has_city_groups(payload):
-            return self.upsert_route_batch(payload)
+        with self._config_guard():
+            if payload_has_city_groups(payload):
+                return self.upsert_route_batch(payload)
 
-        self.refresh_config()
-        config = self.get_config()
-        previous_key = str(payload.get("previous_route_key") or "").strip()
-        route_type = str(payload.get("route_type") or "one_way")
-        existing_route = next(
-            (
-                item for item in config.routes
-                if item.route_key == previous_key or item.route_key == str(payload.get("route_key") or "").strip()
-            ),
-            None,
-        )
-        route = self._route_from_payload(
-            payload,
-            route_type=route_type,
-            existing_route=existing_route,
-        )
-        self._validate_route(route)
-
-        routes = list(config.routes)
-        replaced = False
-        for index, existing in enumerate(routes):
-            if existing.route_key == previous_key or existing.route_key == route.route_key:
-                routes[index] = route
-                replaced = True
-                break
-        if not replaced:
-            routes.append(route)
-
-        self._save_and_refresh(routes)
-        saved_route = next((item for item in self.list_routes() if item["route_key"] == route.route_key), route.to_dict())
-        return {"saved": True, "route": saved_route}
-
-    def upsert_route_batch(self, payload: dict[str, Any]) -> dict[str, Any]:
-        self.refresh_config()
-        config = self.get_config()
-        routes_to_add = expand_route_payload(
-            payload,
-            auto_query_interval_hours=self.auto_query_interval_hours,
-        )
-        if not routes_to_add:
-            raise ValueError("Route group did not produce any routes.")
-        for route in routes_to_add:
+            self.refresh_config()
+            config = self.get_config()
+            previous_key = str(payload.get("previous_route_key") or "").strip()
+            route_type = str(payload.get("route_type") or "one_way")
+            existing_route = next(
+                (
+                    item for item in config.routes
+                    if item.route_key == previous_key or item.route_key == str(payload.get("route_key") or "").strip()
+                ),
+                None,
+            )
+            route = self._route_from_payload(
+                payload,
+                route_type=route_type,
+                existing_route=existing_route,
+            )
             self._validate_route(route)
 
-        previous_group_id = str(payload.get("previous_group_id") or "").strip()
-        group_id = routes_to_add[0].group_id
-        route_keys_to_add = {item.route_key for item in routes_to_add}
-        routes = [
-            route for route in config.routes
-            if not (
-                (previous_group_id and route.group_id == previous_group_id)
-                or (group_id and route.group_id == group_id)
-                or route.route_key in route_keys_to_add
+            routes = list(config.routes)
+            replaced = False
+            for index, existing in enumerate(routes):
+                if existing.route_key == previous_key or existing.route_key == route.route_key:
+                    routes[index] = route
+                    replaced = True
+                    break
+            if not replaced:
+                routes.append(route)
+
+            self._save_and_refresh(routes)
+            saved_route = next((item for item in self.list_routes() if item["route_key"] == route.route_key), route.to_dict())
+            return {"saved": True, "route": saved_route}
+
+    def upsert_route_batch(self, payload: dict[str, Any]) -> dict[str, Any]:
+        with self._config_guard():
+            self.refresh_config()
+            config = self.get_config()
+            routes_to_add = expand_route_payload(
+                payload,
+                auto_query_interval_hours=self.auto_query_interval_hours,
             )
-        ]
-        routes.extend(routes_to_add)
-        self._save_and_refresh(routes)
-        saved_keys = {route.route_key for route in routes_to_add}
-        saved_routes = [route for route in self.list_routes() if route["route_key"] in saved_keys]
-        return {
-            "saved": True,
-            "group_id": group_id,
-            "group_label": routes_to_add[0].group_label,
-            "created": len(routes_to_add),
-            "routes": saved_routes,
-        }
+            if not routes_to_add:
+                raise ValueError("Route group did not produce any routes.")
+            for route in routes_to_add:
+                self._validate_route(route)
+
+            previous_group_id = str(payload.get("previous_group_id") or "").strip()
+            group_id = routes_to_add[0].group_id
+            route_keys_to_add = {item.route_key for item in routes_to_add}
+            routes = [
+                route for route in config.routes
+                if not (
+                    (previous_group_id and route.group_id == previous_group_id)
+                    or (group_id and route.group_id == group_id)
+                    or route.route_key in route_keys_to_add
+                )
+            ]
+            routes.extend(routes_to_add)
+            self._save_and_refresh(routes)
+            saved_keys = {route.route_key for route in routes_to_add}
+            saved_routes = [route for route in self.list_routes() if route["route_key"] in saved_keys]
+            return {
+                "saved": True,
+                "group_id": group_id,
+                "group_label": routes_to_add[0].group_label,
+                "created": len(routes_to_add),
+                "routes": saved_routes,
+            }
 
     def delete_route(self, route_key: str) -> bool:
-        self.refresh_config()
-        config = self.get_config()
-        routes = [route for route in config.routes if route.route_key != route_key]
-        if len(routes) == len(config.routes):
-            return False
-        self._save_and_refresh(routes)
-        return True
+        with self._config_guard():
+            self.refresh_config()
+            config = self.get_config()
+            routes = [route for route in config.routes if route.route_key != route_key]
+            if len(routes) == len(config.routes):
+                return False
+            self._save_and_refresh(routes)
+            return True
 
     def delete_route_group(self, group_id: str) -> bool:
-        self.refresh_config()
-        config = self.get_config()
-        routes = [route for route in config.routes if route.group_id != group_id]
-        if len(routes) == len(config.routes):
-            return False
-        self._save_and_refresh(routes)
-        return True
+        with self._config_guard():
+            self.refresh_config()
+            config = self.get_config()
+            routes = [route for route in config.routes if route.group_id != group_id]
+            if len(routes) == len(config.routes):
+                return False
+            self._save_and_refresh(routes)
+            return True
 
     def update_auto_query(self, route_key: str, enabled: bool) -> dict[str, Any]:
-        self.refresh_config()
-        config = self.get_config()
-        routes = list(config.routes)
-        updated: RouteQuery | None = None
-        for route in routes:
-            if route.route_key != route_key:
-                continue
-            route.auto_query_enabled = enabled
-            route.auto_query_interval_hours = self.auto_query_interval_hours
-            if not enabled:
-                route.auto_query_next_run_at = None
-            updated = route
-            break
+        with self._config_guard():
+            self.refresh_config()
+            config = self.get_config()
+            routes = list(config.routes)
+            updated: RouteQuery | None = None
+            for route in routes:
+                if route.route_key != route_key:
+                    continue
+                route.auto_query_enabled = enabled
+                route.auto_query_interval_hours = self.auto_query_interval_hours
+                if not enabled:
+                    route.auto_query_next_run_at = None
+                updated = route
+                break
 
-        if updated is None:
-            raise KeyError(route_key)
+            if updated is None:
+                raise KeyError(route_key)
 
-        self._save_and_refresh(routes)
-        saved_route = next((item for item in self.list_routes() if item["route_key"] == route_key), None)
-        return {"saved": True, "route": saved_route}
+            self._save_and_refresh(routes)
+            saved_route = next((item for item in self.list_routes() if item["route_key"] == route_key), None)
+            return {"saved": True, "route": saved_route}
 
     def _route_from_payload(
         self,
@@ -298,18 +309,20 @@ class RouteService:
             if len(segments) < 2:
                 raise ValueError("multi_city routes require at least two segments.")
             previous_date: date | None = None
+            today = self._today_for_config(config)
             for segment in segments:
                 self._validate_airport_pair(segment.origin, segment.destination)
-                segment_date = self._parse_future_date(segment.departure_date, "segment departure_date")
+                segment_date = self._parse_future_date(segment.departure_date, "segment departure_date", today=today)
                 if previous_date and segment_date < previous_date:
                     raise ValueError("multi_city segment dates must be non-decreasing.")
                 previous_date = segment_date
             return
 
+        today = self._today_for_config(config)
         self._validate_airport_pair(route.origin, route.destination)
-        departure = self._parse_future_date(route.departure_date, "departure_date")
+        departure = self._parse_future_date(route.departure_date, "departure_date", today=today)
         if route.return_date:
-            return_date = self._parse_future_date(route.return_date, "return_date")
+            return_date = self._parse_future_date(route.return_date, "return_date", today=today)
             if return_date <= departure:
                 raise ValueError("return_date must be later than departure_date.")
 
@@ -323,12 +336,20 @@ class RouteService:
             raise ValueError("origin and destination cannot be the same.")
 
     @staticmethod
-    def _parse_future_date(value: str, field_name: str) -> date:
+    def _today_for_config(config: AppConfig | None) -> date:
+        tz_name = str(getattr(config, "timezone", "") or "Asia/Shanghai")
+        try:
+            return datetime.now(ZoneInfo(tz_name)).date()
+        except Exception:
+            return date.today()
+
+    @staticmethod
+    def _parse_future_date(value: str, field_name: str, *, today: date | None = None) -> date:
         try:
             parsed = datetime.strptime(value, "%Y-%m-%d").date()
         except ValueError as exc:
             raise ValueError(f"{field_name} must use YYYY-MM-DD.") from exc
-        if parsed < date.today():
+        if parsed < (today or date.today()):
             raise ValueError(f"{field_name} cannot be in the past.")
         return parsed
 

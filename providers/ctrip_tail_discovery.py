@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import logging
 from copy import deepcopy
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from adaptive_selectors import observe_selector_candidates
@@ -285,7 +285,7 @@ async def stop_trace(automation: Any, context: Any, *, trace_started: bool):
         return None
     trace_dir = automation.app_config.runtime_dir / "tail_traces"
     trace_dir.mkdir(parents=True, exist_ok=True)
-    trace_path = trace_dir / f"ctrip_tail_{datetime.utcnow().strftime('%Y%m%dT%H%M%S%fZ')}.zip"
+    trace_path = trace_dir / f"ctrip_tail_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')}.zip"
     try:
         await context.tracing.stop(path=str(trace_path))
         return trace_path
@@ -414,7 +414,7 @@ async def dump_tail_diagnostics(
     try:
         dump_dir = automation.app_config.runtime_dir / "tail_diagnostics"
         dump_dir.mkdir(parents=True, exist_ok=True)
-        stamp = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         prefix = dump_dir / f"ctrip_tail_{origin}_{transfer}_{destination}_{departure_date}_{stamp}"
         screenshot_path = prefix.with_suffix(".png")
         html_path = prefix.with_suffix(".html")
@@ -467,7 +467,7 @@ async def dump_tail_diagnostics(
                     for item in response_store[-120:]
                 ],
             },
-            "captured_at": datetime.utcnow().isoformat() + "Z",
+            "captured_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         }
         json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         return {

@@ -6,7 +6,7 @@ This module is deliberately not registered as a production quote handler.
 from __future__ import annotations
 
 import re
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -132,16 +132,42 @@ def _row_offers(row, departure_date, origin, destination):
     for field, code in (("departure_airport", origin), ("arrival_airport", destination)):
         if not re.fullmatch(re.escape(code) + r"(?:\s+T[0-9A-Z]+)?", str(row.get(field) or "").strip()):
             return None, "row_airport_mismatch"
-    times = [compact(row.get(f)) for f in ("departure_time", "arrival_time")]
-    if not all(re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", t) for t in times):
+    dep_raw = compact(row.get("departure_time"))
+    arr_raw = compact(row.get("arrival_time"))
+    if not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", dep_raw):
         return None, "unsupported_time_format"
+    arr_match = re.fullmatch(r"((?:[01]\d|2[0-3]):[0-5]\d)(?:\+([12])天?)?", arr_raw)
+    if not arr_match:
+        return None, "unsupported_time_format"
+    arr_clock = arr_match.group(1)
+    day_offset = int(arr_match.group(2) or 0)
+    times = [dep_raw, arr_clock]
     minutes = [int(t[:2]) * 60 + int(t[3:]) for t in times]
+    minutes[1] += day_offset * 1440
     duration = re.fullmatch(r"(?:(\d+)h)?(?:(\d+)m)?", compact(row.get("duration")))
-    if not duration or not duration.group() or minutes[1] <= minutes[0]:
+    if not duration or not duration.group():
         return None, "unsupported_duration_or_overnight"
     duration_minutes = int(duration[1] or 0) * 60 + int(duration[2] or 0)
-    if duration_minutes != minutes[1] - minutes[0]:
+    if duration_minutes <= 0:
+        return None, "unsupported_duration_or_overnight"
+    if day_offset == 0 and minutes[1] <= minutes[0]:
+        return None, "unsupported_duration_or_overnight"
+    # Domestic flights share UTC+8; international direct flights may cross whole/half-hour timezones.
+    wall_diff = minutes[1] - minutes[0]
+    tz_shift = duration_minutes - wall_diff
+    if tz_shift != 0 and (abs(tz_shift) > 14 * 60 or tz_shift % 15 != 0 or duration_minutes > 24 * 60):
         return None, "duration_mismatch"
+    if origin[:2] == destination[:2] and origin in {"PEK", "PKX", "SHA", "PVG", "CAN", "SZX", "CTU", "TFU"} and tz_shift != 0:
+        return None, "duration_mismatch"
+    # Keep strict exact match when both airports are domestic or no timezone shift is plausible:
+    # single-timezone mismatch (e.g. 16:30 -> 18:45 with 4h15m on PEK->SHA) must still reject.
+    from vendor.flyclaw.airport_manager import airport_manager
+    orig_country = (airport_manager.get_info(origin) or {}).get("country_code")
+    dest_country = (airport_manager.get_info(destination) or {}).get("country_code")
+    same_domestic_tz = (orig_country == "CN" and dest_country == "CN") or (orig_country is None and dest_country is None)
+    if same_domestic_tz and duration_minutes != wall_diff:
+        return None, "duration_mismatch"
+    arrival_date = (date.fromisoformat(departure_date) + timedelta(days=day_offset)).isoformat()
     cabins = row.get("cabins")
     if not isinstance(cabins, dict):
         return None, "missing_cabin_cells"
@@ -157,10 +183,11 @@ def _row_offers(row, departure_date, origin, destination):
             return None, "unknown_starting_fare_format"
         offers.append({
             "provider": "airchina", "origin": origin, "destination": destination,
-            "departure_date": departure_date, "arrival_date": departure_date,
+            "departure_date": departure_date, "arrival_date": arrival_date,
             "flight_no": flights[0], "marketing_airline": flights[0][:2],
             "operating_airline": None,
             "departure_time": times[0], "arrival_time": times[1],
+            "duration_minutes": duration_minutes,
             "departure_airport_text": row["departure_airport"],
             "arrival_airport_text": row["arrival_airport"],
             "cabin": normalized, "passengers": 1,

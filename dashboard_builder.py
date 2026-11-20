@@ -2,6 +2,7 @@ import json
 import re
 from datetime import date, datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from backends import backend_registry_payload
 from providers.registry import provider_definition, provider_registry_payload
@@ -31,14 +32,19 @@ def build_dashboard_payload(
     latest_by_pair, previous_by_pair = build_snapshot_history_maps(snapshots)
 
     route_errors = summarize_route_errors(last_run_summary.get("errors", []))
+    current_day = today_for_config(config)
     tasks = []
     for route in config.routes:
         providers = usable_provider_names(config, route.providers or list(config.providers.keys()))
-        expired = route_is_expired(route)
+        expired = route_is_expired(route, today=current_day)
+        legacy_key = getattr(route, "legacy_route_key", route.route_key)
         for provider_name in providers:
             key = f"{provider_name}::{route.route_key}"
-            latest = latest_by_pair.get(key)
-            previous = previous_by_pair.get(key)
+            fallback_key = f"{provider_name}::{legacy_key}"
+            latest = latest_by_pair.get(key) or (latest_by_pair.get(fallback_key) if fallback_key != key else None)
+            previous = previous_by_pair.get(key) if key in latest_by_pair else (
+                previous_by_pair.get(fallback_key) if fallback_key != key else None
+            )
             last_error = route_errors.get(route.route_key)
             display_latest = None if last_error else latest
             display_previous = None if last_error else previous
@@ -243,9 +249,17 @@ def provider_has_handler(provider_name: str) -> bool:
     return bool(definition and definition.has_handler)
 
 
-def route_is_expired(route: Any) -> bool:
+def today_for_config(config: Any) -> date:
+    tz_name = str(getattr(config, "timezone", "") or "Asia/Shanghai")
+    try:
+        return datetime.now(ZoneInfo(tz_name)).date()
+    except Exception:
+        return date.today()
+
+
+def route_is_expired(route: Any, *, today: date | None = None) -> bool:
     completion = route_completion_date(route)
-    return bool(completion and completion < date.today())
+    return bool(completion and completion < (today or date.today()))
 
 
 def route_completion_date(route: Any) -> date | None:

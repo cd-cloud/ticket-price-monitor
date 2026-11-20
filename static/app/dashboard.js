@@ -286,8 +286,8 @@ function renderProviderOptions(providers) {
     const wrapper = document.createElement("label");
     wrapper.className = "provider-pill";
     wrapper.innerHTML = `
-      <input type="checkbox" name="providers" value="${provider}" checked />
-      <span>${provider}</span>
+      <input type="checkbox" name="providers" value="${escapeHtml(provider)}" checked />
+      <span>${escapeHtml(provider)}</span>
     `;
     container.appendChild(wrapper);
 
@@ -612,14 +612,14 @@ function renderTaskRow(task) {
     <td>${escapeHtml(providerLabel(task.provider))}</td>
     <td>${escapeHtml(taskRouteDisplay(task))}${groupLine}</td>
     <td>${escapeHtml(dateText)}</td>
-    <td>${cabinLabel(task.cabin)}<br><span class="muted">${transferPolicy} · ${airlines}</span></td>
+    <td>${escapeHtml(cabinLabel(task.cabin))}<br><span class="muted">${escapeHtml(transferPolicy)} · ${escapeHtml(airlines)}</span></td>
     <td>
       <div class="price-cell">
-        <strong>${task.latest_price ? `${task.currency} ${task.latest_price}` : "暂无"}</strong>
+        <strong>${task.latest_price ? `${escapeHtml(task.currency)} ${escapeHtml(task.latest_price)}` : "暂无"}</strong>
         ${renderPriceChangePill(task)}
       </div>
     </td>
-    <td>${formatQueryTime(task.last_query_time)}</td>
+    <td>${escapeHtml(formatQueryTime(task.last_query_time))}</td>
     <td>
       <div class="task-flight-mini">
         <span>${escapeHtml(taskFlightSummary(task))}</span>
@@ -653,7 +653,7 @@ function renderTaskGroupRow(group) {
         <span>${escapeHtml(task.itinerary_summary || task.departure_date || "-")}</span>
       </div>
       <div>${task.latest_price ? `${escapeHtml(task.currency)} ${escapeHtml(task.latest_price)}` : "暂无"}</div>
-      <div>${formatQueryTime(task.last_query_time)}</div>
+      <div>${escapeHtml(formatQueryTime(task.last_query_time))}</div>
       <div>${detailButton(task)}</div>
       <div>
         <button class="ghost compact" data-task-action="run-route" data-key="${escapeHtml(task.route_key)}" data-provider="${escapeHtml(task.provider)}" ${task.is_expired ? "disabled" : ""}>查询</button>
@@ -670,9 +670,9 @@ function renderTaskGroupRow(group) {
       <br><span class="muted">${summary.tasks.length} 条具体航线${routePreview ? ` · ${escapeHtml(routePreview)}${summary.tasks.length > 4 ? " ..." : ""}` : ""}</span>
     </td>
     <td>${escapeHtml(summary.dates.join(" / ") || "-")}</td>
-    <td>${cabinLabel(sampleTask.cabin)}<br><span class="muted">${transferPolicyLabel(sampleTask.transfer_policy || "any")} · ${summary.origins.length} 个出发地 / ${summary.destinations.length} 个目的地</span></td>
-    <td>${best ? `${best.currency} ${best.latest_price}` : "暂无"}<br><span class="muted">${summary.priced.length}/${summary.tasks.length} 已有价格</span></td>
-    <td>${formatQueryTime(best?.last_query_time || sampleTask.last_query_time)}</td>
+    <td>${escapeHtml(cabinLabel(sampleTask.cabin))}<br><span class="muted">${escapeHtml(transferPolicyLabel(sampleTask.transfer_policy || "any"))} · ${summary.origins.length} 个出发地 / ${summary.destinations.length} 个目的地</span></td>
+    <td>${best ? `${escapeHtml(best.currency)} ${escapeHtml(best.latest_price)}` : "暂无"}<br><span class="muted">${summary.priced.length}/${summary.tasks.length} 已有价格</span></td>
+    <td>${escapeHtml(formatQueryTime(best?.last_query_time || sampleTask.last_query_time))}</td>
     <td>
       <details class="multi-city-group-details">
         <summary>展开具体航线</summary>
@@ -780,22 +780,25 @@ function renderRoutes(routes) {
         <button class="ghost danger" data-action="delete-group" data-group-id="${escapeHtml(group.group_id)}">删除整组</button>
       `
       : `
-        <button class="ghost" data-action="toggle-auto" data-enabled="${route.auto_query_enabled ? "true" : "false"}" data-key="${route.route_key}">
+        <button class="ghost" data-action="toggle-auto" data-enabled="${route.auto_query_enabled ? "true" : "false"}" data-key="${escapeHtml(route.route_key)}">
           ${route.auto_query_enabled ? "关闭自动查询" : "开启 12h 自动查询"}
         </button>
-        <button class="ghost" data-action="edit" data-key="${route.route_key}">编辑</button>
-        <button class="ghost danger" data-action="delete" data-key="${route.route_key}">删除</button>
+        <button class="ghost" data-action="edit" data-key="${escapeHtml(route.route_key)}">编辑</button>
+        <button class="ghost danger" data-action="delete" data-key="${escapeHtml(route.route_key)}">删除</button>
       `;
+    const dateLine = route.route_type === "multi_city"
+      ? segments
+      : `${route.departure_date}${route.return_date ? ` / ${route.return_date}` : ""}`;
     card.innerHTML = `
       <div>
         <h3>${escapeHtml(group.group_label)}</h3>
         ${groupSummary}
-        <p>${route.route_type === "multi_city" ? segments : `${route.departure_date}${route.return_date ? ` / ${route.return_date}` : ""}`}</p>
+        <p>${escapeHtml(dateLine)}</p>
         <p>类型：${route.route_type === "multi_city" ? "多程" : "单程/往返"}</p>
-        <p>舱位：${cabinLabel(route.cabin)}，${transferPolicy}，人数：${route.passengers}</p>
-        <p>平台：${providers}</p>
-        <p>航司偏好：${airlines}</p>
-        <p>自动查询：${autoQueryStatus}</p>
+        <p>舱位：${escapeHtml(cabinLabel(route.cabin))}，${escapeHtml(transferPolicy)}，人数：${escapeHtml(route.passengers)}</p>
+        <p>平台：${escapeHtml(providers)}</p>
+        <p>航司偏好：${escapeHtml(airlines)}</p>
+        <p>自动查询：${escapeHtml(autoQueryStatus)}</p>
         <p>后台错峰：至少间隔 10 分钟</p>
       </div>
       <div class="card-actions">
