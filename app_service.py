@@ -20,18 +20,26 @@ from scheduling.auto_worker import AutoQueryWorker
 from scheduler import TaskScheduler
 from tail_discovery_manager import TailDiscoveryManager
 from tail_schedule_service import TailScheduleService
+from providers.response_capture import sanitize_sensitive_text
+from private_files import ensure_private_directory, make_file_private
+
+
+class SanitizingFormatter(logging.Formatter):
+    def format(self, record: logging.LogRecord) -> str:
+        return sanitize_sensitive_text(super().format(record))
 
 
 def configure_logging(log_file: Path) -> None:
-    log_file.parent.mkdir(parents=True, exist_ok=True)
+    ensure_private_directory(log_file.parent)
     root_logger = logging.getLogger()
     root_logger.setLevel(logging.INFO)
-    formatter = logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s")
+    formatter = SanitizingFormatter("%(asctime)s %(levelname)s %(name)s %(message)s")
     for handler in list(root_logger.handlers):
         if getattr(handler, "_flight_tracker_handler", False):
             root_logger.removeHandler(handler)
             handler.close()
     file_handler = logging.FileHandler(log_file, encoding="utf-8")
+    make_file_private(log_file)
     file_handler.setFormatter(formatter)
     file_handler._flight_tracker_handler = True  # type: ignore[attr-defined]
     stream_handler = logging.StreamHandler()
@@ -107,7 +115,10 @@ class FlightPriceApplication:
         self.legacy_run_service.refresh_config(self.config)
 
     def _mark_run_summary_finished(self, saved: int, errors: list[str]) -> None:
-        self.run_summary.finished(saved=saved, errors=errors)
+        self.run_summary.finished(
+            saved=saved,
+            errors=[sanitize_sensitive_text(error) for error in errors],
+        )
 
     def save_credentials(self, provider: str, username: str, password: str) -> None:
         path = self.config_manager.save_credentials(provider, username, password)
@@ -372,23 +383,33 @@ class FlightPriceApplication:
     def browser_profiles(self) -> dict[str, Any]:
         return self.browser_profile_service.browser_profiles()
 
-    def open_browser_profile(self, provider_name: str, *, profile: str | None = None) -> dict[str, Any]:
+    def _profile_maintenance(self, provider_name: str, operation) -> dict[str, Any]:
         if provider_name == "airchina":
-            return self.experimental_queries.without_browser_session(
-                lambda: self.browser_profile_service.open_browser_profile(provider_name, profile=profile))
-        return self.browser_profile_service.open_browser_profile(provider_name, profile=profile)
+            return self.experimental_queries.without_browser_session(operation)
+        if not self._run_lock.acquire(blocking=False):
+            raise RuntimeError("已有查询正在运行，请先结束任务。")
+        try:
+            return operation()
+        finally:
+            self._run_lock.release()
+
+    def open_browser_profile(self, provider_name: str, *, profile: str | None = None) -> dict[str, Any]:
+        return self._profile_maintenance(
+            provider_name,
+            lambda: self.browser_profile_service.open_browser_profile(provider_name, profile=profile),
+        )
 
     def switch_browser_profile(self, provider_name: str, *, profile: str) -> dict[str, Any]:
-        if provider_name == "airchina":
-            return self.experimental_queries.without_browser_session(
-                lambda: self.browser_profile_service.switch_browser_profile(provider_name, profile=profile))
-        return self.browser_profile_service.switch_browser_profile(provider_name, profile=profile)
+        return self._profile_maintenance(
+            provider_name,
+            lambda: self.browser_profile_service.switch_browser_profile(provider_name, profile=profile),
+        )
 
     def reset_recovery_profile(self, provider_name: str) -> dict[str, Any]:
-        if provider_name == "airchina":
-            return self.experimental_queries.without_browser_session(
-                lambda: self.browser_profile_service.reset_recovery_profile(provider_name))
-        return self.browser_profile_service.reset_recovery_profile(provider_name)
+        return self._profile_maintenance(
+            provider_name,
+            lambda: self.browser_profile_service.reset_recovery_profile(provider_name),
+        )
 
     def clean_browser_profile(
         self,
@@ -397,12 +418,11 @@ class FlightPriceApplication:
         profile: str | None = None,
         switch_to_recovery: bool = False,
     ) -> dict[str, Any]:
-        if provider_name == "airchina":
-            return self.experimental_queries.without_browser_session(
-                lambda: self.browser_profile_service.clean_browser_profile(
-                    provider_name, profile=profile, switch_to_recovery=switch_to_recovery))
-        return self.browser_profile_service.clean_browser_profile(
+        return self._profile_maintenance(
             provider_name,
-            profile=profile,
-            switch_to_recovery=switch_to_recovery,
+            lambda: self.browser_profile_service.clean_browser_profile(
+                provider_name,
+                profile=profile,
+                switch_to_recovery=switch_to_recovery,
+            ),
         )

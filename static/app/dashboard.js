@@ -563,8 +563,19 @@ function collapseTaskGroups(tasks) {
 
 function summarizeTaskGroup(group) {
   const tasks = group.tasks || [];
-  const priced = tasks.filter((task) => task.latest_price);
-  const best = priced.length
+  const priced = tasks.filter((task) => {
+    if (task.latest_price === null || task.latest_price === undefined || task.latest_price === "") return false;
+    return Number.isFinite(Number(task.latest_price));
+  });
+  const comparisonKeys = new Set(priced.map((task) => [
+    String(task.currency || ""),
+    String(task.passengers === undefined || task.passengers === null ? 1 : task.passengers),
+    String(task.cabin || "economy"),
+  ].join("|")));
+  const comparable = priced.length > 0
+    && priced.every((task) => Boolean(task.currency))
+    && comparisonKeys.size === 1;
+  const best = comparable
     ? priced.reduce((winner, task) => Number(task.latest_price) < Number(winner.latest_price) ? task : winner)
     : null;
   const errors = tasks.filter((task) => task.last_error);
@@ -573,7 +584,10 @@ function summarizeTaskGroup(group) {
   const dates = Array.from(new Set(tasks.map((task) => task.departure_date).filter(Boolean))).sort();
   const origins = Array.from(new Set(tasks.map((task) => task.origin).filter(Boolean))).sort();
   const destinations = Array.from(new Set(tasks.map((task) => task.destination).filter(Boolean))).sort();
-  return { tasks, priced, best, errors, expired, autoEnabled, dates, origins, destinations };
+  return {
+    tasks, priced, best, comparable, comparisonKeys, errors, expired, autoEnabled,
+    dates, origins, destinations,
+  };
 }
 
 function groupProviderNames(routes) {
@@ -588,6 +602,7 @@ function groupProviderNames(routes) {
 
 function groupStatusBadge(summary) {
   if (summary.errors.length) return statusBadge("error");
+  if (summary.priced.length && !summary.comparable) return statusBadge("warning");
   if (summary.best) return statusBadge("ok");
   if (summary.expired) return statusBadge("expired");
   if (summary.autoEnabled) return statusBadge("scheduled");
@@ -643,6 +658,9 @@ function renderTaskGroupRow(group) {
   const summary = summarizeTaskGroup(group);
   const sampleTask = summary.tasks[0] || {};
   const best = summary.best;
+  const bestLabel = best
+    ? `${escapeHtml(best.currency)} ${escapeHtml(best.latest_price)}`
+    : summary.priced.length ? "口径不同，无法比价" : "暂无";
   const runDisabled = summary.expired ? "disabled" : "";
   const runTitle = summary.expired ? 'title="航线日期较早，请更新日期后查询"' : "";
   const routePreview = summary.tasks.slice(0, 4).map(taskRouteDisplay).join(" / ");
@@ -671,7 +689,7 @@ function renderTaskGroupRow(group) {
     </td>
     <td>${escapeHtml(summary.dates.join(" / ") || "-")}</td>
     <td>${escapeHtml(cabinLabel(sampleTask.cabin))}<br><span class="muted">${escapeHtml(transferPolicyLabel(sampleTask.transfer_policy || "any"))} · ${summary.origins.length} 个出发地 / ${summary.destinations.length} 个目的地</span></td>
-    <td>${best ? `${escapeHtml(best.currency)} ${escapeHtml(best.latest_price)}` : "暂无"}<br><span class="muted">${summary.priced.length}/${summary.tasks.length} 已有价格</span></td>
+    <td>${bestLabel}<br><span class="muted">${summary.priced.length}/${summary.tasks.length} 已有价格</span></td>
     <td>${escapeHtml(formatQueryTime(best?.last_query_time || sampleTask.last_query_time))}</td>
     <td>
       <details class="multi-city-group-details">

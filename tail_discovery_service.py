@@ -32,6 +32,7 @@ from browser_retry_policy import looks_like_rate_limit
 from tail_structured_extractor import model_to_dict, pydantic_ai_status, tail_itinerary_from_result
 from tail_history import history_context, route_observations, rank_candidates
 from tail_call_budget import TailCallBudget, ProviderCallBudgetExceeded
+from providers.response_capture import sanitize_payload_urls
 
 
 LOGGER = logging.getLogger(__name__)
@@ -290,27 +291,29 @@ class TailDiscoveryService:
             attempt["savings_amount"] = max(savings) if savings else None
             entry = None
             attempt["learning_version"] = 1
-            record = {**attempt, "job_id": job_id, "queue_key": fingerprint, "provider": provider,
+            safe_attempt = sanitize_payload_urls(attempt)
+            safe_kept = sanitize_payload_urls(kept)
+            record = {**safe_attempt, "job_id": job_id, "queue_key": fingerprint, "provider": provider,
                       "origin": request.origin, "transfer": request.transfer, "departure_date": request.departure_date,
-                      "cabin": request.cabin, "raw_payload": dict(attempt)}
+                      "cabin": request.cabin, "raw_payload": dict(safe_attempt)}
             ids = self.repository.checkpoint_tail_candidate(root_job_id=root_job_id, fingerprint=fingerprint,
-                                                           attempt=record, results=kept, negative_entry=entry,
+                                                           attempt=record, results=safe_kept, negative_entry=entry,
                                                            recheck_result_id=request.source_result_id if execution_mode == "recheck" else 0,
                                                            positive_signature=signatures.get(code),
                                                            route_observations=observations,
                                                            learning_context=learning_context)
-            for result, result_id in zip(kept, ids):
+            for result, result_id in zip(safe_kept, ids):
                 result["id"] = result_id
             processed.add(code)
-            attempts.append(attempt)
-            results.extend(kept)
+            attempts.append(safe_attempt)
+            results.extend(safe_kept)
             if hybrid and code == OPEN_DESTINATION:
                 added = [row["destination"] for row in observations if row["quality"] == "valid"]
                 for destination in dict.fromkeys(added):
                     if destination not in candidates and len(candidates) < 501:
                         candidates.append(destination)
                 queue[:] = build_tail_request_queue(candidates, attempts)
-            self._apply_queue_attempt(queue, code, attempt)
+            self._apply_queue_attempt(queue, code, safe_attempt)
             publish(message=f"已完成 {code}，保存 {len(kept)} 条方案")
 
         def on_event(event):
@@ -340,7 +343,6 @@ class TailDiscoveryService:
         publish("running", "任务已启动，已完成项以数据库检查点为准")
         try:
             if pending and not should_stop():
-                credentials = self.config_manager.load_credentials(allow_missing=True)
                 async def execute():
                     nonlocal baseline, stop_reason
                     recheck_flight = None
@@ -348,7 +350,7 @@ class TailDiscoveryService:
                         original = self.repository.fetch_tail_result(request.source_result_id)
                         legs = original.get("flight_details") or []
                         recheck_flight = legs[0].get("flight_no") if legs else None
-                    async with self._tail_discovery_client(provider, credentials) as automation:
+                    async with self._tail_discovery_client(provider, {}) as automation:
                         configure_budget = getattr(automation, "set_tail_call_budget", None)
                         if configure_budget:
                             configure_budget(call_budget)
@@ -469,6 +471,7 @@ class TailDiscoveryService:
                                "checkpoint_job_id": root_job_id, "query_fingerprint": fingerprint,
                                "effective_candidates": candidates, "execution_mode": execution_mode,
                                "candidate_policy": policy}
+        summary = sanitize_payload_urls(summary)
         # Diagnostic JSON is not used for recovery. SQLite is the source of truth.
         try:
             save_tail_queue(self.queue_file, root_job_id, {"attempts": attempts, "queue_items": queue})
@@ -480,7 +483,7 @@ class TailDiscoveryService:
     async def _tail_discovery_client(
         self,
         provider_name: str,
-        credentials: dict[str, dict[str, str]],
+        credentials: dict[str, dict[str, str]] | None = None,
     ) -> AsyncIterator[Any]:
         if provider_name == "feizhu":
             from providers.tail_registry import create_tail_runner
@@ -508,6 +511,8 @@ class TailDiscoveryService:
 
         from browser_automation import BrowserAutomation
 
+        loader = getattr(self.config_manager, "load_environment_credentials", None)
+        credentials = loader() if callable(loader) else {}
         async with BrowserAutomation(self.config, credentials) as automation:
             yield automation
 

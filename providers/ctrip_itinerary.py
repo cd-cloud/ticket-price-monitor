@@ -70,10 +70,12 @@ def multi_city_details_match_route(
     route: RouteQuery,
     *,
     direct_only: bool = False,
+    transfer_policy: str | None = None,
 ) -> bool:
     segments = route.segments or []
     if not details or not segments:
         return False
+    policy = transfer_policy or ("direct_only" if direct_only else "any")
     grouped: dict[int, list[dict[str, object]]] = {}
     for item in details:
         segment_index = int(item.get("segment_index", 0) or 0)
@@ -82,7 +84,11 @@ def multi_city_details_match_route(
         return False
     for expected_index, segment in enumerate(segments, start=1):
         flights = grouped.get(expected_index, [])
-        if not flights or (direct_only and len(flights) != 1):
+        if not flights:
+            return False
+        if policy == "direct_only" and len(flights) != 1:
+            return False
+        if policy == "transfer_only" and len(flights) < 2:
             return False
         first = flights[0]
         last = flights[-1]

@@ -13,6 +13,7 @@ from browser_retry_policy import looks_like_rate_limit
 from providers import feizhu_flyai_adapter
 from providers.ctrip_tail_discovery import details_match_tail_route, code_matches_target
 from providers.ctrip_tail_parser import details_match_airlines
+from providers.response_capture import sanitize_url
 from tail_quotes import build_baseline_catalog, quote_terms, first_leg_key
 from tail_call_budget import TailCallBudget, ProviderCallBudgetExceeded
 
@@ -92,7 +93,7 @@ class FeizhuTailDiscoveryRunner:
                                 "method": "feizhu_flyai_cli", "candidate": destination,
                                 "preferred_airlines": preferred_airlines or [],
                                 "detail_source": "flyai_mcp_api", "detail_quality": "complete",
-                                "search_url": match.get("review_url"),
+                                "search_url": sanitize_url(match.get("review_url")),
                                 "quote_terms": quote_terms("feizhu", passengers, currency,
                                                            price_scope="unknown",
                                                            source_price_field=match.get("source_price_field", "ticketPrice")),
@@ -236,7 +237,7 @@ class FeizhuTailDiscoveryRunner:
                 via.append({**offer, "actual_destination": target})
         # User airline/cabin filters belong to the service. Keeping structurally
         # returned routes here lets the history learn even when the quote is filtered.
-        matches = [{**offer, "review_url": offer.get("final_url"), "detail_source": "flyai_mcp_api",
+        matches = [{**offer, "review_url": sanitize_url(offer.get("final_url")), "detail_source": "flyai_mcp_api",
                     "detail_quality": "complete"} for offer in via]
         return matches, "search_incomplete"
 

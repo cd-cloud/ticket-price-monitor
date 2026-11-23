@@ -1,5 +1,6 @@
 """Query attribution regressions. No real browser, CLI or external requests."""
 import asyncio
+import json
 from copy import deepcopy
 from contextlib import asynccontextmanager
 import threading
@@ -9,9 +10,11 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from browser_automation import BrowserAutomation
-from browser_query_result import OfferDetails
+from browser_query_result import OfferDetails, build_query_result
+from browser_session_policy import BrowserSessionMetadata
 from config_manager import RouteQuery, RouteSegment
 from providers import ctrip, ctrip_itinerary, ctrip_network_parser as parser, ctrip_result
+from providers.base import ProviderQueryOutcome
 from providers.ctrip_tail_operations import CtripTailOperations
 from providers.response_capture import ResponseStore, attach_response_listeners, begin_response_batch
 from data_storage import PriceRepository
@@ -389,3 +392,41 @@ def test_submit_uses_dom_click_when_overlay_blocks_normal_click():
         button.click.assert_awaited_once()
         button.evaluate.assert_awaited_once_with("(node) => node.click()")
     asyncio.run(run())
+
+
+def test_query_result_persists_only_sanitized_response_summaries():
+    outcome = ProviderQueryOutcome(
+        price=500,
+        final_url="https://flights.ctrip.com/online/list/x?token=FINAL_SECRET",
+        title="result",
+    )
+    result = build_query_result(
+        provider_name="ctrip",
+        route=route(),
+        outcome=outcome,
+        session_metadata=BrowserSessionMetadata(
+            browser_backend="playwright",
+            storage_state_loaded=False,
+            credential_login_allowed=False,
+        ),
+        response_store=[{
+            "url": "https://flights.ctrip.com/soa2/flight?token=NETWORK_SECRET",
+            "status": 200,
+            "payload": {"private": "PRIVATE_RESPONSE_BODY"},
+            "query_generation": 1,
+        }],
+        automation_backend="playwright",
+        browser_use_status=SimpleNamespace(
+            available=False, reason="disabled", config_dir=None
+        ),
+        browser_use_note="disabled",
+        default_currency="CNY",
+        include_browser_backend_note=True,
+    )
+
+    serialized = json.dumps(result.raw_payload, ensure_ascii=False)
+    assert "PRIVATE_RESPONSE_BODY" not in serialized
+    assert "NETWORK_SECRET" not in serialized
+    assert "FINAL_SECRET" not in serialized
+    assert result.raw_payload["network_hits"][0]["url"].endswith("/soa2/flight")
+    assert "payload" not in result.raw_payload["network_hits"][0]

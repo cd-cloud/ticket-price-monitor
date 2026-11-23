@@ -195,7 +195,12 @@ class TailScheduleService:
     def _validate_payload(self, payload: dict[str, Any], moment: datetime):
         provider = str(payload.get("provider") or "ctrip").strip().lower()
         if provider == "both":
-            ctrip_payload = {**payload, "provider": "ctrip", "search_scope": "candidates"}
+            ctrip_payload = {
+                **payload,
+                "provider": "ctrip",
+                "search_scope": "candidates",
+                "max_provider_calls": 0,
+            }
             feizhu_scope = str(payload.get("feizhu_search_scope") or "open")
             feizhu_payload = {**payload, "provider": "feizhu", "search_scope": feizhu_scope}
             if feizhu_scope == "open":

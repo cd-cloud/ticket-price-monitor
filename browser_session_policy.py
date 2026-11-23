@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from backends import backend_capabilities
+from private_files import make_file_private
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,6 +88,7 @@ def session_artifact_for_backend(
 def storage_state_is_usable(path: Path) -> bool:
     if not path.exists():
         return False
+    make_file_private(path)
     try:
         state = json.loads(path.read_text(encoding="utf-8"))
     except Exception:

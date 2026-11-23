@@ -10,6 +10,8 @@ from typing import Any, Iterator
 
 from tail_models import TailDiscoveryAttempt, TailDiscoveryResult, coerce_tail_attempt, coerce_tail_result
 from tail_quotes import itinerary_key
+from providers.response_capture import sanitize_payload_urls, sanitize_sensitive_text
+from private_files import ensure_private_directory, make_file_private
 
 
 SCHEMA = """
@@ -222,10 +224,30 @@ class PriceSnapshot:
     browser_backend: str | None = None
 
 
+def _safe_export_payload(value: Any) -> str:
+    try:
+        decoded = json.loads(value) if isinstance(value, str) else value
+    except (TypeError, ValueError):
+        decoded = value
+    return json.dumps(sanitize_payload_urls(decoded), ensure_ascii=False)
+
+
+def _sanitize_stored_row(row: dict[str, Any]) -> dict[str, Any]:
+    item = dict(row)
+    for field in ("notes", "raw_payload"):
+        if field in item and item[field] is not None:
+            item[field] = _safe_export_payload(item[field])
+    return item
+
+
+def _safe_text(value: Any) -> Any:
+    return sanitize_sensitive_text(value) if isinstance(value, str) else value
+
+
 class PriceRepository:
     def __init__(self, database_path: Path) -> None:
         self.database_path = database_path
-        self.database_path.parent.mkdir(parents=True, exist_ok=True)
+        ensure_private_directory(self.database_path.parent)
         self._transaction = threading.local()
 
     @contextmanager
@@ -289,6 +311,14 @@ class PriceRepository:
                 ON price_snapshots(parser_confidence, detail_quality, detail_source)
                 """
             )
+            self._migrate_sensitive_data(conn)
+        for path in (
+            self.database_path,
+            Path(str(self.database_path) + "-wal"),
+            Path(str(self.database_path) + "-shm"),
+        ):
+            if path.exists():
+                make_file_private(path)
 
     def save_experimental_query(self, job: dict) -> None:
         """Separate namespace: never appears in snapshots, reports or tail learning."""
@@ -296,13 +326,17 @@ class PriceRepository:
             conn.execute(
                 "INSERT INTO experimental_query_jobs VALUES (?, ?, ?) "
                 "ON CONFLICT(job_id) DO UPDATE SET updated_at=excluded.updated_at, payload=excluded.payload",
-                (job["job_id"], job["updated_at"], json.dumps(job, ensure_ascii=False)),
+                (
+                    job["job_id"],
+                    job["updated_at"],
+                    json.dumps(sanitize_payload_urls(job), ensure_ascii=False),
+                ),
             )
 
     def experimental_query(self, job_id: str) -> dict | None:
         with self.connect() as conn:
             row = conn.execute("SELECT payload FROM experimental_query_jobs WHERE job_id=?", (job_id,)).fetchone()
-        return json.loads(row["payload"]) if row else None
+        return sanitize_payload_urls(json.loads(row["payload"])) if row else None
 
     def experimental_queries(self, limit: int = 20) -> list[dict]:
         with self.connect() as conn:
@@ -310,7 +344,7 @@ class PriceRepository:
                 "SELECT payload FROM experimental_query_jobs ORDER BY updated_at DESC, rowid DESC LIMIT ?",
                 (max(1, min(int(limit), 100)),),
             ).fetchall()
-        return [json.loads(row["payload"]) for row in rows]
+        return [sanitize_payload_urls(json.loads(row["payload"])) for row in rows]
 
     def interrupt_experimental_queries(self) -> None:
         """Single-process app startup: orphan browser sessions cannot be resumed."""
@@ -322,13 +356,70 @@ class PriceRepository:
                     job.update(status="interrupted", stage="interrupted", updated_at=self.now_iso(),
                                finished_at=self.now_iso(), message="应用已重启，原浏览器会话不可恢复；请重新提交。")
                     conn.execute("UPDATE experimental_query_jobs SET updated_at=?, payload=? WHERE job_id=?",
-                                 (job["updated_at"], json.dumps(job, ensure_ascii=False), job["job_id"]))
+                                 (
+                                     job["updated_at"],
+                                     json.dumps(sanitize_payload_urls(job), ensure_ascii=False),
+                                     job["job_id"],
+                                 ))
 
     def _ensure_columns(self, conn: sqlite3.Connection, table: str, columns: dict[str, str]) -> None:
         existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
         for name, definition in columns.items():
             if name not in existing:
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
+
+    def _migrate_sensitive_data(self, conn: sqlite3.Connection) -> None:
+        json_columns = {
+            "experimental_query_jobs": ("payload",),
+            "price_snapshots": ("notes", "raw_payload"),
+            "tail_discovery_results": ("flight_details", "raw_payload"),
+            "tail_discovery_attempts": ("raw_payload",),
+            "tail_candidate_checkpoints": ("attempt",),
+            "tail_route_observations": ("context", "flight_details"),
+            "tail_search_outcomes": ("context",),
+            "tail_discovery_schedules": ("payload",),
+            "tail_discovery_jobs": ("payload", "progress", "result"),
+        }
+        text_columns = {
+            "tail_discovery_attempts": ("phase", "method", "detail_source", "detail_quality", "error"),
+            "tail_discovery_schedules": ("last_error",),
+            "tail_discovery_jobs": ("error",),
+        }
+        for table in sorted(set(json_columns) | set(text_columns)):
+            all_columns = tuple(dict.fromkeys((*json_columns.get(table, ()), *text_columns.get(table, ()))))
+            try:
+                rows = conn.execute(
+                    f"SELECT rowid, {', '.join(all_columns)} FROM {table}"
+                ).fetchall()
+            except sqlite3.OperationalError:
+                continue
+            for row in rows:
+                updates: dict[str, Any] = {}
+                for column in json_columns.get(table, ()):
+                    original = row[column]
+                    if original is None:
+                        continue
+                    try:
+                        decoded = json.loads(original)
+                    except (TypeError, ValueError):
+                        sanitized = _safe_text(original)
+                    else:
+                        sanitized = json.dumps(
+                            sanitize_payload_urls(decoded), ensure_ascii=False
+                        )
+                    if sanitized != original:
+                        updates[column] = sanitized
+                for column in text_columns.get(table, ()):
+                    original = row[column]
+                    sanitized = _safe_text(original)
+                    if sanitized != original:
+                        updates[column] = sanitized
+                if updates:
+                    assignments = ", ".join(f"{column} = ?" for column in updates)
+                    conn.execute(
+                        f"UPDATE {table} SET {assignments} WHERE rowid = ?",
+                        [*updates.values(), row[0]],
+                    )
 
     def insert_snapshot(self, snapshot: PriceSnapshot) -> int:
         with self.connect() as conn:
@@ -354,13 +445,16 @@ class PriceRepository:
                     snapshot.price,
                     snapshot.observed_at,
                     snapshot.scraped_at,
-                    json.dumps(snapshot.notes, ensure_ascii=False),
+                    json.dumps(sanitize_payload_urls(snapshot.notes or []), ensure_ascii=False),
                     snapshot.parser or snapshot.raw_payload.get("parser"),
                     snapshot.parser_confidence or snapshot.raw_payload.get("parser_confidence"),
                     snapshot.detail_quality or snapshot.raw_payload.get("detail_quality"),
                     snapshot.detail_source or snapshot.raw_payload.get("detail_source"),
                     snapshot.browser_backend or snapshot.raw_payload.get("browser_backend"),
-                    json.dumps(snapshot.raw_payload, ensure_ascii=False),
+                    json.dumps(
+                        sanitize_payload_urls(snapshot.raw_payload or {}),
+                        ensure_ascii=False,
+                    ),
                 ),
             )
             return int(cursor.lastrowid)
@@ -395,7 +489,7 @@ class PriceRepository:
         with self.connect() as conn:
             rows = conn.execute(sql, params).fetchall()
 
-        return [dict(row) for row in rows]
+        return [_sanitize_stored_row(dict(row)) for row in rows]
 
     def fetch_recent_snapshots_per_route(self, *, per_pair_limit: int = 4) -> list[dict[str, Any]]:
         limit = max(2, min(int(per_pair_limit), 20))
@@ -417,11 +511,18 @@ class PriceRepository:
         """
         with self.connect() as conn:
             rows = conn.execute(sql, (limit,)).fetchall()
-        return [dict(row) for row in rows]
+        return [_sanitize_stored_row(dict(row)) for row in rows]
 
     def export_csv(self, output_path: Path, snapshots: list[dict[str, Any]] | None = None) -> Path:
         rows = snapshots if snapshots is not None else self.fetch_snapshots()
-        output_path.parent.mkdir(parents=True, exist_ok=True)
+        safe_rows = []
+        for row in rows:
+            item = dict(row)
+            for field in ("notes", "raw_payload"):
+                if field in item and item[field] is not None:
+                    item[field] = _safe_export_payload(item[field])
+            safe_rows.append(item)
+        ensure_private_directory(output_path.parent)
         fieldnames = [
             "id",
             "provider",
@@ -447,8 +548,8 @@ class PriceRepository:
         with output_path.open("w", newline="", encoding="utf-8-sig") as fh:
             writer = csv.DictWriter(fh, fieldnames=fieldnames)
             writer.writeheader()
-            writer.writerows(rows)
-        return output_path
+            writer.writerows(safe_rows)
+        return make_file_private(output_path)
 
     def latest_snapshot(self, provider: str, route_key: str) -> dict[str, Any] | None:
         with self.connect() as conn:
@@ -461,7 +562,7 @@ class PriceRepository:
                 """,
                 (provider, route_key),
             ).fetchone()
-        return dict(row) if row else None
+        return _sanitize_stored_row(dict(row)) if row else None
 
     def count_snapshots(self) -> int:
         with self.connect() as conn:
@@ -483,8 +584,14 @@ class PriceRepository:
             float(result["price"]),
             result["observed_at"],
             result["scraped_at"],
-            json.dumps(result.get("flight_details") or [], ensure_ascii=False),
-            json.dumps(result.get("raw_payload") or {}, ensure_ascii=False),
+            json.dumps(
+                sanitize_payload_urls(result.get("flight_details") or []),
+                ensure_ascii=False,
+            ),
+            json.dumps(
+                sanitize_payload_urls(result.get("raw_payload") or {}),
+                ensure_ascii=False,
+            ),
         )
         identity = values[:7] + (result["observed_at"], key)
         with self.connect() as conn:
@@ -524,8 +631,12 @@ class PriceRepository:
         if row is None:
             raise KeyError(result_id)
         item = dict(row)
-        item["flight_details"] = json.loads(item.get("flight_details") or "[]")
-        item["raw_payload"] = json.loads(item.get("raw_payload") or "{}")
+        item["flight_details"] = sanitize_payload_urls(
+            json.loads(item.get("flight_details") or "[]")
+        )
+        item["raw_payload"] = sanitize_payload_urls(
+            json.loads(item.get("raw_payload") or "{}")
+        )
         return item
 
     def tail_known_destinations(self, *, provider: str, origin: str, transfer: str,
@@ -580,8 +691,10 @@ class PriceRepository:
                 # A failed recheck must not leave the old price looking current.
                 if recheck_result_id not in ids:
                     raw["expires_at"] = self.now_iso()
-                conn.execute("UPDATE tail_discovery_results SET raw_payload=? WHERE id=?",
-                             (json.dumps(raw, ensure_ascii=False), recheck_result_id))
+                conn.execute(
+                    "UPDATE tail_discovery_results SET raw_payload=? WHERE id=?",
+                    (json.dumps(sanitize_payload_urls(raw), ensure_ascii=False), recheck_result_id),
+                )
             conn.execute(
                 """INSERT INTO tail_candidate_checkpoints
                    (job_id,destination,fingerprint,status,attempt,result_ids,updated_at)
@@ -589,8 +702,15 @@ class PriceRepository:
                    ON CONFLICT(job_id,destination) DO UPDATE SET
                    fingerprint=excluded.fingerprint,status=excluded.status,attempt=excluded.attempt,
                    result_ids=excluded.result_ids,updated_at=excluded.updated_at""",
-                (root_job_id, attempt["destination"], fingerprint, attempt["status"],
-                 json.dumps(attempt, ensure_ascii=False), json.dumps(ids), self.now_iso()),
+                (
+                    root_job_id,
+                    attempt["destination"],
+                    fingerprint,
+                    attempt["status"],
+                    json.dumps(sanitize_payload_urls(attempt), ensure_ascii=False),
+                    json.dumps(ids),
+                    self.now_iso(),
+                ),
             )
         return ids
 
@@ -600,7 +720,7 @@ class PriceRepository:
         items = []
         for row in rows:
             item = dict(row)
-            item["attempt"] = json.loads(item["attempt"])
+            item["attempt"] = sanitize_payload_urls(json.loads(item["attempt"]))
             item["result_ids"] = json.loads(item["result_ids"])
             items.append(item)
         return items
@@ -631,7 +751,14 @@ class PriceRepository:
                     ORDER BY observed_at DESC LIMIT 3000""",
                 [origin, transfer, *candidates],
             ).fetchall()
-        return [{**dict(row), "raw_payload": json.loads(row["raw_payload"] or "{}")} for row in rows]
+        return [
+            {
+                **dict(row),
+                "phase": _safe_text(row["phase"]),
+                "raw_payload": sanitize_payload_urls(json.loads(row["raw_payload"] or "{}")),
+            }
+            for row in rows
+        ]
 
     def record_tail_learning(self, root_job_id, attempt, observations, context):
         """Called within checkpoint transaction; retry replaces one query's learning."""
@@ -654,8 +781,12 @@ class PriceRepository:
                        context=excluded.context,flight_details=excluded.flight_details""",
                     (root_job_id, source, observation["observation_key"], context["provider"],
                      context["origin"], context["transfer"], destination, observation["quality"],
-                     observation["observed_at"], json.dumps(context, ensure_ascii=False),
-                     json.dumps(observation["flight_details"], ensure_ascii=False)))
+                     observation["observed_at"],
+                     json.dumps(sanitize_payload_urls(context), ensure_ascii=False),
+                     json.dumps(
+                         sanitize_payload_urls(observation["flight_details"]),
+                         ensure_ascii=False,
+                     )))
             # Open search gives no evidence at all about unreturned destinations.
             destinations = list(grouped) if source == OPEN_DESTINATION else [source]
             for destination in destinations:
@@ -677,7 +808,7 @@ class PriceRepository:
                     (root_job_id, source, destination, context["origin"], context["transfer"],
                      "open" if source == OPEN_DESTINATION else "candidates", outcome, observed_at,
                      attempt.get("elapsed_seconds"), max(savings) if savings else None,
-                     "CNY", json.dumps(context, ensure_ascii=False)))
+                     "CNY", json.dumps(sanitize_payload_urls(context), ensure_ascii=False)))
 
     def tail_history_bundle(self, *, origin, transfer, candidates):
         if not candidates:
@@ -864,7 +995,9 @@ class PriceRepository:
             item = dict(row)
             for key, default in [("flight_details", []), ("raw_payload", {})]:
                 try:
-                    item[key] = json.loads(item.get(key) or "null") or default
+                    item[key] = sanitize_payload_urls(
+                        json.loads(item.get(key) or "null") or default
+                    )
                 except Exception:
                     item[key] = default
             results.append(item)
@@ -907,15 +1040,15 @@ class PriceRepository:
                     attempt["departure_date"],
                     attempt["cabin"],
                     attempt.get("status", "unknown"),
-                    attempt.get("phase"),
-                    attempt.get("method"),
+                    _safe_text(attempt.get("phase")),
+                    _safe_text(attempt.get("method")),
                     attempt.get("price"),
-                    attempt.get("detail_source"),
-                    attempt.get("detail_quality"),
-                    attempt.get("error"),
+                    _safe_text(attempt.get("detail_source")),
+                    _safe_text(attempt.get("detail_quality")),
+                    _safe_text(attempt.get("error")),
                     attempt.get("observed_at") or self.now_iso(),
                     json.dumps(
-                        {
+                        sanitize_payload_urls({
                             **(attempt.get("raw_payload") or {}),
                             **({"trace_path": attempt.get("trace_path")} if attempt.get("trace_path") else {}),
                             **(
@@ -923,7 +1056,7 @@ class PriceRepository:
                                 if attempt.get("diagnostic_artifact")
                                 else {}
                             ),
-                        },
+                        }),
                         ensure_ascii=False,
                     ),
                 ),
@@ -950,8 +1083,12 @@ class PriceRepository:
         results: list[dict[str, Any]] = []
         for row in rows:
             item = dict(row)
+            for key in ("phase", "method", "detail_source", "detail_quality", "error"):
+                item[key] = _safe_text(item.get(key))
             try:
-                item["raw_payload"] = json.loads(item.get("raw_payload") or "{}")
+                item["raw_payload"] = sanitize_payload_urls(
+                    json.loads(item.get("raw_payload") or "{}")
+                )
             except Exception:
                 item["raw_payload"] = {}
             results.append(item)
@@ -1065,13 +1202,17 @@ class PriceRepository:
                 (
                     schedule["schedule_id"],
                     1 if schedule.get("enabled", True) else 0,
-                    json.dumps(schedule.get("payload") or {}, ensure_ascii=False),
+                    json.dumps(
+                        sanitize_payload_urls(schedule.get("payload") or {}),
+                        ensure_ascii=False,
+                    ),
                     int(schedule["interval_days"]),
                     schedule["run_time"],
                     schedule["next_run_at"],
                     schedule.get("last_run_at"),
                     schedule.get("last_job_id"),
-                    schedule.get("last_error"),
+                    sanitize_sensitive_text(schedule.get("last_error"))
+                    if schedule.get("last_error") else schedule.get("last_error"),
                     schedule.get("created_at") or now,
                     schedule.get("updated_at") or now,
                 ),
@@ -1104,7 +1245,12 @@ class PriceRepository:
                 SET enabled = ?, last_error = ?, updated_at = ?
                 WHERE schedule_id = ?
                 """,
-                (1 if enabled else 0, last_error, self.now_iso(), schedule_id),
+                (
+                    1 if enabled else 0,
+                    sanitize_sensitive_text(last_error) if last_error else last_error,
+                    self.now_iso(),
+                    schedule_id,
+                ),
             )
         return cursor.rowcount > 0
 
@@ -1116,7 +1262,11 @@ class PriceRepository:
             "last_error": "last_error",
         }
         assignments = [f"{column} = ?" for key, column in columns.items() if key in changes]
-        params = [changes[key] for key in columns if key in changes]
+        params = [
+            sanitize_sensitive_text(changes[key])
+            if key == "last_error" and changes[key] else changes[key]
+            for key in columns if key in changes
+        ]
         if not assignments:
             return False
         assignments.append("updated_at = ?")
@@ -1147,7 +1297,7 @@ class PriceRepository:
             payload = json.loads(item.get("payload") or "{}")
         except Exception:
             payload = {}
-        item["payload"] = payload if isinstance(payload, dict) else {}
+        item["payload"] = sanitize_payload_urls(payload) if isinstance(payload, dict) else {}
         return item
 
     def upsert_tail_discovery_job(self, job: dict[str, Any]) -> None:
@@ -1175,10 +1325,19 @@ class PriceRepository:
                     job.get("updated_at") or self.now_iso(),
                     job.get("started_at"),
                     job.get("finished_at"),
-                    json.dumps(job.get("payload") or {}, ensure_ascii=False),
-                    json.dumps(job.get("progress") or {}, ensure_ascii=False),
-                    json.dumps(job.get("result"), ensure_ascii=False),
-                    job.get("error"),
+                    json.dumps(
+                        sanitize_payload_urls(job.get("payload") or {}),
+                        ensure_ascii=False,
+                    ),
+                    json.dumps(
+                        sanitize_payload_urls(job.get("progress") or {}),
+                        ensure_ascii=False,
+                    ),
+                    json.dumps(
+                        sanitize_payload_urls(job.get("result")),
+                        ensure_ascii=False,
+                    ),
+                    sanitize_sensitive_text(job.get("error")) if job.get("error") else job.get("error"),
                 ),
             )
 
@@ -1229,7 +1388,11 @@ class PriceRepository:
                 value = json.loads(item.get(key) or "null")
             except Exception:
                 value = default
-            item[key] = default if value is None and default is not None else value
+            item[key] = sanitize_payload_urls(
+                default if value is None and default is not None else value
+            )
+        if item.get("error"):
+            item["error"] = sanitize_sensitive_text(item["error"])
         return item
 
     @staticmethod

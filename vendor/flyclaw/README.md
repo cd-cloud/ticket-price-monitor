@@ -71,7 +71,7 @@ pip install requests pyyaml curl_cffi flights cryptography
 
 ### 配置
 
-默认配置文件 `config.yaml` 已包含推荐值，通常无需修改即可使用：
+跟踪的 `config.yaml` 只包含无密钥默认值。个人修改和密钥应放在已忽略的 `config.local.yaml`，或用 `FLYCLAW_CONFIG_FILE` 指向本机文件；不要提交凭据：
 
 ```yaml
 sources:
@@ -101,11 +101,11 @@ sources:
     priority: 3
     timeout: 6
   fliggy_mcp:
-    enabled: true
+    enabled: false        # 仅在具备明确授权和官方凭据时启用
     priority: 2
     timeout: 10
-    api_key: ""          # 留空使用内置默认 key
-    sign_secret: ""      # 留空使用内置默认 secret
+    api_key: ""          # 必填；没有内置默认 key
+    sign_secret: ""      # 必填；没有内置默认 secret
   fast_flights:
     enabled: false  # 可选：仅在 --compare 模式下启用
     timeout: 15

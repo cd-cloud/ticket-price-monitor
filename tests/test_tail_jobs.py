@@ -1,3 +1,4 @@
+import json
 import tempfile
 import threading
 import time
@@ -149,6 +150,39 @@ class TailJobManagerTests(unittest.TestCase):
         self.assertEqual(job["progress"]["queue"]["cancelled_before_query"], 1)
         self.assertEqual(job["progress"]["queue"]["no_match"], 1)
         self.assertNotIn("counts", job["progress"]["diagnostics"])
+
+    def test_in_memory_job_responses_are_sanitized_like_persisted_jobs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo = PriceRepository(Path(tmp_dir) / "jobs.db")
+            repo.initialize()
+
+            def runner(payload, progress_callback=None, cancel_checker=None):
+                return {
+                    "running": False,
+                    "result": {
+                        "message": "https://x.test/callback?token=RESULT_SECRET",
+                        "token": "DIRECT_SECRET",
+                    },
+                    "progress": {"stage": "finished", "message": "password=PROGRESS_SECRET"},
+                    "errors": [],
+                }
+
+            manager = TailDiscoveryJobManager(runner, repo)
+            submitted = manager.submit({
+                "origin": "BJS",
+                "callback": "https://x.test/?token=PAYLOAD_SECRET",
+            })
+            for _ in range(40):
+                current = manager.get(submitted["job_id"])
+                if current["status"] in {"finished", "failed", "cancelled"}:
+                    break
+                time.sleep(0.05)
+
+            rendered = json.dumps(manager.list_recent(limit=5))
+            self.assertNotIn("RESULT_SECRET", rendered)
+            self.assertNotIn("DIRECT_SECRET", rendered)
+            self.assertNotIn("PROGRESS_SECRET", rendered)
+            self.assertNotIn("PAYLOAD_SECRET", rendered)
 
 
 if __name__ == "__main__":

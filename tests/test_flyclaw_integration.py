@@ -1,5 +1,7 @@
 import asyncio
 import json
+import os
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -18,6 +20,7 @@ from providers.airchina_direct import flyclaw_records_from_report
 from sources.airchina import AirChinaSource
 from sources.fliggy_mcp import FliggyMCPSource
 import flyclaw as flyclaw_module
+import config as flyclaw_config
 
 
 def test_cli_help_loads_complete_project():
@@ -31,6 +34,28 @@ def test_cli_help_loads_complete_project():
     assert result.returncode == 0, result.stderr
     assert "--source" in result.stdout
     assert "--from" in result.stdout and "--to" in result.stdout
+
+
+def test_flyclaw_prefers_ignored_local_config(tmp_path, monkeypatch):
+    local = tmp_path / "config.local.yaml"
+    local.write_text("output:\n  currency: usd\n", encoding="utf-8")
+    monkeypatch.setattr(flyclaw_config, "LOCAL_CONFIG_FILE", str(local))
+    monkeypatch.delenv("FLYCLAW_CONFIG_FILE", raising=False)
+
+    assert flyclaw_config.get_config()["output"]["currency"] == "usd"
+
+
+def test_flyclaw_local_config_is_migrated_to_private_permissions(tmp_path, monkeypatch):
+    local = tmp_path / "config.local.yaml"
+    local.write_text("fliggy_mcp:\n  api_key: secret\n", encoding="utf-8")
+    os.chmod(local, 0o644)
+    monkeypatch.setattr(flyclaw_config, "LOCAL_CONFIG_FILE", str(local))
+    monkeypatch.delenv("FLYCLAW_CONFIG_FILE", raising=False)
+
+    flyclaw_config.get_config()
+
+    if os.name != "nt":
+        assert stat.S_IMODE(local.stat().st_mode) == 0o600
 
 
 def test_fliggy_does_not_use_embedded_credentials(monkeypatch):

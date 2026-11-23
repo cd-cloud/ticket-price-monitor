@@ -1,4 +1,5 @@
 import re
+from datetime import date
 from urllib.parse import quote
 
 from playwright.async_api import Page
@@ -49,6 +50,12 @@ async def query_single_route_offer(
 ):
     if route.return_date:
         raise RuntimeError("Provider priceline currently supports one-way queries only; round-trip automation is not verified.")
+    if route.passengers != 1:
+        raise RuntimeError("Provider priceline currently requires exactly one passenger for verified results.")
+    if route.transfer_policy != "any":
+        raise RuntimeError("Provider priceline cannot verify direct-only or transfer-only result filters.")
+    if route.preferred_airlines:
+        raise RuntimeError("Provider priceline cannot verify preferred-airline result filters.")
     await runtime.throttle(provider)
     await page.goto(PRICELINE_FLIGHTS_URL, wait_until="domcontentloaded", timeout=provider.timeout_ms)
     await page.wait_for_timeout(2500)
@@ -62,6 +69,7 @@ async def query_single_route_offer(
     await choose_passengers(page, route.passengers, provider.timeout_ms)
     await submit_search(page, provider.timeout_ms)
     await wait_for_results(page, provider.timeout_ms)
+    await verify_result_context(page, route)
 
     offer = await extract_offer(runtime, page, route)
     return offer, page.url, await page.title()
@@ -86,6 +94,15 @@ async def query(
         row_text=offer.row_text,
         parser="priceline_visible",
         confidence="low",
+        extra_payload={
+            "detail_quality": "price_only",
+            "detail_source": "visible_result",
+            "validation": {
+                "status": "needs_review",
+                "scope": "visible_route_date_cabin_context",
+                "version": 1,
+            },
+        },
     ).to_outcome()
 
 
@@ -103,6 +120,7 @@ async def choose_one_way(page: Page, timeout_ms: int) -> None:
             return
         except Exception:
             continue
+    raise RuntimeError("Could not confirm Priceline one-way mode before searching.")
 
 
 async def fill_airport(page: Page, selectors, value: str, field_name: str, timeout_ms: int) -> None:
@@ -246,19 +264,8 @@ async def choose_cabin(page: Page, label: str, timeout_ms: int) -> None:
 
 
 async def choose_passengers(page: Page, passengers: int, timeout_ms: int) -> None:
-    if passengers <= 1:
-        return
-    try:
-        await page.locator("button:has-text('Traveler')").first.click(timeout=timeout_ms // 6)
-    except Exception:
-        return
-    for _ in range(passengers - 1):
-        for selector in ["button[aria-label*='adult'][aria-label*='increase']", "button:has-text('+')"]:
-            try:
-                await page.locator(selector).first.click(timeout=timeout_ms // 8)
-                break
-            except Exception:
-                continue
+    if passengers != 1:
+        raise RuntimeError("Priceline result verification currently supports exactly one passenger.")
 
 
 async def submit_search(page: Page, timeout_ms: int) -> None:
@@ -295,6 +302,177 @@ async def wait_for_results(page: Page, timeout_ms: int) -> None:
     raise RuntimeError("Priceline search reached no recognizable price results.")
 
 
+RESULT_CARD_SELECTORS = (
+    "[data-testid='flight-card']",
+    "[data-testid^='flight-card-']",
+    "[data-testid='itinerary-card']",
+    "[data-testid^='itinerary-card-']",
+    "[class~='flight-card']",
+    "[class~='itinerary-card']",
+    "[class~='result-card']",
+)
+_CHILD_CARD_SELECTORS = (
+    "[data-testid*='result']",
+    "[class*='result-row']",
+    "[class*='flight-row']",
+    "[class*='itinerary-row']",
+)
+
+
+def _directional_route_matches(text: str, route: RouteQuery) -> bool:
+    origin = route.origin.upper()
+    destination = route.destination.upper()
+    separator = r"(?:->|→|➜|\bto\b|[-–—])"
+    normalized = str(text or "")
+    pairs = [
+        (left.upper(), right.upper())
+        for left, right in re.findall(
+            rf"(?<![A-Z0-9])([A-Z]{{3}})(?![A-Z0-9])\s*{separator}\s*"
+            rf"(?=([A-Z]{{3}})(?![A-Z0-9]))",
+            normalized,
+            re.IGNORECASE,
+        )
+    ]
+    current = origin
+    consumed = 0
+    while consumed < len(pairs) and pairs[consumed][0] == current:
+        current = pairs[consumed][1]
+        consumed += 1
+    return bool(pairs) and current == destination and consumed == len(pairs)
+
+
+def _cabin_occurrences(text: str, cabin: str) -> list[re.Match[str]]:
+    normalized = str(text or "")
+    lowered = normalized.lower()
+    requested = (cabin or "economy").lower()
+    if requested in {"economy", "economy_plus"}:
+        matches = []
+        for match in re.finditer(r"\beconomy\b", normalized, re.IGNORECASE):
+            prefix = lowered[max(0, match.start() - 20):match.start()]
+            if re.search(r"premium\s+$", prefix):
+                continue
+            matches.append(match)
+        return matches
+    if requested == "premium_economy":
+        return list(re.finditer(r"\bpremium\s+economy\b", normalized, re.IGNORECASE))
+    if requested == "business":
+        return list(re.finditer(r"\bbusiness\b", normalized, re.IGNORECASE))
+    if requested == "first":
+        return list(re.finditer(r"\bfirst\b", normalized, re.IGNORECASE))
+    if requested == "business_first":
+        return [
+            *re.finditer(r"\bbusiness\b", normalized, re.IGNORECASE),
+            *re.finditer(r"\bfirst\b", normalized, re.IGNORECASE),
+        ]
+    return []
+
+
+def result_card_matches_route(text: str, route: RouteQuery) -> bool:
+    normalized = str(text or "")
+    if not _directional_route_matches(normalized, route):
+        return False
+    try:
+        departure = date.fromisoformat(route.departure_date)
+    except ValueError:
+        return False
+    date_patterns = [
+        rf"(?<!\d){re.escape(departure.isoformat())}(?!\d)",
+        rf"(?<!\d){departure.month}/{departure.day}/{departure.year}(?!\d)",
+        rf"(?<![A-Za-z]){re.escape(departure.strftime('%B'))}\s+{departure.day},\s*{departure.year}(?!\d)",
+        rf"(?<![A-Za-z]){re.escape(departure.strftime('%b'))}\s+{departure.day},\s*{departure.year}(?!\d)",
+    ]
+    if not any(re.search(pattern, normalized, re.IGNORECASE) for pattern in date_patterns):
+        return False
+    return bool(_cabin_occurrences(normalized, route.cabin))
+
+
+_ANY_CABIN_PATTERN = re.compile(
+    r"\b(?:premium\s+economy|economy|business|first)\b",
+    re.IGNORECASE,
+)
+
+
+def _cabin_price_window(text: str, occurrence: re.Match[str]) -> str:
+    boundaries = ["|", ";", "\n"]
+    left = max((text.rfind(mark, 0, occurrence.start()) for mark in boundaries), default=-1) + 1
+    right_candidates = [text.find(mark, occurrence.end()) for mark in boundaries]
+    right_candidates = [value for value in right_candidates if value >= 0]
+    right = min(right_candidates, default=len(text))
+    previous_marker = None
+    for marker in _ANY_CABIN_PATTERN.finditer(text):
+        if marker.end() <= occurrence.start():
+            previous_marker = marker
+        elif marker.start() >= occurrence.end():
+            right = min(right, marker.start())
+            break
+    if previous_marker is not None:
+        between_start = previous_marker.end()
+        prior_prices = list(PRICE_PATTERN.finditer(text, between_start, occurrence.start()))
+        left = max(left, prior_prices[-1].end() if prior_prices else between_start)
+    if right <= left:
+        left = max(0, occurrence.start() - 80)
+        right = min(len(text), occurrence.end() + 120)
+    return text[left:right]
+
+
+def extract_prices_for_cabin(text: str, cabin: str) -> list[float]:
+    """Extract prices near the requested cabin, never the cheapest unrelated cabin."""
+    normalized = str(text or "")
+    values: list[float] = []
+    for occurrence in _cabin_occurrences(normalized, cabin):
+        values.extend(extract_prices(_cabin_price_window(normalized, occurrence)))
+    return list(dict.fromkeys(values))
+
+
+async def _is_leaf_result_card(item) -> bool:
+    for selector in RESULT_CARD_SELECTORS:
+        try:
+            descendants = item.locator(selector)
+            if await descendants.count():
+                return False
+        except Exception:
+            continue
+    for selector in _CHILD_CARD_SELECTORS:
+        try:
+            descendants = item.locator(selector)
+            if await descendants.count() > 1:
+                return False
+        except Exception:
+            continue
+    return True
+
+
+async def _result_card_texts(page: Page):
+    seen: set[str] = set()
+    for selector in RESULT_CARD_SELECTORS:
+        try:
+            items = page.locator(selector)
+            count = min(await items.count(), 30)
+        except Exception:
+            continue
+        for index in range(count):
+            item = items.nth(index)
+            if not await _is_leaf_result_card(item):
+                continue
+            try:
+                text = (await item.inner_text()).strip()
+            except Exception:
+                continue
+            if text and text not in seen:
+                seen.add(text)
+                yield text
+
+
+async def verify_result_context(page: Page, route: RouteQuery) -> None:
+    async for text in _result_card_texts(page):
+        if result_card_matches_route(text, route):
+            return
+    raise RuntimeError(
+        "Priceline result cards did not confirm the requested route/date/cabin; "
+        "refusing to save a quote."
+    )
+
+
 async def ensure_no_manual_verification(page: Page) -> None:
     try:
         body = await page.locator("body").inner_text(timeout=3000)
@@ -316,33 +494,19 @@ async def ensure_no_manual_verification(page: Page) -> None:
 
 async def extract_offer(runtime, page: Page, route: RouteQuery):
     candidates = []
-    selectors = [
-        "[data-testid*='flight-card']",
-        "[class*='flight']",
-        "[class*='result']",
-        "[class*='price']",
-    ]
-    for selector in selectors:
-        try:
-            items = page.locator(selector)
-            count = min(await items.count(), 30)
-        except Exception:
+    async for text in _result_card_texts(page):
+        if not result_card_matches_route(text, route):
             continue
-        for index in range(count):
-            try:
-                text = (await items.nth(index).inner_text()).strip()
-            except Exception:
-                continue
-            for price in extract_prices(text):
-                candidates.append(runtime.offer_details_type(price=price, row_text=text))
+        prices = extract_prices_for_cabin(text, route.cabin)
+        if len(prices) != 1:
+            continue
+        candidates.append(runtime.offer_details_type(price=prices[0], row_text=text))
 
     if not candidates:
-        body = await page.locator("body").inner_text()
-        for price in extract_prices(body):
-            candidates.append(runtime.offer_details_type(price=price, row_text=body[:500]))
-
-    if not candidates:
-        raise RuntimeError("Could not extract Priceline fare from visible results.")
+        raise RuntimeError(
+            "Could not extract one unambiguous Priceline fare from a result card matching "
+            "the requested route/date/cabin."
+        )
 
     return min(candidates, key=lambda offer: offer.price)
 

@@ -1,4 +1,5 @@
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -73,6 +74,42 @@ class ReportServiceTests(unittest.TestCase):
             self.assertEqual({"csv_path", "markdown_path"}, set(paths))
             self.assertEqual(export_path.name, "price_history_export.csv")
             self.assertTrue(export_path.exists())
+            if os.name != "nt":
+                for path in (
+                    config.database_path,
+                    Path(paths["csv_path"]),
+                    Path(paths["markdown_path"]),
+                    export_path,
+                ):
+                    self.assertEqual(0o600, path.stat().st_mode & 0o777)
+
+    def test_lowest_report_row_does_not_borrow_currency_from_another_snapshot(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config_path = Path(tmp_dir) / "config.json"
+            write_config(config_path)
+            config = ConfigManager(config_path=config_path).load()
+            repository = PriceRepository(config.database_path)
+            repository.initialize()
+            for price, currency, observed_at in (
+                (100, "", "2026-05-13T00:00:00Z"),
+                (200, "CNY", "2026-05-14T00:00:00Z"),
+            ):
+                repository.insert_snapshot(PriceSnapshot(
+                    provider="ctrip", route_key="R", origin="SHA", destination="PEK",
+                    departure_date="2026-06-01", return_date=None, cabin="economy",
+                    passengers=1, currency=currency, price=price, observed_at=observed_at,
+                    scraped_at=observed_at, notes=[], raw_payload={},
+                ))
+
+            paths = ReportService(config=config, repository=repository).report()
+            markdown = Path(paths["markdown_path"]).read_text(encoding="utf-8")
+            lowest_section = markdown.split("## Lowest Price By Provider", 1)[1]
+            cheapest_line = next(
+                line for line in lowest_section.splitlines()
+                if line.startswith("| ctrip") and "100" in line
+            )
+
+            self.assertNotIn("CNY", cheapest_line)
 
 
 if __name__ == "__main__":

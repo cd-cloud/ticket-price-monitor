@@ -4,6 +4,8 @@ from typing import Any
 
 import pandas as pd
 
+from private_files import atomic_write_text, ensure_private_directory, make_file_private
+
 
 @dataclass(slots=True)
 class ReportArtifacts:
@@ -14,7 +16,7 @@ class ReportArtifacts:
 class PriceAnalyzer:
     def __init__(self, output_dir: Path) -> None:
         self.output_dir = output_dir
-        self.output_dir.mkdir(parents=True, exist_ok=True)
+        ensure_private_directory(self.output_dir)
 
     def to_dataframe(self, snapshots: list[dict[str, Any]]) -> pd.DataFrame:
         frame = pd.DataFrame(snapshots)
@@ -28,8 +30,9 @@ class PriceAnalyzer:
         if frame.empty:
             return pd.DataFrame()
 
+        ordered = frame.sort_values("observed_at")
         summary = (
-            frame.groupby(["provider", "route_key"])
+            ordered.groupby(["provider", "route_key", "currency"], dropna=False)
             .agg(
                 min_price=("price", "min"),
                 max_price=("price", "max"),
@@ -45,7 +48,7 @@ class PriceAnalyzer:
     def export_csv(self, frame: pd.DataFrame, filename: str = "price_history.csv") -> Path:
         path = self.output_dir / filename
         frame.to_csv(path, index=False, encoding="utf-8-sig")
-        return path
+        return make_file_private(path)
 
     def build_markdown_report(
         self,
@@ -56,14 +59,18 @@ class PriceAnalyzer:
     ) -> Path:
         path = self.output_dir / filename
         if frame.empty:
-            path.write_text(f"# {title}\n\nNo snapshots available.\n", encoding="utf-8")
-            return path
+            return atomic_write_text(path, f"# {title}\n\nNo snapshots available.\n")
 
-        best_rows = (
-            frame.sort_values(["route_key", "provider", "price", "observed_at"])
-            .groupby(["route_key", "provider"], as_index=False)
-            .first()
-        )
+        priced = frame.dropna(subset=["price"])
+        if priced.empty:
+            best_rows = frame.iloc[0:0].copy()
+        else:
+            indices = priced.groupby(
+                ["route_key", "provider", "currency"], dropna=False
+            )["price"].idxmin()
+            best_rows = frame.loc[indices].sort_values(
+                ["route_key", "provider", "currency", "price", "observed_at"]
+            )
         lines = [
             f"# {title}",
             "",
@@ -76,8 +83,7 @@ class PriceAnalyzer:
             best_rows[["provider", "route_key", "price", "currency", "observed_at"]].to_markdown(index=False),
             "",
         ]
-        path.write_text("\n".join(lines), encoding="utf-8")
-        return path
+        return atomic_write_text(path, "\n".join(lines))
 
     def generate_report(
         self,

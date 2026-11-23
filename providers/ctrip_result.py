@@ -14,7 +14,7 @@ def selected_quote(route, offer):
     details = match.get("details") or []
     if route.is_multi_city:
         valid = ctrip_itinerary.multi_city_details_match_route(
-            details, route, direct_only=route.transfer_policy == "direct_only")
+            details, route, transfer_policy=route.transfer_policy)
     else:
         valid = ctrip_network_parser.details_match_single_route(details, route)
     if not valid or not ctrip_itinerary.details_match_preferences(details, route):

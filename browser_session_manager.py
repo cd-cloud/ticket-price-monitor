@@ -21,6 +21,7 @@ from browser_session_policy import (
 )
 from config_manager import AppConfig, ProviderConfig
 from browser_environment import environment_key
+from private_files import atomic_write_text, ensure_private_directory, make_file_private
 
 
 LOGGER = logging.getLogger(__name__)
@@ -145,8 +146,7 @@ class BrowserSessionManager:
                         path = self.persistent_profile_path_for_backend(provider, candidate_name, profile_name)
                         # A dangling lock symlink is also ambiguous. Never delete
                         # it, assume it is stale, or silently use another identity.
-                        locked = any((path / name).exists() or (path / name).is_symlink()
-                                     for name in CHROME_PROFILE_LOCK_FILES)
+                        locked = self.chrome_profile_is_locked(path)
                         healthy, _ = self._chrome_profile_is_healthy(path)
                         state = self._profile_state().get("airchina", {}).get("chrome", {})
                         polluted = state.get("polluted_profiles") or {}
@@ -275,7 +275,9 @@ class BrowserSessionManager:
                 backend_name or "unknown",
             )
             return
+        ensure_private_directory(provider.storage_state_file.parent)
         await context.storage_state(path=str(provider.storage_state_file))
+        make_file_private(provider.storage_state_file)
 
     def chrome_profile_health(self, provider: ProviderConfig, backend_name: str | None = "chrome") -> dict[str, object]:
         profile_name = self.profile_name_for_backend(provider, backend_name)
@@ -402,6 +404,11 @@ class BrowserSessionManager:
     ) -> dict[str, object]:
         selected = profile_name or self.selected_chrome_profile_name(provider, backend_name)
         profile_dir = self.persistent_profile_path_for_backend(provider, backend_name, selected)
+        if self.chrome_profile_is_locked(profile_dir):
+            raise RuntimeError(
+                f"Chrome profile is in use or has an ambiguous lock: {selected}. "
+                "Close the project Chrome normally before maintenance."
+            )
         default_dir = profile_dir / "Default"
         removed: list[str] = []
         skipped: list[str] = []
@@ -518,20 +525,29 @@ class BrowserSessionManager:
 
     def _write_profile_state(self, state: dict[str, object]) -> None:
         path = self._profile_state_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
             **state,
             "_updated_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
         }
-        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        atomic_write_text(path, json.dumps(payload, ensure_ascii=False, indent=2))
 
     @staticmethod
-    def _chrome_profile_is_healthy(profile_dir: Path) -> tuple[bool, str]:
+    def chrome_profile_is_locked(profile_dir: Path) -> bool:
+        return any(
+            (profile_dir / name).exists() or (profile_dir / name).is_symlink()
+            for name in CHROME_PROFILE_LOCK_FILES
+        )
+
+    @classmethod
+    def _chrome_profile_is_healthy(cls, profile_dir: Path) -> tuple[bool, str]:
         if not profile_dir.exists():
             return True, "profile does not exist yet"
-        for lock_file in CHROME_PROFILE_LOCK_FILES:
-            if (profile_dir / lock_file).exists():
-                return False, f"stale lock file: {lock_file}"
+        if cls.chrome_profile_is_locked(profile_dir):
+            lock_file = next(
+                name for name in CHROME_PROFILE_LOCK_FILES
+                if (profile_dir / name).exists() or (profile_dir / name).is_symlink()
+            )
+            return False, f"profile lock present: {lock_file}"
         preferences = profile_dir / "Default" / "Preferences"
         if preferences.exists():
             try:

@@ -458,6 +458,63 @@ class CtripNetworkParserTests(unittest.TestCase):
 
         self.assertFalse(ctrip_itinerary.multi_city_details_match_route(details, route))
 
+    def test_transfer_only_rejects_direct_single_route(self) -> None:
+        route = RouteQuery(
+            origin="PVG",
+            destination="PEK",
+            departure_date="2099-01-01",
+            transfer_policy="transfer_only",
+        )
+        details = [{
+            "origin": "SHA", "destination": "BJS",
+            "departure_airport": "PVG", "arrival_airport": "PEK",
+            "departure_date": "2099-01-01", "flight_no": "CA1001",
+        }]
+
+        self.assertFalse(ctrip_network_parser.details_match_single_route(details, route))
+
+    def test_transfer_only_accepts_connected_single_route(self) -> None:
+        route = RouteQuery(
+            origin="PVG",
+            destination="PEK",
+            departure_date="2099-01-01",
+            transfer_policy="transfer_only",
+        )
+        details = [
+            {
+                "origin": "SHA", "destination": "XIY",
+                "departure_airport": "PVG", "arrival_airport": "XIY",
+                "departure_date": "2099-01-01", "flight_no": "CA1001",
+            },
+            {
+                "origin": "XIY", "destination": "BJS",
+                "departure_airport": "XIY", "arrival_airport": "PEK",
+                "departure_date": "2099-01-01", "flight_no": "CA1002",
+            },
+        ]
+
+        self.assertTrue(ctrip_network_parser.details_match_single_route(details, route))
+
+    def test_transfer_only_multi_city_requires_transfer_on_every_segment(self) -> None:
+        route = RouteQuery(
+            origin="PVG", destination="SIN", departure_date="2099-01-01",
+            route_type="multi_city", transfer_policy="transfer_only",
+            segments=[
+                RouteSegment("PVG", "PEK", "2099-01-01"),
+                RouteSegment("PEK", "SIN", "2099-01-03"),
+            ],
+        )
+        direct_segments = [
+            {"segment_index": 1, "origin": "SHA", "destination": "BJS",
+             "departure_airport": "PVG", "arrival_airport": "PEK", "departure_date": "2099-01-01"},
+            {"segment_index": 2, "origin": "BJS", "destination": "SIN",
+             "departure_airport": "PEK", "arrival_airport": "SIN", "departure_date": "2099-01-03"},
+        ]
+
+        self.assertFalse(ctrip_itinerary.multi_city_details_match_route(
+            direct_segments, route, transfer_policy=route.transfer_policy
+        ))
+
 
 if __name__ == "__main__":
     unittest.main()

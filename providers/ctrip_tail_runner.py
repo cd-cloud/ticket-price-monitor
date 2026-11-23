@@ -15,7 +15,7 @@ from providers.ctrip_tail_discovery import extract_tail_matches_from_network, ex
 from browser_retry_policy import looks_like_rate_limit
 from tail_quotes import build_baseline_catalog, quote_terms
 from providers.ctrip_tail_discovery import classify_tail_no_match, tail_network_route_stats
-from providers.response_capture import attach_response_listeners, ResponseStore
+from providers.response_capture import attach_response_listeners, ResponseStore, sanitize_url
 from providers.ctrip_tail_candidates import prepare_network_candidates, merge_tail_candidates
 
 
@@ -218,7 +218,12 @@ class CtripTailDiscoveryRunner:
         try:
             network, evidence = prepare_network_candidates(ui_evidence, network, route, transfer)
         except RuntimeError:
-            await ctrip_page.dump_datepicker_debug(page, route.departure_date, "tail-results-date-check")
+            await ctrip_page.dump_datepicker_debug(
+                page,
+                route.departure_date,
+                "tail-results-date-check",
+                runtime_dir=self.app_config.runtime_dir,
+            )
             raise
         attempt["date_evidence"] = evidence
         page_matches = []
@@ -336,11 +341,11 @@ class CtripTailDiscoveryRunner:
                                 "departure_date": departure_date, "cabin": cabin, "passengers": passengers,
                                 "currency": self.app_config.default_currency, "price": match["total_price"],
                                 "observed_at": observed, "scraped_at": observed, "flight_details": match["details"],
-                                "raw_payload": {**metadata.to_payload(), "search_url": page.url,
+                                "raw_payload": {**metadata.to_payload(), "search_url": sanitize_url(page.url),
                                     "preferred_airlines": preferred_airlines or [], "dom_card": match.get("card"),
                                     "detail_source": match.get("detail_source"), "detail_quality": match.get("detail_quality"),
                                     "date_evidence": match.get("date_evidence"),
-                                    "response_url": match.get("response_url"),
+                                    "response_url": sanitize_url(match.get("response_url")),
                                     "query_generation": match.get("query_generation"),
                                     "candidate_sources": attempt.get("candidate_sources"),
                                     "loading_evidence": attempt.get("loading_evidence"),

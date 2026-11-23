@@ -15,12 +15,39 @@ from __future__ import annotations
 from config_manager import ProviderConfig, RouteQuery
 from providers.base import ParsedProviderResult, ProviderQueryOutcome
 from providers import feizhu_flyai_adapter
+from providers import ctrip_itinerary
 
 
 name = "feizhu"
 supports_multi_city = False
 # Tail discovery is supported via the same flyai-cli infrastructure.
 supports_tail_discovery = True
+
+
+def details_match_request(details: list[dict], route: RouteQuery) -> bool:
+    if not details or any(not isinstance(leg, dict) for leg in details):
+        return False
+    if not ctrip_itinerary.logical_legs_connected(details):
+        return False
+    first, last = details[0], details[-1]
+    if str(first.get("departure_date") or "")[:10] != route.departure_date:
+        return False
+    if not ctrip_itinerary.endpoint_matches(first, route.origin):
+        return False
+    if not ctrip_itinerary.endpoint_matches(last, route.destination, arrival=True):
+        return False
+    if route.transfer_policy == "direct_only" and len(details) != 1:
+        return False
+    if route.transfer_policy == "transfer_only" and len(details) < 2:
+        return False
+
+    from tail_quotes import cabin_matches
+    from providers.ctrip_tail_parser import details_match_airlines
+
+    requested_cabin = (route.cabin or "economy").lower()
+    if any(not leg.get("cabin") or not cabin_matches(leg["cabin"], requested_cabin) for leg in details):
+        return False
+    return not route.preferred_airlines or details_match_airlines(details, route.preferred_airlines)
 
 
 async def query(
@@ -57,27 +84,14 @@ async def query(
             f"No Feizhu flights found for {route.origin}→{route.destination} on {route.departure_date}."
         )
 
-    from tail_quotes import cabin_matches
-    from providers.ctrip_tail_parser import details_match_airlines
-
-    filtered_offers = []
-    for offer in offers:
-        details = offer.get("flight_details") or []
-        if route.transfer_policy == "direct_only" and len(details) != 1:
-            continue
-        if route.transfer_policy == "transfer_only" and len(details) < 2:
-            continue
-        if route.preferred_airlines and not details_match_airlines(details, route.preferred_airlines):
-            continue
-        if any(leg.get("cabin") and not cabin_matches(leg["cabin"], requested_cabin) for leg in details):
-            continue
-        if requested_cabin not in {"economy", "economy_plus", "any"} and any(not leg.get("cabin") for leg in details):
-            continue
-        filtered_offers.append(offer)
+    filtered_offers = [
+        offer for offer in offers
+        if details_match_request(offer.get("flight_details") or [], route)
+    ]
 
     if not filtered_offers:
         raise RuntimeError(
-            f"No Feizhu flights matched cabin/transfer/airline conditions for {route.origin}→{route.destination} on {route.departure_date}."
+            f"No Feizhu flights matched route/date/cabin/transfer/airline conditions for {route.origin}→{route.destination} on {route.departure_date}."
         )
 
     best = filtered_offers[0]
@@ -100,5 +114,10 @@ async def query(
             "search_metadata": best.get("search_metadata") or {},
             "source_price_field": best.get("source_price_field"),
             "source_price_value": best.get("source_price_value"),
+            "validation": {
+                "status": "valid",
+                "scope": "route_date_cabin_transfer_airline",
+                "version": 1,
+            },
         },
     ).to_outcome()

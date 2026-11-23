@@ -21,6 +21,8 @@ import threading
 from time import monotonic
 from typing import Any
 
+from providers.response_capture import sanitize_url
+
 logger = logging.getLogger(__name__)
 
 
@@ -342,7 +344,7 @@ def _item_to_offer(item: dict[str, Any]) -> dict[str, Any]:
         "departure_time": departure_time,
         "row_text": row_text,
         "flight_details": flight_details,
-        "final_url": item.get("jumpUrl") or "https://www.fliggy.com/",
+        "final_url": sanitize_url(item.get("jumpUrl") or "https://www.fliggy.com/"),
         "journey_type": journey.get("journeyType"),
         "total_duration": item.get("totalDuration"),
     }

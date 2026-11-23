@@ -1,6 +1,8 @@
 import asyncio
 import json
+import logging
 import os
+import stat
 import tempfile
 import threading
 import unittest
@@ -8,10 +10,11 @@ from dataclasses import replace
 from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from fastapi.testclient import TestClient
 
+from app_service import configure_logging
 from config_manager import ConfigManager, RouteQuery
 from dashboard_builder import build_dashboard_payload
 from data_storage import PriceRepository, PriceSnapshot
@@ -20,6 +23,7 @@ from providers.airchina_direct import flyclaw_records_from_report
 from providers.airchina_parser import parse_reference_fares
 from providers.base import ProviderQueryOutcome
 from query_service import QueryService
+from main import _validate_ui_bind
 from route_service import RouteService
 from web_ui import create_app
 
@@ -63,8 +67,9 @@ def _write_test_config(path: Path) -> None:
 class AuditBugfixRegressionTests(unittest.TestCase):
     def tearDown(self) -> None:
         os.environ.pop("FLIGHT_TRACKER_UI_TOKEN", None)
+        os.environ.pop("FLIGHT_TRACKER_UI_BEHIND_HTTPS_PROXY", None)
 
-    def test_ui_token_protects_get_endpoints_and_sets_session_cookie_from_query(self) -> None:
+    def test_ui_token_uses_post_session_cookie_and_ignores_query_token(self) -> None:
         os.environ["FLIGHT_TRACKER_UI_TOKEN"] = "strong-secret-token"
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
             config_path = Path(tmp_dir) / "config.json"
@@ -78,10 +83,30 @@ class AuditBugfixRegressionTests(unittest.TestCase):
                 self.assertEqual(401, client.get("/api/log").status_code)
                 self.assertEqual(401, client.get("/download/csv").status_code)
 
-                # Initial browser visit with ?token=... sets an HttpOnly session cookie.
+                # Query tokens are ignored; an explicit same-origin POST creates the cookie.
                 index_resp = client.get("/?token=strong-secret-token")
                 self.assertEqual(200, index_resp.status_code)
+                self.assertIn("Flight Price Tracker Login", index_resp.text)
+                self.assertEqual(401, client.get("/api/dashboard").status_code)
+
+                session_resp = client.post(
+                    "/api/session", json={"token": "strong-secret-token"}
+                )
+                self.assertEqual(200, session_resp.status_code)
+                self.assertIn("httponly", session_resp.headers["set-cookie"].lower())
                 self.assertEqual(200, client.get("/api/dashboard").status_code)
+
+    def test_remote_ui_bind_requires_strong_token_and_https_proxy(self) -> None:
+        _validate_ui_bind("127.0.0.1")
+        with self.assertRaisesRegex(RuntimeError, "at least 24"):
+            _validate_ui_bind("0.0.0.0")
+
+        os.environ["FLIGHT_TRACKER_UI_TOKEN"] = "x" * 24
+        with self.assertRaisesRegex(RuntimeError, "direct remote HTTP"):
+            _validate_ui_bind("0.0.0.0")
+
+        os.environ["FLIGHT_TRACKER_UI_BEHIND_HTTPS_PROXY"] = "true"
+        _validate_ui_bind("0.0.0.0")
 
     def test_cross_site_post_without_origin_is_blocked_by_sec_fetch_site_or_referer(self) -> None:
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
@@ -97,8 +122,13 @@ class AuditBugfixRegressionTests(unittest.TestCase):
                     "/api/report",
                     headers={"Referer": "https://attacker.example/csrf.html"},
                 )
+                blocked_other_port = client.post(
+                    "/api/report",
+                    headers={"Origin": "http://testserver:9999"},
+                )
                 self.assertEqual(403, blocked_fetch.status_code)
                 self.assertEqual(403, blocked_referer.status_code)
+                self.assertEqual(403, blocked_other_port.status_code)
 
     def test_route_key_distinguishes_preferred_airlines_and_prevents_silent_overwrite(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -256,12 +286,72 @@ class AuditBugfixRegressionTests(unittest.TestCase):
                 "title": "CA1501",
                 "departure_time": "08:00",
                 "row_text": "SHA->PEK | CA1501 | ¥450",
-                "flight_details": [{"cabin": "经济舱", "origin": "SHA", "destination": "PEK"}],
+                "flight_details": [{
+                    "cabin": "经济舱", "origin": "SHA", "destination": "BJS",
+                    "departure_airport": "SHA", "arrival_airport": "PEK",
+                    "departure_date": "2099-06-01", "flight_no": "CA1501",
+                }],
             }
         ]
         with patch("providers.feizhu.feizhu_flyai_adapter.search_flights", return_value=economy_only_offers):
-            with self.assertRaisesRegex(RuntimeError, "matched cabin"):
+            with self.assertRaisesRegex(RuntimeError, "matched route/date/cabin"):
                 asyncio.run(feizhu.query(runtime, provider_cfg, premium_route, None, []))
+
+    def test_feizhu_rejects_wrong_airport_date_and_missing_cabin(self) -> None:
+        provider_cfg = SimpleNamespace(timeout_ms=5000, min_delay_seconds=0, max_delay_seconds=0)
+        runtime = SimpleNamespace(throttle=lambda _cfg: asyncio.sleep(0))
+        route = RouteQuery("PEK", "PVG", "2099-06-01", cabin="economy", passengers=1)
+        wrong_offer = {
+            "price": 450.0,
+            "final_url": "https://www.fliggy.com/",
+            "title": "CA1501",
+            "departure_time": "08:00",
+            "row_text": "PKX->SHA | CA1501 | ¥450",
+            "flight_details": [{
+                "cabin": "经济舱", "origin": "BJS", "destination": "SHA",
+                "departure_airport": "PKX", "arrival_airport": "SHA",
+                "departure_date": "2099-06-02", "flight_no": "CA1501",
+            }],
+        }
+        with patch("providers.feizhu.feizhu_flyai_adapter.search_flights", return_value=[wrong_offer]):
+            with self.assertRaisesRegex(RuntimeError, "matched route/date/cabin"):
+                asyncio.run(feizhu.query(runtime, provider_cfg, route, None, []))
+
+        missing_cabin = {
+            **wrong_offer,
+            "flight_details": [{
+                **wrong_offer["flight_details"][0],
+                "departure_airport": "PEK",
+                "arrival_airport": "PVG",
+                "departure_date": "2099-06-01",
+                "cabin": None,
+            }],
+        }
+        with patch("providers.feizhu.feizhu_flyai_adapter.search_flights", return_value=[missing_cabin]):
+            with self.assertRaisesRegex(RuntimeError, "matched route/date/cabin"):
+                asyncio.run(feizhu.query(runtime, provider_cfg, route, None, []))
+
+    def test_feizhu_accepts_exact_airport_date_and_cabin(self) -> None:
+        provider_cfg = SimpleNamespace(timeout_ms=5000, min_delay_seconds=0, max_delay_seconds=0)
+        runtime = SimpleNamespace(throttle=lambda _cfg: asyncio.sleep(0))
+        route = RouteQuery("PEK", "PVG", "2099-06-01", cabin="economy", passengers=1)
+        offer = {
+            "price": 450.0,
+            "final_url": "https://www.fliggy.com/",
+            "title": "CA1501",
+            "departure_time": "08:00",
+            "row_text": "PEK->PVG | CA1501 | ¥450",
+            "flight_details": [{
+                "cabin": "经济舱", "origin": "BJS", "destination": "SHA",
+                "departure_airport": "PEK", "arrival_airport": "PVG",
+                "departure_date": "2099-06-01", "flight_no": "CA1501",
+            }],
+        }
+        with patch("providers.feizhu.feizhu_flyai_adapter.search_flights", return_value=[offer]):
+            outcome = asyncio.run(feizhu.query(runtime, provider_cfg, route, None, []))
+
+        self.assertEqual(450, outcome.price)
+        self.assertEqual("valid", outcome.extra_payload["validation"]["status"])
 
     def test_priceline_rejects_unverified_round_trip_instead_of_querying_one_way(self) -> None:
         provider_cfg = SimpleNamespace(name="priceline", timeout_ms=5000)
@@ -269,6 +359,93 @@ class AuditBugfixRegressionTests(unittest.TestCase):
         round_trip = RouteQuery("JFK", "LAX", "2099-06-01", return_date="2099-06-08")
         with self.assertRaisesRegex(RuntimeError, "one-way queries only"):
             asyncio.run(priceline.query(runtime, provider_cfg, round_trip, None, []))
+
+        multi_passenger = RouteQuery("JFK", "LAX", "2099-06-01", passengers=2)
+        with self.assertRaisesRegex(RuntimeError, "exactly one passenger"):
+            asyncio.run(priceline.query(runtime, provider_cfg, multi_passenger, None, []))
+
+        filtered = RouteQuery(
+            "JFK", "LAX", "2099-06-01", transfer_policy="direct_only"
+        )
+        with self.assertRaisesRegex(RuntimeError, "cannot verify"):
+            asyncio.run(priceline.query(runtime, provider_cfg, filtered, None, []))
+
+    def test_priceline_result_card_binding_rejects_url_decoys_and_cabin_substrings(self) -> None:
+        route = RouteQuery("JFK", "LAX", "2099-06-01", cabin="economy")
+        wrong_card = "BOS to SEA | Premium Economy | June 2, 2099 | $100"
+        matching_card = "JFK to LAX | Economy | June 1, 2099 | $120"
+
+        self.assertFalse(priceline.result_card_matches_route(wrong_card, route))
+        self.assertFalse(priceline.result_card_matches_route(
+            "JFK to LAX | Premium Economy | June 1, 2099 | $120", route
+        ))
+        self.assertTrue(priceline.result_card_matches_route(matching_card, route))
+        self.assertFalse(priceline.result_card_matches_route(
+            "LAX to JFK | Economy | June 1, 2099 | $80", route
+        ))
+        self.assertFalse(priceline.result_card_matches_route(
+            "LAX to JFK | Economy | June 1, 2099 | $80 | fare details: JFK to LAX",
+            route,
+        ))
+
+    def test_priceline_price_is_scoped_to_requested_cabin_and_leaf_card(self) -> None:
+        self.assertEqual(
+            [100.0],
+            priceline.extract_prices_for_cabin(
+                "JFK to LAX | June 1, 2099 | Economy $100 | First $500",
+                "economy",
+            ),
+        )
+        self.assertEqual(
+            [500.0],
+            priceline.extract_prices_for_cabin(
+                "JFK to LAX | June 1, 2099 | Economy $100 | First $500",
+                "first",
+            ),
+        )
+        self.assertEqual(
+            [500.0],
+            priceline.extract_prices_for_cabin(
+                "JFK to LAX Economy $100 First $500",
+                "first",
+            ),
+        )
+
+        class CardList:
+            def __init__(self, items):
+                self.items = list(items)
+
+            async def count(self):
+                return len(self.items)
+
+            def nth(self, index):
+                return self.items[index]
+
+        class Card:
+            def __init__(self, text, children=()):
+                self.text, self.children = text, list(children)
+
+            async def inner_text(self):
+                return self.text
+
+            def locator(self, _selector):
+                return CardList(self.children)
+
+        target = Card("JFK to LAX | June 1, 2099 | Economy $120")
+        wrong = Card("BOS to SEA | June 2, 2099 | Economy $50")
+        parent = Card(f"{target.text}\\n{wrong.text}", [target, wrong])
+
+        class Page:
+            def locator(self, _selector):
+                return CardList([parent, target, wrong])
+
+        runtime = SimpleNamespace(
+            offer_details_type=lambda **kwargs: SimpleNamespace(**kwargs),
+        )
+        offer = asyncio.run(priceline.extract_offer(
+            runtime, Page(), RouteQuery("JFK", "LAX", "2099-06-01", cabin="economy")
+        ))
+        self.assertEqual(120, offer.price)
 
     def test_airchina_parser_and_flyclaw_bridge_support_overnight_and_cross_timezone_duration(self) -> None:
         fixture_path = Path(__file__).parent / "fixtures" / "airchina_visible_oneway.json"
@@ -373,6 +550,87 @@ class AuditBugfixRegressionTests(unittest.TestCase):
             window = repo.fetch_recent_snapshots_per_route(per_pair_limit=2)
             self.assertEqual(2, len(window))
             self.assertEqual([750.0, 700.0], [row["price"] for row in window])
+
+    def test_setup_failure_never_persists_raw_secret_in_log_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            log_path = Path(tmp_dir) / "runtime" / "tracker.log"
+            configure_logging(log_path)
+            try:
+                logging.error("setup failed: %s", "bad https://example.test/?token=SECRET")
+                for handler in logging.getLogger().handlers:
+                    handler.flush()
+                content = log_path.read_text(encoding="utf-8")
+            finally:
+                root = logging.getLogger()
+                for handler in list(root.handlers):
+                    if getattr(handler, "_flight_tracker_handler", False):
+                        root.removeHandler(handler)
+                        handler.close()
+
+            self.assertNotIn("SECRET", content)
+
+    def test_log_api_redacts_legacy_sensitive_lines_and_hardens_log_file(self) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
+            config_path = Path(tmp_dir) / "config.json"
+            _write_test_config(config_path)
+            with TestClient(create_app(str(config_path))) as client:
+                log_path = Path(tmp_dir) / "runtime" / "test.log"
+                log_path.parent.mkdir(parents=True, exist_ok=True)
+                log_path.write_text(
+                    "bad https://example.test/?token=SECRET password=PW "
+                    "payload={\"token\": \"JSON_SECRET\"} Authorization: Bearer BEARER_SECRET\n",
+                    encoding="utf-8",
+                )
+                os.chmod(log_path, 0o644)
+                response = client.get("/api/log")
+
+            self.assertEqual(200, response.status_code)
+            rendered = "\n".join(response.json()["lines"])
+            self.assertNotIn("SECRET", rendered)
+            self.assertNotIn("PW", rendered)
+            self.assertNotIn("JSON_SECRET", rendered)
+            self.assertNotIn("BEARER_SECRET", rendered)
+            if os.name != "nt":
+                self.assertEqual(0o600, stat.S_IMODE(log_path.stat().st_mode))
+
+    def test_snapshot_persistence_strips_url_queries_from_cli_and_tail_payloads(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo = PriceRepository(Path(tmp_dir) / "prices.db")
+            repo.initialize()
+            repo.insert_snapshot(PriceSnapshot(
+                provider="feizhu",
+                route_key="SHA|PEK|2099-05-01||economy|any|1",
+                origin="SHA",
+                destination="PEK",
+                departure_date="2099-05-01",
+                return_date=None,
+                cabin="economy",
+                passengers=1,
+                currency="CNY",
+                price=500,
+                observed_at="2026-11-20T00:00:00Z",
+                scraped_at="2026-11-20T00:00:00Z",
+                notes=["failure password=NOTE_SECRET"],
+                raw_payload={
+                    "final_url": "https://fliggy.test/jump?token=SECRET",
+                    "search_url": "https://fliggy.test/search?password=PW",
+                    "error": "failed https://fliggy.test/callback?token=TEXT_URL_SECRET",
+                    "message": "password=TEXT_SECRET",
+                    "token": "DIRECT_SECRET",
+                    "nested": {"url": "https://fliggy.test/callback/PATH_SECRET"},
+                },
+            ))
+
+            raw = json.loads(repo.fetch_snapshots()[0]["raw_payload"])
+            serialized = json.dumps(raw)
+            self.assertNotIn("SECRET", serialized)
+            self.assertNotIn("PW", serialized)
+            self.assertNotIn("TEXT_URL_SECRET", serialized)
+            self.assertNotIn("TEXT_SECRET", serialized)
+            self.assertNotIn("DIRECT_SECRET", serialized)
+            self.assertNotIn("PATH_SECRET", serialized)
+            self.assertNotIn("NOTE_SECRET", json.dumps(repo.fetch_snapshots()[0]["notes"]))
+            self.assertEqual("https://fliggy.test/jump", raw["final_url"])
 
     def test_init_config_shifts_expired_example_dates_into_future(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

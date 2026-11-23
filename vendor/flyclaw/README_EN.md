@@ -51,7 +51,7 @@ pip install requests pyyaml curl_cffi flights cryptography
 
 ### Configuration
 
-The default `config.yaml` includes recommended values and works out of the box:
+The tracked `config.yaml` contains secret-free defaults. Put personal settings and credentials in the ignored `config.local.yaml`, or point `FLYCLAW_CONFIG_FILE` to a local file; never commit credentials:
 
 ```yaml
 sources:

@@ -1,9 +1,11 @@
+import json
 import unittest
+from datetime import date, timedelta
 from types import SimpleNamespace
 from pathlib import Path
 
 from config_manager import ProviderConfig, RouteQuery
-from dashboard_builder import build_dashboard_payload
+from dashboard_builder import build_dashboard_payload, build_task_groups
 
 
 class DashboardBuilderTests(unittest.TestCase):
@@ -71,11 +73,12 @@ class DashboardBuilderTests(unittest.TestCase):
         self.assertEqual("down", task["latest_price_delta_direction"])
 
     def test_error_status_hides_stale_latest_price(self) -> None:
+        departure = date.today() + timedelta(days=30)
         route = RouteQuery(
             origin="PUS",
             destination="BCN",
-            departure_date="2026-11-14",
-            return_date="2026-11-20",
+            departure_date=departure.isoformat(),
+            return_date=(departure + timedelta(days=6)).isoformat(),
             providers=["ctrip"],
         )
         config = SimpleNamespace(
@@ -188,6 +191,91 @@ class DashboardBuilderTests(unittest.TestCase):
         self.assertEqual("ctrip", payload["tasks"][0]["provider"])
         self.assertEqual("expired", payload["tasks"][0]["status"])
         self.assertTrue(payload["tasks"][0]["is_expired"])
+
+    def test_provider_error_does_not_hide_other_provider_snapshot(self) -> None:
+        route = RouteQuery(
+            origin="SHA", destination="PEK", departure_date="2099-01-01",
+            providers=["ctrip", "feizhu"],
+        )
+        config = SimpleNamespace(
+            routes=[route],
+            providers={
+                "ctrip": SimpleNamespace(enabled=True),
+                "feizhu": SimpleNamespace(enabled=True),
+            },
+            default_currency="CNY", timezone="Asia/Shanghai",
+        )
+        snapshots = [{
+            "provider": provider, "route_key": route.route_key, "price": 500,
+            "currency": "CNY", "observed_at": "2099-01-01T00:00:00Z",
+            "scraped_at": "2099-01-01T00:00:00Z",
+            "raw_payload": {"search_url": "https://flights.ctrip.com/online/list/x"},
+        } for provider in ("ctrip", "feizhu")]
+        payload = build_dashboard_payload(
+            config=config, routes=[], snapshots=snapshots, report_paths={},
+            last_run_summary={"errors": [
+                f"provider=feizhu route={route.route_key} failed: boom"
+            ]},
+            auto_query_interval_hours=12, auto_query_min_gap_minutes=10,
+        )
+        tasks = {task["provider"]: task for task in payload["tasks"]}
+
+        self.assertEqual("ok", tasks["ctrip"]["status"])
+        self.assertEqual(500, tasks["ctrip"]["latest_price"])
+        self.assertEqual("error", tasks["feizhu"]["status"])
+        self.assertIsNone(tasks["feizhu"]["latest_price"])
+
+    def test_task_group_does_not_compare_different_currencies(self) -> None:
+        groups = build_task_groups([
+            {
+                "group_id": "g", "group_label": "G", "route_display": "A",
+                "origin": "AAA", "destination": "BBB", "latest_price": 100,
+                "currency": "USD", "passengers": 1, "cabin": "economy",
+            },
+            {
+                "group_id": "g", "group_label": "G", "route_display": "B",
+                "origin": "CCC", "destination": "DDD", "latest_price": 1000,
+                "currency": "CNY", "passengers": 1, "cabin": "economy",
+            },
+        ])
+
+        self.assertIsNone(groups[0]["lowest_price"])
+        self.assertFalse(groups[0]["lowest_price_comparable"])
+        self.assertEqual(["CNY", "USD"], groups[0]["currencies"])
+
+    def test_dashboard_sanitizes_derived_tasks_and_run_feedback(self) -> None:
+        route = RouteQuery("AAA", "BBB", "2099-01-01", providers=["ctrip"])
+        config = SimpleNamespace(
+            routes=[route],
+            providers={"ctrip": SimpleNamespace(enabled=True)},
+            default_currency="CNY",
+            timezone="Asia/Shanghai",
+        )
+        payload = build_dashboard_payload(
+            config=config,
+            routes=[],
+            snapshots=[{
+                "provider": "ctrip", "route_key": route.route_key, "price": 100,
+                "currency": "CNY", "observed_at": "2099-01-01T00:00:00Z",
+                "scraped_at": "2099-01-01T00:00:00Z",
+                "raw_payload": {
+                    "itinerary_summary": "Bearer TASK_SECRET",
+                    "segments": [{
+                        "origin": "https://x.test/?token=SEGMENT_SECRET",
+                        "destination": "BBB",
+                        "departure_date": "2099-01-01",
+                    }],
+                },
+            }],
+            report_paths={},
+            last_run_summary={"errors": ["https://x.test/?token=RUN_SECRET"]},
+            auto_query_interval_hours=12,
+            auto_query_min_gap_minutes=10,
+        )
+        serialized = json.dumps(payload)
+        self.assertNotIn("TASK_SECRET", serialized)
+        self.assertNotIn("SEGMENT_SECRET", serialized)
+        self.assertNotIn("RUN_SECRET", serialized)
 
 
 if __name__ == "__main__":

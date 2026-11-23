@@ -15,6 +15,7 @@ logger = logging.getLogger("flyclaw.config")
 # ---------------------------------------------------------------------------
 PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_FILE = os.path.join(PROJECT_DIR, "config.yaml")
+LOCAL_CONFIG_FILE = os.path.join(PROJECT_DIR, "config.local.yaml")
 AIRLINES_FILE = os.path.join(PROJECT_DIR, "cache", "airlines_iata_icao.json")
 
 # ---------------------------------------------------------------------------
@@ -187,10 +188,18 @@ def _deep_merge(base: dict, override: dict) -> dict:
 
 
 def get_config(config_path: str | None = None) -> dict:
-    """Load configuration from YAML, falling back to defaults."""
-    path = config_path or CONFIG_FILE
+    """Load explicit, local, or tracked configuration in that order."""
+    configured_path = os.getenv("FLYCLAW_CONFIG_FILE", "").strip()
+    path = config_path or configured_path or (
+        LOCAL_CONFIG_FILE if os.path.exists(LOCAL_CONFIG_FILE) else CONFIG_FILE
+    )
     cfg = {}
     if os.path.exists(path):
+        if os.name != "nt":
+            try:
+                os.chmod(path, 0o600)
+            except OSError:
+                logger.warning("could not restrict FlyClaw config permissions: %s", path)
         with open(path, "r", encoding="utf-8") as f:
             cfg = yaml.safe_load(f) or {}
     return _deep_merge(DEFAULTS, cfg)

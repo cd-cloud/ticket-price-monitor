@@ -1,3 +1,4 @@
+import json
 import sqlite3
 import tempfile
 import unittest
@@ -108,6 +109,40 @@ class DataStorageTests(unittest.TestCase):
             self.assertEqual(rows[0]["destination"], "CAN")
             self.assertEqual(rows[0]["status"], "failed")
             self.assertEqual(rows[0]["raw_payload"]["destination"], "CAN")
+
+    def test_tail_attempt_scalar_fields_and_legacy_rows_are_sanitized(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            db_path = Path(tmp_dir) / "storage.db"
+            repo = PriceRepository(db_path)
+            repo.initialize()
+            repo.insert_tail_discovery_attempt({
+                "job_id": "job1", "queue_key": "queue1", "provider": "ctrip",
+                "origin": "BJS", "transfer": "CTU", "destination": "CAN",
+                "departure_date": "2026-06-01", "cabin": "economy", "status": "failed",
+                "phase": "ok", "method": "ok", "detail_source": "ok",
+                "detail_quality": "ok", "error": "ok", "raw_payload": {},
+            })
+            with closing(sqlite3.connect(db_path)) as conn:
+                conn.execute(
+                    """UPDATE tail_discovery_attempts SET phase=?, method=?, detail_source=?,
+                       detail_quality=?, error=?, raw_payload=? WHERE job_id=?""",
+                    (
+                        "https://bad.test/?token=PHASE_SECRET",
+                        "Bearer METHOD_SECRET",
+                        "token=SOURCE_SECRET",
+                        "password=QUALITY_SECRET",
+                        "{\"token\": \"ERROR_SECRET\"}",
+                        json.dumps({"message": "https://bad.test/?token=RAW_SECRET"}),
+                        "job1",
+                    ),
+                )
+                conn.commit()
+
+            repo.initialize()
+            row = repo.fetch_tail_discovery_attempts(job_id="job1")[0]
+            serialized = json.dumps(row)
+            for secret in ("PHASE_SECRET", "METHOD_SECRET", "SOURCE_SECRET", "QUALITY_SECRET", "ERROR_SECRET", "RAW_SECRET"):
+                self.assertNotIn(secret, serialized)
 
     def test_tail_discovery_models_round_trip(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

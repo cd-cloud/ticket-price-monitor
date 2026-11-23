@@ -14,6 +14,10 @@ class CtripBrowserOperations:
         self.automation = automation
         self.runtime = runtime
 
+    @property
+    def app_config(self):
+        return self.automation.app_config
+
     async def _ctrip_results_date_evidence(self, page: Page, route: RouteQuery) -> dict[str, object]:
         try:
             return await ctrip_page.collect_results_date_evidence(page, route.departure_date)
@@ -43,8 +47,22 @@ class CtripBrowserOperations:
     async def _prepare_ctrip_results_page(self, page: Page, route: RouteQuery, timeout_ms: int) -> None:
         await ctrip_page.prepare_results_page(self, page, route, timeout_ms)
 
-    async def _ensure_ctrip_results_date(self, page: Page, route: RouteQuery, timeout_ms: int, *, offer=None) -> dict:
-        return await ctrip_page.ensure_results_departure_date(page, route, timeout_ms, offer=offer)
+    async def _ensure_ctrip_results_date(
+        self,
+        page: Page,
+        route: RouteQuery,
+        timeout_ms: int,
+        *,
+        offer=None,
+        runtime_dir=None,
+    ) -> dict:
+        return await ctrip_page.ensure_results_departure_date(
+            page,
+            route,
+            timeout_ms,
+            offer=offer,
+            runtime_dir=runtime_dir or self.automation.app_config.runtime_dir,
+        )
 
     async def _activate_ctrip_multi_city(self, page: Page, timeout_ms: int) -> None:
         await ctrip_page.activate_multi_city(page, timeout_ms)

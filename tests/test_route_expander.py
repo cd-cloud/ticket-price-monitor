@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 
 from route_expander import expand_route_payload, parse_city_list
 
@@ -113,6 +114,62 @@ class RouteExpanderTests(unittest.TestCase):
                 },
                 auto_query_interval_hours=12,
             )
+
+    def test_rejects_too_many_city_options(self) -> None:
+        with self.assertRaisesRegex(ValueError, "At most 50"):
+            parse_city_list([f"A{index:02d}" for index in range(51)])
+
+    def test_rejects_cartesian_expansion_above_route_limit(self) -> None:
+        with self.assertRaisesRegex(ValueError, "beyond 100 routes"):
+            expand_route_payload({
+                "origin_options": [f"A{index:02d}" for index in range(11)],
+                "destination_options": [f"B{index:02d}" for index in range(10)],
+                "departure_date": "2099-01-01", "providers": ["ctrip"],
+            }, auto_query_interval_hours=12)
+
+    def test_rejects_too_many_multi_city_segments(self) -> None:
+        with self.assertRaisesRegex(ValueError, "at most 6 segments"):
+            expand_route_payload({
+                "route_type": "multi_city",
+                "segments": [
+                    {"origin": "AAA", "destination": "BBB", "departure_date": "2099-01-01"}
+                    for _ in range(7)
+                ],
+                "providers": ["ctrip"],
+            }, auto_query_interval_hours=12)
+
+    def test_rejects_overlong_group_label(self) -> None:
+        with self.assertRaisesRegex(ValueError, "at most 120"):
+            expand_route_payload({
+                "origin": "AAA", "destination": "BBB", "departure_date": "2099-01-01",
+                "providers": ["ctrip"], "group_label": "x" * 121,
+            }, auto_query_interval_hours=12)
+
+    def test_rejects_oversized_raw_city_collections_before_deduplication(self) -> None:
+        with self.assertRaisesRegex(ValueError, "At most 50"):
+            parse_city_list(["AAA"] * 100000)
+        with self.assertRaisesRegex(ValueError, "too large"):
+            parse_city_list("AAA," * 100000)
+
+    def test_rejects_oversized_provider_and_airline_lists_before_hashing(self) -> None:
+        payload = {
+            "origin": "AAA",
+            "destination": "BBB",
+            "departure_date": "2099-01-01",
+            "providers": ["ctrip"] * 100000,
+            "preferred_airlines": ["CA"] * 100000,
+        }
+        with self.assertRaisesRegex(ValueError, "provider"):
+            expand_route_payload(payload, auto_query_interval_hours=12)
+
+    def test_rejects_oversized_label_before_default_group_id_hash(self) -> None:
+        with patch("route_expander._default_group_id") as group_id:
+            with self.assertRaisesRegex(ValueError, "group_label"):
+                expand_route_payload({
+                    "origin": "AAA", "destination": "BBB", "departure_date": "2099-01-01",
+                    "providers": ["ctrip"], "group_label": "x" * (2 * 1024 * 1024),
+                }, auto_query_interval_hours=12)
+        group_id.assert_not_called()
 
 
 if __name__ == "__main__":

@@ -11,6 +11,7 @@ import json
 import logging
 from copy import deepcopy
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from adaptive_selectors import observe_selector_candidates
@@ -20,6 +21,13 @@ from providers import ctrip
 from providers import ctrip_itinerary
 from providers import ctrip_network_parser
 from providers import ctrip_tail_parser
+from providers.response_capture import sanitize_url
+from private_files import (
+    atomic_write_text,
+    debug_capture_directory,
+    debug_capture_enabled,
+    make_file_private,
+)
 
 
 LOGGER = logging.getLogger(__name__)
@@ -75,7 +83,7 @@ def extract_tail_matches_from_network(
                     matches.append(deepcopy({
                         "total_price": total, "details": details,
                         "detail_source": "network_exact", "detail_quality": "complete",
-                        "response_url": item.get("url"),
+                        "response_url": sanitize_url(item.get("url")),
                         "query_generation": item.get("query_generation"),
                     }))
     return sorted(matches, key=lambda item: float(item["total_price"]))
@@ -105,7 +113,7 @@ def network_diagnostics(
     sample_urls: list[str] = []
     seen_routes: set[str] = set()
     for item in response_store:
-        url = str(item.get("url") or "")
+        url = sanitize_url(item.get("url"))
         if url and len(sample_urls) < 4:
             sample_urls.append(url[:120])
         payload = item.get("payload")
@@ -266,7 +274,10 @@ async def start_trace(
     transfer: str,
     destination: str,
     departure_date: str,
+    runtime_dir: Path | None = None,
 ) -> bool:
+    if runtime_dir is None or debug_capture_directory(runtime_dir, "tail_traces") is None:
+        return False
     try:
         await context.tracing.start(
             name=f"ctrip_tail_{origin}_{transfer}_{destination}_{departure_date}",
@@ -283,12 +294,19 @@ async def start_trace(
 async def stop_trace(automation: Any, context: Any, *, trace_started: bool):
     if not trace_started:
         return None
-    trace_dir = automation.app_config.runtime_dir / "tail_traces"
-    trace_dir.mkdir(parents=True, exist_ok=True)
+    trace_dir = debug_capture_directory(
+        automation.app_config.runtime_dir, "tail_traces"
+    )
+    if trace_dir is None:
+        try:
+            await context.tracing.stop()
+        except Exception:
+            pass
+        return None
     trace_path = trace_dir / f"ctrip_tail_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')}.zip"
     try:
         await context.tracing.stop(path=str(trace_path))
-        return trace_path
+        return make_file_private(trace_path)
     except Exception as exc:
         LOGGER.info("failed to stop ctrip tail trace: %s", exc)
         try:
@@ -307,7 +325,10 @@ async def goto_tail_results(automation: Any, provider: Any, route: Any, page: An
     except Exception:
         pass
     if not ctrip.is_ctrip_results_url(page.url):
-        raise RuntimeError(f"Ctrip direct result URL did not open for route {route.route_key}. Current URL: {page.url}")
+        raise RuntimeError(
+            f"Ctrip direct result URL did not open for route {route.route_key}. "
+            f"Current URL: {sanitize_url(page.url) or '[url]'}"
+        )
     await page.wait_for_timeout(3500)
     await automation._prepare_results_page(provider, page, route)
     await automation._ensure_ctrip_results_date(page, route, provider.timeout_ms)
@@ -362,6 +383,8 @@ async def extract_tail_page_diagnostics(
     destination: str = "",
     preferred_airlines: list[str] | None = None,
 ) -> str:
+    if not debug_capture_enabled():
+        return "Detailed Ctrip page diagnostics are disabled."
     try:
         text = await page.locator("body").inner_text(timeout=5000)
     except Exception as exc:
@@ -411,9 +434,12 @@ async def dump_tail_diagnostics(
     destination: str,
     departure_date: str,
 ) -> dict[str, str] | None:
+    dump_dir = debug_capture_directory(
+        automation.app_config.runtime_dir, "tail_diagnostics"
+    )
+    if dump_dir is None:
+        return None
     try:
-        dump_dir = automation.app_config.runtime_dir / "tail_diagnostics"
-        dump_dir.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         prefix = dump_dir / f"ctrip_tail_{origin}_{transfer}_{destination}_{departure_date}_{stamp}"
         screenshot_path = prefix.with_suffix(".png")
@@ -422,16 +448,16 @@ async def dump_tail_diagnostics(
         clean_text_path = prefix.with_suffix(".clean.txt")
         json_path = prefix.with_suffix(".json")
         await page.screenshot(path=str(screenshot_path), full_page=True)
+        make_file_private(screenshot_path)
         html = await page.content()
-        html_path.write_text(html, encoding="utf-8")
+        atomic_write_text(html_path, html)
         try:
             body_text = await page.locator("body").inner_text(timeout=5000)
-            text_path.write_text(body_text, encoding="utf-8")
         except Exception:
             body_text = ""
-            text_path.write_text("", encoding="utf-8")
+        atomic_write_text(text_path, body_text)
         cleaned = clean_html_text(html, url=page.url)
-        clean_text_path.write_text(str(cleaned.get("text") or ""), encoding="utf-8")
+        atomic_write_text(clean_text_path, str(cleaned.get("text") or ""))
         try:
             selector_observations = await observe_selector_candidates(
                 page,
@@ -447,7 +473,7 @@ async def dump_tail_diagnostics(
                 "departure_date": departure_date,
             },
             "page": {
-                "url": page.url,
+                "url": sanitize_url(page.url),
                 "title": await page.title(),
             },
             "text_cleaner": {
@@ -469,7 +495,7 @@ async def dump_tail_diagnostics(
             },
             "captured_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         }
-        json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        atomic_write_text(json_path, json.dumps(payload, ensure_ascii=False, indent=2))
         return {
             "json_path": str(json_path),
             "screenshot_path": str(screenshot_path),

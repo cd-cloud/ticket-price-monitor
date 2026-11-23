@@ -34,7 +34,8 @@ from providers.ctrip_browser_operations import CtripBrowserOperations
 from providers.ctrip_runtime import CtripRuntime
 from providers.ctrip_support import provider_cabin_value
 from providers.ctrip_tail_operations import CtripTailOperations
-from providers.response_capture import attach_response_listeners, ResponseStore
+from providers.response_capture import attach_response_listeners, ResponseStore, sanitize_url
+from private_files import atomic_write_text, ensure_private_directory, make_file_private
 from providers.tail_registry import create_tail_runner
 from providers import ctrip
 from providers import ctrip_network_parser
@@ -122,7 +123,13 @@ class BrowserAutomation:
         page, context = await self._new_page(provider)
         try:
             network_log: list[dict] = []
-            page.on("response", lambda response: network_log.append({"url": response.url, "status": response.status}))
+            page.on(
+                "response",
+                lambda response: network_log.append({
+                    "url": sanitize_url(response.url),
+                    "status": response.status,
+                }),
+            )
             await self.login(provider_name, page=page, context=context)
             await self._throttle(provider)
             await page.goto(
@@ -133,8 +140,7 @@ class BrowserAutomation:
             await self._prepare_results_page(provider, page, route)
             await self._wait_for_results(provider, page)
 
-            dump_dir = self.app_config.runtime_dir / "inspections"
-            dump_dir.mkdir(parents=True, exist_ok=True)
+            dump_dir = ensure_private_directory(self.app_config.runtime_dir / "inspections")
             stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
             prefix = f"{provider_name}_{route.origin}_{route.destination}_{stamp}"
             screenshot_path = dump_dir / f"{prefix}.png"
@@ -142,11 +148,12 @@ class BrowserAutomation:
             json_path = dump_dir / f"{prefix}.json"
 
             await page.screenshot(path=str(screenshot_path), full_page=True)
-            html_path.write_text(await page.content(), encoding="utf-8")
+            make_file_private(screenshot_path)
+            atomic_write_text(html_path, await page.content())
             payload = {
                 "provider": provider_name,
                 "route_key": route.route_key,
-                "url": page.url,
+                "url": sanitize_url(page.url),
                 "title": await page.title(),
                 "candidate_texts": await self._collect_candidate_texts(provider, page),
                 "configured_selectors": provider.selectors,
@@ -155,7 +162,7 @@ class BrowserAutomation:
                 "html_path": str(html_path),
                 "captured_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
             }
-            json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            atomic_write_text(json_path, json.dumps(payload, ensure_ascii=False, indent=2))
             if pause:
                 await page.wait_for_timeout(20000)
             return json_path

@@ -1,5 +1,6 @@
 import logging
 import random
+from pathlib import Path
 from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
 
 from playwright.async_api import Page
@@ -7,11 +8,12 @@ from playwright.async_api import Page
 from config_manager import ProviderConfig, RouteQuery
 from providers import ctrip_page
 from providers import ctrip_result
-from providers.response_capture import begin_response_batch
+from providers.response_capture import begin_response_batch, sanitize_url
 from providers.base import ProviderQueryOutcome
 from providers.ctrip_support import ctrip_city_code, route_prefers_international_entry
 from providers.human_actions import hover_then_click, random_scroll_and_pause
 from browser_retry_policy import looks_like_rate_limit
+from private_files import atomic_write_text, debug_capture_directory, make_file_private
 
 
 name = "ctrip"
@@ -108,7 +110,12 @@ async def query_native_single_route_offer(
     try:
         begin_response_batch(response_store)
         await submit_search(page, provider.timeout_ms)
-        await ensure_results_page(page, provider.timeout_ms, route)
+        await ensure_results_page(
+            page,
+            provider.timeout_ms,
+            route,
+            runtime_dir=getattr(getattr(runtime, "app_config", None), "runtime_dir", None),
+        )
         await ensure_results_cabin_url(page, route, provider.timeout_ms, response_store)
     except Exception as exc:
         await runtime.assist_page(
@@ -154,7 +161,12 @@ async def query_native_round_trip_offer(
         await runtime.dismiss_ctrip_login_overlays(page, provider.timeout_ms)
         begin_response_batch(response_store)
         await submit_search(page, provider.timeout_ms)
-        await ensure_results_page(page, provider.timeout_ms, route)
+        await ensure_results_page(
+            page,
+            provider.timeout_ms,
+            route,
+            runtime_dir=getattr(getattr(runtime, "app_config", None), "runtime_dir", None),
+        )
         await ensure_results_cabin_url(page, route, provider.timeout_ms, response_store)
     except Exception as exc:
         await runtime.assist_page(
@@ -283,7 +295,12 @@ async def query_tail_candidate_offer(
     try:
         begin_response_batch(response_store)
         await submit_search(page, provider.timeout_ms)
-        await ensure_results_page(page, provider.timeout_ms, route)
+        await ensure_results_page(
+            page,
+            provider.timeout_ms,
+            route,
+            runtime_dir=getattr(getattr(runtime, "app_config", None), "runtime_dir", None),
+        )
         await ensure_results_cabin_url(page, route, provider.timeout_ms, response_store)
     except Exception as exc:
         await runtime.assist_page(
@@ -377,7 +394,12 @@ async def query_multi_city_offer(
         await runtime.dismiss_ctrip_login_overlays(page, provider.timeout_ms)
         begin_response_batch(response_store)
         await submit_search(page, provider.timeout_ms)
-        await ensure_results_page(page, provider.timeout_ms, route)
+        await ensure_results_page(
+            page,
+            provider.timeout_ms,
+            route,
+            runtime_dir=getattr(getattr(runtime, "app_config", None), "runtime_dir", None),
+        )
         await ensure_results_cabin_url(page, route, provider.timeout_ms, response_store)
     except Exception as exc:
         await runtime.assist_page(
@@ -500,7 +522,13 @@ async def submit_search(page: Page, timeout_ms: int) -> None:
     )
 
 
-async def ensure_results_page(page: Page, timeout_ms: int, route: RouteQuery) -> None:
+async def ensure_results_page(
+    page: Page,
+    timeout_ms: int,
+    route: RouteQuery,
+    *,
+    runtime_dir: Path | None = None,
+) -> None:
     if is_ctrip_results_url(page.url):
         await page.wait_for_load_state("domcontentloaded", timeout=timeout_ms)
         return
@@ -531,8 +559,11 @@ async def ensure_results_page(page: Page, timeout_ms: int, route: RouteQuery) ->
     except Exception:
         pass
 
-    await dump_submit_debug(page, route)
-    raise RuntimeError(f"Ctrip search did not reach a results page for route {route.route_key}. Current URL: {page.url}")
+    await dump_submit_debug(page, route, runtime_dir=runtime_dir)
+    raise RuntimeError(
+        f"Ctrip search did not reach a results page for route {route.route_key}. "
+        f"Current URL: {sanitize_url(page.url) or '[url]'}"
+    )
 
 
 async def ensure_results_cabin_url(page: Page, route: RouteQuery, timeout_ms: int, response_store=None) -> None:
@@ -547,8 +578,8 @@ async def ensure_results_cabin_url(page: Page, route: RouteQuery, timeout_ms: in
     LOGGER.info(
         "Ctrip search form reset cabin; correcting results URL route=%s previous_url=%s corrected_url=%s",
         route.route_key,
-        page.url,
-        corrected_url,
+        sanitize_url(page.url),
+        sanitize_url(corrected_url),
     )
     if response_store is not None:
         begin_response_batch(response_store)
@@ -560,23 +591,32 @@ def is_ctrip_results_url(url: str) -> bool:
     return any(marker in normalized for marker in CTRIP_RESULT_URL_MARKERS)
 
 
-async def dump_submit_debug(page: Page, route: RouteQuery) -> None:
+async def dump_submit_debug(
+    page: Page,
+    route: RouteQuery,
+    *,
+    runtime_dir: Path | None = None,
+) -> None:
+    dump_dir = debug_capture_directory(runtime_dir, "submit_debug") if runtime_dir else None
+    if dump_dir is None:
+        return
     try:
         from datetime import datetime
-        from pathlib import Path
         import json
 
-        dump_dir = Path("runtime") / "submit_debug"
-        dump_dir.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now().strftime("%Y%m%dT%H%M%S")
         prefix = dump_dir / f"ctrip_submit_{route.origin}_{route.destination}_{stamp}"
-        await page.screenshot(path=str(prefix.with_suffix(".png")), full_page=True)
-        prefix.with_suffix(".html").write_text(await page.content(), encoding="utf-8")
+        screenshot = prefix.with_suffix(".png")
+        await page.screenshot(path=str(screenshot), full_page=True)
+        make_file_private(screenshot)
+        atomic_write_text(prefix.with_suffix(".html"), await page.content())
         meta = {
             "route_key": route.route_key,
-            "url": page.url,
+            "url": sanitize_url(page.url),
             "title": await page.title(),
         }
-        prefix.with_suffix(".json").write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+        atomic_write_text(
+            prefix.with_suffix(".json"), json.dumps(meta, ensure_ascii=False, indent=2)
+        )
     except Exception:
         pass

@@ -90,6 +90,27 @@ def test_save_schedule_strips_internal_fields_and_computes_next_local_time(tmp_p
     assert "_checkpoint_job_id" not in stored
 
 
+def test_save_dual_provider_schedule_keeps_feizhu_call_budget(tmp_path):
+    service, repo, _ = make_service(tmp_path)
+    dual = payload(
+        provider="both",
+        feizhu_search_scope="open",
+        max_provider_calls=20,
+        max_candidates=0,
+        target_results=0,
+    )
+
+    schedule = service.save_schedule(
+        {"payload": dual, "interval_days": 1, "run_time": "09:00"},
+        now=at("2026-01-05T02:00:00"),
+    )
+
+    stored = repo.fetch_tail_schedule(schedule["schedule_id"])["payload"]
+    assert stored["provider"] == "both"
+    assert stored["feizhu_search_scope"] == "open"
+    assert stored["max_provider_calls"] == 20
+
+
 def test_next_run_uses_same_day_when_time_is_still_ahead():
     assert next_run_at(at("2026-01-05T00:30:00"), 1, "09:00", __import__("zoneinfo").ZoneInfo(TZ)) == "2026-01-05T01:00:00Z"
 

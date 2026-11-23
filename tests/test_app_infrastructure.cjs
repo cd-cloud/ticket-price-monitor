@@ -100,24 +100,19 @@ test('tail candidate names retain their window compatibility mirror', () => {
   assert.equal(vm.runInContext('tailState.form.candidateNames === window.tailCandidateNames', ctx), true);
 });
 
-test('fetchApi attaches X-Flight-Tracker-Token from URL query or sessionStorage', async () => {
+test('fetchApi relies on the HttpOnly session cookie and never reads URL or web storage tokens', async () => {
   let call;
-  const storage = new Map();
   const ctx = vm.createContext({
-    URLSearchParams,
     window: {
-      location: {search: '?token=secret-ui-token'},
-      sessionStorage: {
-        getItem: key => storage.get(key) || null,
-        setItem: (key, val) => storage.set(key, val),
-      },
+      get location() { throw new Error('location token access is forbidden'); },
+      get sessionStorage() { throw new Error('session token access is forbidden'); },
     },
     fetch: async (...args) => { call = args; return {ok: true}; },
   });
   vm.runInContext(apiSource, ctx);
   await vm.runInContext('fetchApi("/api/dashboard")', ctx);
-  assert.equal(call[1].headers['X-Flight-Tracker-Token'], 'secret-ui-token');
-  assert.equal(storage.get('flight_tracker_ui_token'), 'secret-ui-token');
+  assert.equal(call[0], '/api/dashboard');
+  assert.deepEqual(Object.keys(call[1]), []);
 });
 
 test('dashboard render functions escape untrusted route and snapshot text', () => {
@@ -198,4 +193,50 @@ test('dashboard render functions escape untrusted route and snapshot text', () =
   assert.ok(!card.innerHTML.includes('<img src=x onerror=1>'));
   assert.ok(!card.innerHTML.includes('<b>ctrip</b>'));
   assert.ok(!card.innerHTML.includes('<i>CA</i>'));
+});
+
+test('dashboard task groups never compare different currencies or quote terms', () => {
+  const commonSource = fs.readFileSync(path.join(__dirname, '../static/app/common.js'), 'utf8');
+  const dashboardSource = fs.readFileSync(path.join(__dirname, '../static/app/dashboard.js'), 'utf8');
+  const ctx = vm.createContext({
+    window: {},
+    Intl,
+    Date,
+    JSON,
+    Number,
+    String,
+    Boolean,
+    Array,
+    Set,
+    Map,
+  });
+  vm.runInContext(commonSource, ctx);
+  vm.runInContext(dashboardSource, ctx);
+
+  const result = vm.runInContext(`(() => {
+    const differentCurrency = summarizeTaskGroup({tasks: [
+      {latest_price: 100, currency: 'USD', passengers: 1, cabin: 'economy'},
+      {latest_price: 1000, currency: 'CNY', passengers: 1, cabin: 'economy'},
+    ]});
+    const differentPassengers = summarizeTaskGroup({tasks: [
+      {latest_price: 100, currency: 'CNY', passengers: 1, cabin: 'economy'},
+      {latest_price: 90, currency: 'CNY', passengers: 2, cabin: 'economy'},
+    ]});
+    const comparable = summarizeTaskGroup({tasks: [
+      {latest_price: 100, currency: 'CNY', passengers: 1, cabin: 'economy'},
+      {latest_price: 90, currency: 'CNY', passengers: 1, cabin: 'economy'},
+    ]});
+    return {
+      differentCurrency: {best: differentCurrency.best, comparable: differentCurrency.comparable},
+      differentPassengers: {best: differentPassengers.best, comparable: differentPassengers.comparable},
+      comparable: {best: comparable.best.latest_price, comparable: comparable.comparable},
+    };
+  })()`, ctx);
+
+  assert.equal(result.differentCurrency.best, null);
+  assert.equal(result.differentCurrency.comparable, false);
+  assert.equal(result.differentPassengers.best, null);
+  assert.equal(result.differentPassengers.comparable, false);
+  assert.equal(result.comparable.best, 90);
+  assert.equal(result.comparable.comparable, true);
 });

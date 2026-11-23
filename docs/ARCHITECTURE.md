@@ -31,9 +31,8 @@ query results, reports, and schedule state on the user's machine.
 - `backends/patchright.py`: Patchright drop-in replacement.
 - `backends/fallback.py`: `BackendFallbackManager` manages backend startup fallback and
   provider-level backend switching.
-- `browser_session.py`: provider profile health checks and recovery-profile selection.
-- `browser_use_adapter.py`: optional browser-use diagnostic handoff. It records page-state
-  artifacts for abnormal states but does not replace the deterministic Playwright flow.
+- `browser_session_manager.py`: provider profile health checks, lock enforcement, session metadata and recovery-profile selection.
+- `browser_use_adapter.py`: optional browser-use diagnostic handoff. Full page-state artifacts require explicit opt-in and do not replace the deterministic Playwright flow.
 - `providers/base.py`: provider contracts and normalized result assembly types.
 - `providers/ctrip.py`: Ctrip query orchestration, including direct result-page flow,
   one-way/round-trip form fallback, and direct-first multi-city flow.
@@ -48,7 +47,9 @@ query results, reports, and schedule state on the user's machine.
 - `providers/ctrip_tail_parser.py`: Ctrip tail-discovery card/text parsing.
 - `providers/ctrip_support.py`: Ctrip city-code, route, and cabin helper data.
 - `providers/feizhu.py` and `providers/priceline.py`: additional provider query handlers.
-- `config_manager.py`: configuration loading, encrypted credentials, route models, and defaults.
+- `providers/registry.py`: provider capability metadata used to reject unsupported route/filter combinations before provider I/O.
+- `config_manager.py`: locked configuration loading, encrypted credentials, route models, and defaults.
+- `private_files.py`: private runtime directories, atomic writes, and POSIX file permission hardening.
 - `data_storage.py`: SQLite schema and repository operations.
 - `analyzer.py`: CSV export and markdown reports.
 - `static/app/api.js`: shared fetch wrapper, request timeouts, and response error parsing.
@@ -94,7 +95,7 @@ It returns the effective backend order, Chrome profile path, profile health, and
 ## Ctrip Result Policy
 
 New ordinary Ctrip queries (one-way, round-trip and multi-city) require structured itinerary
-evidence matching route, dates, cabin and airline conditions. Price and details are selected
+evidence matching route, dates, cabin, airline and direct/transfer conditions. Price and details are selected
 together and retained in `OfferDetails.matched_quote`; outcome assembly never reparses the
 mutable response list. Legacy saved `raw_payload` records may still contain:
 
@@ -106,8 +107,7 @@ mutable response list. Legacy saved `raw_payload` records may still contain:
 Calendar and visible-only prices are no longer accepted as confirmed ordinary quotes.
 `ResponseStore` tracks request generations and rejects both late responses and late body parsing
 from previous searches. Direct navigation, form submission and cabin-correction navigation reset
-the generation. Ctrip tail discovery loads results independently of ordinary fare selection and
-keeps its service-level validation; empty partial searches remain retryable and are not negative cached.
+the generation. Complete response bodies remain in memory only; persisted diagnostics contain sanitized URLs and bounded structural summaries. Browser, CLI and tail result URLs are normalized again at the persistence boundary so query strings, fragments and token-like path segments cannot enter SQLite or CSV exports. The same sanitizer is applied to dashboard derivatives, in-memory job responses, runtime queues, attempts and legacy rows during repository initialization. Ctrip tail discovery loads results independently of ordinary fare selection and keeps its service-level validation; empty partial searches remain retryable and are not negative cached.
 See [CTRIP_QUERY_INTEGRITY.md](CTRIP_QUERY_INTEGRITY.md) for compatibility details and limitations.
 
 ## Local Runtime Data
@@ -125,12 +125,13 @@ These paths are intentionally local-only and should not be committed:
 - `runtime/tail_diagnostics/`
 - `runtime/tail_traces/`
 - `output/`
+- `vendor/flyclaw/config.local.yaml`
+
+On POSIX, runtime/output directories are hardened to `0700` where possible and sensitive files to `0600`; existing `.env`, provider storage state, encrypted credential and FlyClaw local-config files are migrated when loaded. Ordinary-query full-page captures and Ctrip tail traces require `FLIGHT_TRACKER_CAPTURE_DEBUG_PAGES=true` (explicit inspect/probe commands have separate opt-ins). Route writes use an interprocess lock plus a file fingerprint; a stale writer receives a conflict and must reload instead of replacing another process's routes.
 
 ## Git Boundary
 
-The Git root on this machine is `C:\Users\x1462\Documents\Playground`, not this project directory.
-That means `git status` from inside this project can show unrelated sibling projects and documents
-from the parent workspace.
+This directory is its own Git repository. Local runtime, output, credentials, browser profiles and FlyClaw local configuration must remain outside commits.
 
 ## Known Cleanup Priorities
 

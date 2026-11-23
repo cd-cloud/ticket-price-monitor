@@ -1,5 +1,9 @@
 """Offline evidence and progressive loading tests; no browser or provider needed."""
 import asyncio
+import json
+import os
+import stat
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -7,7 +11,15 @@ import pytest
 
 from config_manager import RouteQuery
 from providers.ctrip_date_evidence import collect_date_evidence, date_value_matches
-from providers.ctrip_page import ensure_results_departure_date, is_datepicker_overlay_visible
+from providers.ctrip import dump_submit_debug
+from providers.ctrip_browser_operations import CtripBrowserOperations
+from providers.ctrip_page import (
+    dump_city_picker_debug,
+    dump_datepicker_debug,
+    ensure_results_departure_date,
+    is_datepicker_overlay_visible,
+)
+from providers.ctrip_tail_discovery import start_trace, stop_trace
 from providers.ctrip_result_wait import wait_for_progressive_results
 from providers.response_capture import ResponseStore, attach_response_listeners
 
@@ -353,3 +365,76 @@ def test_loading_state_read_error_never_counts_as_quiet():
     assert report["reason"] == "wait_budget"
     assert report["polls"] == 4
     assert not report["coverage_complete"]
+
+
+class ArtifactPage:
+    def __init__(self):
+        self.url = "https://flights.ctrip.com/online/list/x?token=URL_SECRET"
+        self.body = SimpleNamespace(inner_text=AsyncMock(return_value="body text"))
+
+    async def screenshot(self, path, **_kwargs):
+        Path(path).write_bytes(b"fake-png")
+
+    async def content(self):
+        return "<html><body>private page</body></html>"
+
+    async def title(self):
+        return "private title"
+
+    def locator(self, selector):
+        if selector == "body":
+            return self.body
+        return SimpleNamespace(count=AsyncMock(return_value=0))
+
+
+def test_ctrip_full_page_diagnostics_are_opt_in_private_and_url_sanitized(tmp_path, monkeypatch):
+    page = ArtifactPage()
+    runtime_dir = tmp_path / "runtime"
+    monkeypatch.delenv("FLIGHT_TRACKER_CAPTURE_DEBUG_PAGES", raising=False)
+
+    asyncio.run(dump_datepicker_debug(page, DAY, "date-check", runtime_dir=runtime_dir))
+    asyncio.run(dump_city_picker_debug(page, "origin", "BJS", ["BJS"], runtime_dir=runtime_dir))
+    asyncio.run(dump_submit_debug(page, RouteQuery("BJS", "SHA", DAY), runtime_dir=runtime_dir))
+
+    assert not runtime_dir.exists()
+
+    monkeypatch.setenv("FLIGHT_TRACKER_CAPTURE_DEBUG_PAGES", "true")
+    asyncio.run(dump_datepicker_debug(page, DAY, "date-check", runtime_dir=runtime_dir))
+    asyncio.run(dump_city_picker_debug(page, "origin", "BJS", ["BJS"], runtime_dir=runtime_dir))
+    asyncio.run(dump_submit_debug(page, RouteQuery("BJS", "SHA", DAY), runtime_dir=runtime_dir))
+
+    artifacts = [path for path in runtime_dir.rglob("*") if path.is_file()]
+    assert artifacts
+    assert all(stat.S_IMODE(path.stat().st_mode) == 0o600 for path in artifacts)
+    serialized = "\n".join(path.read_text(encoding="utf-8", errors="ignore") for path in artifacts if path.suffix == ".json")
+    assert "URL_SECRET" not in serialized
+
+
+def test_ctrip_tail_trace_respects_capture_switch_and_always_stops(tmp_path, monkeypatch):
+    tracing = SimpleNamespace(start=AsyncMock(), stop=AsyncMock())
+    context = SimpleNamespace(tracing=tracing)
+    automation = SimpleNamespace(app_config=SimpleNamespace(runtime_dir=tmp_path))
+    monkeypatch.delenv("FLIGHT_TRACKER_CAPTURE_DEBUG_PAGES", raising=False)
+
+    started = asyncio.run(start_trace(
+        context, origin="BJS", transfer="CGO", destination="SHA",
+        departure_date=DAY, runtime_dir=tmp_path,
+    ))
+    assert started is False
+    tracing.start.assert_not_awaited()
+
+    monkeypatch.setenv("FLIGHT_TRACKER_CAPTURE_DEBUG_PAGES", "true")
+    started = asyncio.run(start_trace(
+        context, origin="BJS", transfer="CGO", destination="SHA",
+        departure_date=DAY, runtime_dir=tmp_path,
+    ))
+    assert started is True
+    monkeypatch.delenv("FLIGHT_TRACKER_CAPTURE_DEBUG_PAGES", raising=False)
+    asyncio.run(stop_trace(automation, context, trace_started=started))
+    tracing.stop.assert_awaited_once_with()
+
+
+def test_ctrip_browser_adapter_exposes_runtime_dir_to_page_helpers(tmp_path):
+    automation = SimpleNamespace(app_config=SimpleNamespace(runtime_dir=tmp_path))
+    adapter = CtripBrowserOperations(automation, SimpleNamespace())
+    assert adapter.app_config.runtime_dir == tmp_path

@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 
 from config_manager import RouteQuery
 from providers import ctrip_itinerary
+from providers.response_capture import sanitize_url
 
 
 def extract_price_from_network(response_store: list[dict]) -> float | None:
@@ -69,7 +70,7 @@ def extract_single_route_match_from_network(response_store: list[dict], route: R
                             and ctrip_itinerary.details_match_preferences(details, route)):
                         itinerary_matches.append({
                             "total_price": total, "details": details, "source": "flight_itinerary_list",
-                            "response_url": item.get("url"), "query_generation": item.get("query_generation"),
+                            "response_url": sanitize_url(item.get("url")), "query_generation": item.get("query_generation"),
                             "loading_evidence": getattr(response_store, "loading_evidence", None),
                         })
 
@@ -109,13 +110,13 @@ def extract_multi_city_match_from_network(
                     if total is None:
                         continue
                     details = ctrip_itinerary.build_itinerary_details(itinerary, price)
-                    if not ctrip_itinerary.multi_city_details_match_route(details, route):
+                    if not ctrip_itinerary.multi_city_details_match_route(
+                        details, route, transfer_policy=route.transfer_policy
+                    ):
                         continue
                     if not ctrip_itinerary.details_match_preferences(details, route):
                         continue
                     if route.transfer_policy == "direct_only":
-                        if not ctrip_itinerary.multi_city_details_are_direct(details, route):
-                            continue
                         score = (1, -total)
                     else:
                         if preferred_total is not None and abs(total - preferred_total) < 0.01:
@@ -142,7 +143,7 @@ def extract_multi_city_match_from_network(
         "total_price": _total_from_price_fields(price),
         "details": ctrip_itinerary.build_itinerary_details(itinerary, price),
         "source": "flight_itinerary_list",
-        "response_url": source_item.get("url"),
+        "response_url": sanitize_url(source_item.get("url")),
         "query_generation": source_item.get("query_generation"),
         "loading_evidence": getattr(response_store, "loading_evidence", None),
     })
@@ -151,7 +152,7 @@ def extract_multi_city_match_from_network(
 def summarize_response_for_diagnostics(item: dict) -> dict[str, object]:
     payload = item.get("payload")
     summary: dict[str, object] = {
-        "url": item.get("url"),
+        "url": sanitize_url(item.get("url")),
         "status": item.get("status"),
         "has_flight_itinerary_list": False,
         "top_keys": [],
@@ -225,6 +226,8 @@ def details_match_single_route(details: list[dict[str, object]], route: RouteQue
         return False
     if route.transfer_policy == "direct_only" and len(details) != 1:
         return False
+    if route.transfer_policy == "transfer_only" and len(details) < 2:
+        return False
     return True
 
 
@@ -241,6 +244,8 @@ def details_match_round_trip(details: list[dict[str, object]], route: RouteQuery
     if not details_match_direction(inbound, route.destination, route.origin, route.return_date or ""):
         return False
     if route.transfer_policy == "direct_only" and (len(outbound) != 1 or len(inbound) != 1):
+        return False
+    if route.transfer_policy == "transfer_only" and (len(outbound) < 2 or len(inbound) < 2):
         return False
     return True
 

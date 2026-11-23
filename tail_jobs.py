@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable
 
 from data_storage import PriceRepository
+from providers.response_capture import sanitize_payload_urls, sanitize_sensitive_text
 
 
 LOGGER = logging.getLogger(__name__)
@@ -70,7 +71,12 @@ class TailDiscoveryJobManager:
         self._lock = threading.Lock()
         self._jobs: dict[str, dict[str, Any]] = {}
 
+    @staticmethod
+    def _safe_job(job: dict[str, Any] | None) -> dict[str, Any] | None:
+        return sanitize_payload_urls(deepcopy(job)) if job else job
+
     def submit(self, payload: dict[str, Any]) -> dict[str, Any]:
+        payload = sanitize_payload_urls(dict(payload))
         job_id = uuid.uuid4().hex[:12]
         job = {
             "job_id": job_id,
@@ -113,14 +119,16 @@ class TailDiscoveryJobManager:
             if not job:
                 persisted = self._repository.fetch_tail_discovery_job(job_id)
                 if persisted:
-                    return self._normalize_persisted_job(persisted) or persisted
+                    return self._safe_job(self._normalize_persisted_job(persisted) or persisted)
                 raise KeyError(job_id)
-            return deepcopy(job)
+            return self._safe_job(job)
 
     def latest(self) -> dict[str, Any] | None:
         with self._lock:
             if not self._jobs:
-                return self._normalize_persisted_job(self._repository.latest_tail_discovery_job())
+                return self._safe_job(
+                    self._normalize_persisted_job(self._repository.latest_tail_discovery_job())
+                )
             # Timestamps have one-second precision. A retry/dual submission in
             # the same second must not restore an older completed task and
             # unlock the UI while the new parent is still active.
@@ -128,7 +136,7 @@ class TailDiscoveryJobManager:
                 pair[1].get("status") in {"queued", "running", "needs_verification", "cancelling"},
                 str(pair[1].get("created_at") or ""), pair[0],
             ))
-            return deepcopy(latest_job)
+            return self._safe_job(latest_job)
 
     def list_recent(self, limit: int = 20) -> list[dict[str, Any]]:
         persisted = [
@@ -139,11 +147,12 @@ class TailDiscoveryJobManager:
             merged = {str(item.get("job_id")): item for item in persisted if item.get("job_id")}
             for job in self._jobs.values():
                 merged[str(job.get("job_id"))] = dict(job)
-        return sorted(
+        items = sorted(
             merged.values(),
             key=lambda item: str(item.get("updated_at") or item.get("created_at") or ""),
             reverse=True,
         )[: max(1, min(int(limit), 100))]
+        return [self._safe_job(item) for item in items]
 
     def cancel(self, job_id: str) -> dict[str, Any]:
         with self._lock:
@@ -152,9 +161,9 @@ class TailDiscoveryJobManager:
                 persisted = self._repository.fetch_tail_discovery_job(job_id)
                 if not persisted:
                     raise KeyError(job_id)
-                return self._normalize_persisted_job(persisted) or persisted
+                return self._safe_job(self._normalize_persisted_job(persisted) or persisted)
             if job.get("status") in {"finished", "failed", "cancelled", "interrupted", "paused", "partial"}:
-                return dict(job)
+                return self._safe_job(job)
             progress = dict(job.get("progress") or {})
             progress["stage"] = "cancelling"
             progress["message"] = "已请求取消；当前目的地结束后会停止。"
@@ -163,7 +172,7 @@ class TailDiscoveryJobManager:
             job["progress"] = progress
             job["updated_at"] = now_iso()
             self._persist(job)
-            return dict(job)
+            return self._safe_job(job)
 
     def continue_after_verification(self, job_id: str) -> dict[str, Any]:
         with self._lock:
@@ -174,7 +183,7 @@ class TailDiscoveryJobManager:
                     raise KeyError(job_id)
                 raise ValueError("This task is no longer active; please retry the verification candidate.")
             if job.get("status") not in {"running", "needs_verification"}:
-                return dict(job)
+                return self._safe_job(job)
             progress = dict(job.get("progress") or {})
             progress["stage"] = "verification_continued"
             progress["message"] = "已收到继续指令，正在恢复携程甩尾查询。"
@@ -183,7 +192,7 @@ class TailDiscoveryJobManager:
             job["progress"] = progress
             job["updated_at"] = now_iso()
             self._persist(job)
-            return dict(job)
+            return self._safe_job(job)
 
     @staticmethod
     def _normalize_persisted_job(job: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -202,7 +211,7 @@ class TailDiscoveryJobManager:
         if job.get("status") in {"finished", "failed", "cancelled", "interrupted", "paused", "partial"}:
             job = dict(job)
             job = _normalize_terminal_queue_payload(job)
-        return job
+        return sanitize_payload_urls(job)
 
     def _update(self, job_id: str, **changes: Any) -> None:
         with self._lock:
@@ -211,6 +220,7 @@ class TailDiscoveryJobManager:
                 return
             if job.get("cancel_requested") and changes.get("status") in {"running", "needs_verification"}:
                 changes["status"] = "cancelling"
+            changes = sanitize_payload_urls(changes)
             job.update(changes)
             job["updated_at"] = now_iso()
             self._persist(job)
@@ -311,14 +321,15 @@ class TailDiscoveryJobManager:
                 progress=progress,
             )
         except Exception as exc:
-            LOGGER.exception("tail discovery job failed: %s", job_id)
+            safe_error = sanitize_sensitive_text(exc)
+            LOGGER.error("tail discovery job failed: %s: %s", job_id, safe_error)
             self._update(
                 job_id,
                 status="failed",
                 finished_at=now_iso(),
-                error=str(exc),
+                error=safe_error,
                 progress={
                     "stage": "failed",
-                    "message": str(exc),
+                    "message": safe_error,
                 },
             )

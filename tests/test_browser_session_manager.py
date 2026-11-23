@@ -1,4 +1,5 @@
 import asyncio
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -14,6 +15,7 @@ class FakeContext:
 
     async def storage_state(self, *, path: str) -> None:
         self.storage_state_path = path
+        Path(path).write_text("{}", encoding="utf-8")
 
 
 class BrowserSessionManagerTests(unittest.TestCase):
@@ -101,6 +103,8 @@ class BrowserSessionManagerTests(unittest.TestCase):
             )
             asyncio.run(manager.save_storage_state_if_allowed(playwright_context, provider))
             self.assertEqual(str(state_path), playwright_context.storage_state_path)
+            if os.name != "nt":
+                self.assertEqual(0o600, state_path.stat().st_mode & 0o777)
 
             rebrowser_context = FakeContext()
             manager._context_session_metadata[id(rebrowser_context)] = BrowserSessionMetadata(
@@ -156,7 +160,7 @@ class BrowserSessionManagerTests(unittest.TestCase):
             health = manager.chrome_profile_health(provider)
 
             self.assertFalse(health["ok"])
-            self.assertIn("stale lock file", str(health["reason"]))
+            self.assertIn("profile lock present", str(health["reason"]))
 
     def test_unhealthy_chrome_profile_switches_to_recovery_profile(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -293,16 +297,35 @@ class BrowserSessionManagerTests(unittest.TestCase):
             (default_dir / "Cache" / "entry").write_text("cache", encoding="utf-8")
             (default_dir / "Service Worker").mkdir()
             (default_dir / "Cookies").write_text("cookies", encoding="utf-8")
-            (profile_dir / "SingletonCookie").write_text("", encoding="utf-8")
 
             result = manager.clean_chrome_profile_site_data(provider, "chrome", profile_name="ctrip-v2")
 
             self.assertFalse((default_dir / "Cache").exists())
             self.assertFalse((default_dir / "Service Worker").exists())
             self.assertFalse((default_dir / "Cookies").exists())
-            self.assertFalse((profile_dir / "SingletonCookie").exists())
             self.assertEqual("ctrip-v2", result["profile_name"])
-            self.assertGreaterEqual(len(result["removed"]), 4)
+            self.assertGreaterEqual(len(result["removed"]), 3)
+
+    def test_clean_chrome_profile_refuses_locked_profile(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            provider = SimpleNamespace(name="ctrip", storage_state_file=Path(tmpdir) / "state.json")
+            manager = BrowserSessionManager(SimpleNamespace(
+                runtime_dir=Path(tmpdir), browser_backend="chrome",
+                browser_backend_fallbacks=["playwright"], providers={},
+                headless=True, browser_channel=None,
+            ))
+            profile_dir = Path(tmpdir) / "browser_profiles" / "chrome" / "ctrip-v2"
+            (profile_dir / "Default").mkdir(parents=True)
+            lock = profile_dir / "SingletonLock"
+            cookies = profile_dir / "Default" / "Cookies"
+            lock.write_text("owned", encoding="utf-8")
+            cookies.write_text("cookies", encoding="utf-8")
+
+            with self.assertRaisesRegex(RuntimeError, "in use"):
+                manager.clean_chrome_profile_site_data(provider, "chrome", profile_name="ctrip-v2")
+
+            self.assertTrue(lock.exists())
+            self.assertTrue(cookies.exists())
 
 
 if __name__ == "__main__":

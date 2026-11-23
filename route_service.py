@@ -14,7 +14,14 @@ from config_manager import (
     normalize_airport_code,
     normalize_transfer_policy,
 )
-from route_expander import expand_route_payload, payload_has_city_groups
+from route_expander import (
+    MAX_GROUP_LABEL_LENGTH,
+    MAX_MULTI_CITY_SEGMENTS,
+    MAX_RAW_AIRLINE_OPTIONS,
+    MAX_RAW_PROVIDER_OPTIONS,
+    expand_route_payload,
+    payload_has_city_groups,
+)
 from providers.registry import provider_definition
 
 
@@ -29,6 +36,9 @@ ALLOWED_CABINS = {
 ALLOWED_TRANSFER_POLICIES = {"any", "direct_only", "transfer_only"}
 AIRPORT_CODE_PATTERN = re.compile(r"^[A-Z]{3}$")
 AIRLINE_CODE_PATTERN = re.compile(r"^[A-Z0-9]{2}$")
+MAX_PREFERRED_AIRLINES = 20
+MAX_GROUP_ID_LENGTH = 80
+MAX_ROUTE_PROVIDERS = 10
 
 
 class RouteService:
@@ -120,6 +130,16 @@ class RouteService:
         with self._config_guard():
             self.refresh_config()
             config = self.get_config()
+            providers_payload = payload.get("providers") or []
+            airlines_payload = payload.get("preferred_airlines") or []
+            if not isinstance(providers_payload, list) or len(providers_payload) > MAX_ROUTE_PROVIDERS:
+                raise ValueError(f"providers must be a list of at most {MAX_ROUTE_PROVIDERS} items.")
+            if not isinstance(airlines_payload, list) or len(airlines_payload) > MAX_PREFERRED_AIRLINES:
+                raise ValueError(
+                    f"preferred_airlines must be a list of at most {MAX_PREFERRED_AIRLINES} items."
+                )
+            if "auto_query_enabled" in payload and type(payload["auto_query_enabled"]) is not bool:
+                raise ValueError("auto_query_enabled must be a boolean.")
             routes_to_add = expand_route_payload(
                 payload,
                 auto_query_interval_hours=self.auto_query_interval_hours,
@@ -207,23 +227,41 @@ class RouteService:
             if "providers" in payload
             else (existing_route.providers if existing_route else [])
         )
-        providers = [str(name).strip() for name in providers_payload or [] if str(name).strip()]
-        preferred_airlines = [
+        airlines_payload = payload.get("preferred_airlines", [])
+        if not isinstance(providers_payload, list) or len(providers_payload) > MAX_RAW_PROVIDER_OPTIONS:
+            raise ValueError(
+                f"providers must be a list of at most {MAX_RAW_PROVIDER_OPTIONS} items."
+            )
+        if not isinstance(airlines_payload, list) or len(airlines_payload) > MAX_RAW_AIRLINE_OPTIONS:
+            raise ValueError(
+                f"preferred_airlines must be a list of at most {MAX_RAW_AIRLINE_OPTIONS} items."
+            )
+        providers = list(dict.fromkeys(
+            str(name).strip() for name in providers_payload if str(name).strip()
+        ))
+        preferred_airlines = list(dict.fromkeys(
             str(code).strip().upper()
-            for code in payload.get("preferred_airlines", [])
+            for code in airlines_payload
             if str(code).strip()
-        ]
-        auto_query_enabled = bool(
+        ))
+        auto_query_enabled = (
             payload["auto_query_enabled"]
             if "auto_query_enabled" in payload
             else (existing_route.auto_query_enabled if existing_route else False)
         )
+        if type(auto_query_enabled) is not bool:
+            raise ValueError("auto_query_enabled must be a boolean.")
         auto_query_next_run_at = str(
             payload["auto_query_next_run_at"]
             if "auto_query_next_run_at" in payload
             else (existing_route.auto_query_next_run_at if existing_route else "")
         ).strip() or None
-        segments = self._segments_from_payload(payload.get("segments") or [])
+        segments_payload = payload.get("segments") or []
+        if not isinstance(segments_payload, list) or len(segments_payload) > MAX_MULTI_CITY_SEGMENTS:
+            raise ValueError(
+                f"segments must be a list of at most {MAX_MULTI_CITY_SEGMENTS} items."
+            )
+        segments = self._segments_from_payload(segments_payload)
 
         if route_type == "multi_city" and segments:
             return RouteQuery(
@@ -286,10 +324,18 @@ class RouteService:
             raise ValueError(f"Unsupported transfer policy: {route.transfer_policy}.")
         if not 1 <= route.passengers <= 9:
             raise ValueError("passengers must be between 1 and 9.")
+        if len(route.preferred_airlines or []) > MAX_PREFERRED_AIRLINES:
+            raise ValueError(f"At most {MAX_PREFERRED_AIRLINES} preferred airlines are allowed.")
+        if route.group_id and len(route.group_id) > MAX_GROUP_ID_LENGTH:
+            raise ValueError(f"group_id must be at most {MAX_GROUP_ID_LENGTH} characters.")
+        if route.group_label and len(route.group_label) > MAX_GROUP_LABEL_LENGTH:
+            raise ValueError(f"group_label must be at most {MAX_GROUP_LABEL_LENGTH} characters.")
 
         providers = route.providers or []
         if not providers:
             raise ValueError("Select at least one provider.")
+        if len(providers) > MAX_ROUTE_PROVIDERS:
+            raise ValueError(f"At most {MAX_ROUTE_PROVIDERS} providers are allowed per route.")
         for provider in providers:
             definition = provider_definition(provider)
             if definition is None or not definition.has_handler:
@@ -299,6 +345,18 @@ class RouteService:
                 raise ValueError(f"Unknown provider: {provider}.")
             if not provider_config.enabled:
                 raise ValueError(f"Provider is disabled: {provider}.")
+            if route.is_multi_city and not definition.supports_multi_city:
+                raise ValueError(f"Provider does not support multi-city routes: {provider}.")
+            if route.return_date and not route.is_multi_city and not definition.supports_round_trip:
+                raise ValueError(f"Provider does not support round-trip routes: {provider}.")
+            if route.passengers > definition.max_passengers:
+                raise ValueError(
+                    f"Provider supports at most {definition.max_passengers} passenger(s): {provider}."
+                )
+            if route.transfer_policy != "any" and not definition.supports_transfer_filter:
+                raise ValueError(f"Provider does not support verified transfer filters: {provider}.")
+            if route.preferred_airlines and not definition.supports_airline_filter:
+                raise ValueError(f"Provider does not support verified airline filters: {provider}.")
 
         for code in route.preferred_airlines or []:
             if not AIRLINE_CODE_PATTERN.fullmatch(code):
@@ -308,6 +366,8 @@ class RouteService:
             segments = route.segments or []
             if len(segments) < 2:
                 raise ValueError("multi_city routes require at least two segments.")
+            if len(segments) > MAX_MULTI_CITY_SEGMENTS:
+                raise ValueError(f"multi_city routes support at most {MAX_MULTI_CITY_SEGMENTS} segments.")
             previous_date: date | None = None
             today = self._today_for_config(config)
             for segment in segments:
@@ -354,6 +414,6 @@ class RouteService:
         return parsed
 
     def _save_and_refresh(self, routes: list[RouteQuery]) -> None:
-        self.rebalance_auto_query(routes)
         self.config_manager.save_routes(routes)
+        self.rebalance_auto_query(routes)
         self.refresh_config()

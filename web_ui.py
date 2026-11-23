@@ -11,46 +11,99 @@ from fastapi import Body, FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from pydantic import BaseModel, Field, StrictBool, StrictStr
 from starlette.requests import Request
 from starlette.responses import Response
 
 from app_service import FlightPriceApplication
-from config_manager import ConfigManager
+from config_manager import ConfigConflictError, ConfigManager
+from providers.response_capture import sanitize_sensitive_text
+from private_files import make_file_private
 
 
 ROOT = Path(__file__).resolve().parent
 templates = Jinja2Templates(directory=str(ROOT / "templates"))
 MUTATING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
-LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1"}
 UI_TOKEN_COOKIE = "flight_tracker_ui_token"
+PUBLIC_UI_PATHS = {"/", "/api/health", "/api/session"}
 LOGGER = logging.getLogger(__name__)
 
 
-def _request_hostname(request: Request) -> str:
-    host = (request.headers.get("host") or "").strip()
-    if not host:
-        return ""
-    try:
-        return (urlparse(f"http://{host}").hostname or "").lower()
-    except Exception:
-        return ""
+class UiSessionPayload(BaseModel):
+    token: str = Field(min_length=1, max_length=512)
 
 
-def _is_allowed_origin(value: str | None, *, request_host: str = "", token_protected: bool = False) -> bool:
+class EnabledPayload(BaseModel):
+    enabled: StrictBool
+
+
+class BackupPayload(BaseModel):
+    backup: StrictBool = False
+
+
+class ConfirmPayload(BaseModel):
+    confirmed: StrictBool
+
+
+class ProfilePayload(BaseModel):
+    profile: StrictStr | None = Field(default=None, max_length=80)
+    switch_to_recovery: StrictBool = False
+
+
+class SwitchProfilePayload(BaseModel):
+    profile: StrictStr = Field(min_length=1, max_length=80)
+
+
+def _origin_parts(value: str | None) -> tuple[str, str, int] | None:
     if not value:
-        return True
+        return None
     try:
         parsed = urlparse(value)
-    except Exception:
-        return False
-    hostname = (parsed.hostname or "").lower()
-    if hostname in LOCAL_HOSTS:
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            return None
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        return parsed.scheme.lower(), parsed.hostname.lower().rstrip("."), port
+    except (TypeError, ValueError):
+        return None
+
+
+def _request_origin_parts(request: Request) -> tuple[str, str, int] | None:
+    scheme = (request.headers.get("x-forwarded-proto") or request.url.scheme).split(",", 1)[0].strip().lower()
+    host = (request.headers.get("host") or "").strip()
+    return _origin_parts(f"{scheme}://{host}") if scheme and host else None
+
+
+def _is_allowed_origin(value: str | None, request: Request) -> bool:
+    if not value:
         return True
-    return bool(token_protected and request_host and hostname == request_host)
+    supplied = _origin_parts(value)
+    expected = _request_origin_parts(request)
+    return supplied is not None and expected is not None and supplied == expected
+
+
+def _request_is_https(request: Request) -> bool:
+    forwarded = (request.headers.get("x-forwarded-proto") or "").split(",", 1)[0].strip().lower()
+    return (forwarded or request.url.scheme).lower() == "https"
 
 
 def _valid_ui_token(supplied: str | None, expected: str) -> bool:
     return bool(supplied) and hmac.compare_digest(supplied, expected)
+
+
+def _request_ui_token(request: Request) -> str:
+    return (
+        request.headers.get("x-flight-tracker-token")
+        or request.cookies.get(UI_TOKEN_COOKIE)
+        or ""
+    )
+
+
+LOGIN_HTML = """<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Flight Price Tracker Login</title><style>body{font-family:system-ui,sans-serif;max-width:32rem;margin:12vh auto;padding:1.5rem;color:#172033}form{display:grid;gap:1rem}input,button{font:inherit;padding:.75rem}button{cursor:pointer}.error{color:#a40000;min-height:1.5rem}</style></head>
+<body><main><h1>航班价格监控</h1><p>请输入本机管理 token。token 只通过本次 POST 提交，不会写入 URL 或浏览器存储。</p>
+<form id="login"><label>管理 token<input id="token" type="password" autocomplete="current-password" required></label><button type="submit">进入控制台</button></form><p id="error" class="error" role="alert"></p></main>
+<script>history.replaceState(null,"",location.pathname);document.getElementById("login").addEventListener("submit",async e=>{e.preventDefault();const out=document.getElementById("error");out.textContent="";try{const r=await fetch("/api/session",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({token:document.getElementById("token").value})});if(!r.ok)throw new Error("token 无效");location.replace("/")}catch(err){out.textContent=err.message}});</script></body></html>"""
 
 
 def create_app(config_path: str | None = None) -> FastAPI:
@@ -74,53 +127,51 @@ def create_app(config_path: str | None = None) -> FastAPI:
     @app.middleware("http")
     async def disable_cache(request: Request, call_next):
         response: Response = await call_next(request)
-        if request.url.path == "/" or request.url.path.startswith("/static/"):
-            response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
-            response.headers["Pragma"] = "no-cache"
-            response.headers["Expires"] = "0"
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
         return response
 
     @app.middleware("http")
     async def protect_local_admin_api(request: Request, call_next):
         path = request.url.path
-        request_host = _request_hostname(request)
         if request.method in MUTATING_METHODS:
             sec_fetch_site = (request.headers.get("sec-fetch-site") or "").strip().lower()
             if sec_fetch_site == "cross-site":
                 return Response("Forbidden cross-site request", status_code=403)
             origin = request.headers.get("origin")
             referer = request.headers.get("referer")
-            if not _is_allowed_origin(origin, request_host=request_host, token_protected=bool(ui_token)):
+            if not _is_allowed_origin(origin, request):
                 return Response("Forbidden origin", status_code=403)
-            if not origin and referer and not _is_allowed_origin(
-                referer, request_host=request_host, token_protected=bool(ui_token)
-            ):
+            if not origin and referer and not _is_allowed_origin(referer, request):
                 return Response("Forbidden referer", status_code=403)
 
-        requires_token = bool(ui_token) and path != "/api/health" and not path.startswith("/static/")
-        query_token = request.query_params.get("token")
-        if requires_token:
-            supplied = (
-                request.headers.get("x-flight-tracker-token")
-                or query_token
-                or request.cookies.get(UI_TOKEN_COOKIE)
-            )
-            if not _valid_ui_token(supplied, ui_token):
-                return Response("Missing or invalid UI token", status_code=401)
+        requires_token = bool(ui_token) and path not in PUBLIC_UI_PATHS and not path.startswith("/static/")
+        if requires_token and not _valid_ui_token(_request_ui_token(request), ui_token):
+            return Response("Missing or invalid UI token", status_code=401)
+        return await call_next(request)
 
-        response = await call_next(request)
-        if ui_token and _valid_ui_token(query_token, ui_token):
-            response.set_cookie(
-                key=UI_TOKEN_COOKIE,
-                value=ui_token,
-                httponly=True,
-                samesite="strict",
-                secure=request.url.scheme == "https",
-            )
+    @app.post("/api/session")
+    async def establish_ui_session(payload: UiSessionPayload, request: Request) -> Response:
+        if not ui_token:
+            return Response('{"authenticated":true}', media_type="application/json")
+        if not _valid_ui_token(payload.token, ui_token):
+            raise HTTPException(status_code=401, detail="Invalid UI token")
+        response = Response('{"authenticated":true}', media_type="application/json")
+        response.set_cookie(
+            key=UI_TOKEN_COOKIE,
+            value=ui_token,
+            httponly=True,
+            samesite="strict",
+            secure=_request_is_https(request),
+            path="/",
+        )
         return response
 
     @app.get("/", response_class=HTMLResponse)
     async def index(request: Request) -> HTMLResponse:
+        if ui_token and not _valid_ui_token(_request_ui_token(request), ui_token):
+            return HTMLResponse(LOGIN_HTML)
         payload = service.dashboard_payload()
         return templates.TemplateResponse(
             request,
@@ -148,9 +199,9 @@ def create_app(config_path: str | None = None) -> FastAPI:
                 "query_policy": await asyncio.to_thread(lambda: service.query_service.airchina_query_gate().status())}
 
     @app.post("/api/experiments/airchina/policy/resume")
-    async def resume_airchina_policy(payload: dict = Body(...)) -> dict:
+    async def resume_airchina_policy(payload: ConfirmPayload) -> dict:
         try:
-            if set(payload) != {"confirmed"} or payload["confirmed"] is not True:
+            if payload.confirmed is not True:
                 raise ValueError()
             return await asyncio.to_thread(
                 lambda: service.query_service.airchina_query_gate().resume(confirmed=True))
@@ -187,11 +238,11 @@ def create_app(config_path: str | None = None) -> FastAPI:
             raise HTTPException(status_code=409, detail=str(exc))
 
     @app.post("/api/experiments/airchina/session/ready")
-    async def confirm_airchina_session(payload: dict = Body(default={})) -> dict:
+    async def confirm_airchina_session(payload: BackupPayload) -> dict:
         try:
             return await asyncio.to_thread(
                 service.experimental_queries.browser_session_ready,
-                backup=payload.get("backup", False),
+                backup=payload.backup,
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
@@ -248,19 +299,22 @@ def create_app(config_path: str | None = None) -> FastAPI:
         return service.browser_profiles()
 
     @app.post("/api/browser-profiles/{provider}/open")
-    async def open_browser_profile(provider: str, payload: dict = Body(default={})) -> dict:
+    async def open_browser_profile(provider: str, payload: ProfilePayload) -> dict:
         try:
-            return await asyncio.to_thread(service.open_browser_profile, provider, profile=payload.get("profile"))
+            return await asyncio.to_thread(service.open_browser_profile, provider, profile=payload.profile)
         except KeyError:
             raise HTTPException(status_code=404, detail="Provider not found")
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc))
 
     @app.post("/api/browser-profiles/{provider}/switch")
-    async def switch_browser_profile(provider: str, payload: dict = Body(...)) -> dict:
+    async def switch_browser_profile(provider: str, payload: SwitchProfilePayload) -> dict:
         try:
-            return await asyncio.to_thread(service.switch_browser_profile, provider,
-                                           profile=str(payload.get("profile") or ""))
+            return await asyncio.to_thread(
+                service.switch_browser_profile, provider, profile=payload.profile
+            )
         except KeyError:
             raise HTTPException(status_code=404, detail="Provider not found")
         except ValueError as exc:
@@ -274,20 +328,24 @@ def create_app(config_path: str | None = None) -> FastAPI:
             return await asyncio.to_thread(service.reset_recovery_profile, provider)
         except KeyError:
             raise HTTPException(status_code=404, detail="Provider not found")
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc))
 
     @app.post("/api/browser-profiles/{provider}/clean")
-    async def clean_browser_profile(provider: str, payload: dict = Body(default={})) -> dict:
+    async def clean_browser_profile(provider: str, payload: ProfilePayload) -> dict:
         try:
             return await asyncio.to_thread(
                 service.clean_browser_profile,
                 provider,
-                profile=payload.get("profile"),
-                switch_to_recovery=bool(payload.get("switch_to_recovery", False)),
+                profile=payload.profile,
+                switch_to_recovery=payload.switch_to_recovery,
             )
         except KeyError:
             raise HTTPException(status_code=404, detail="Provider not found")
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc))
 
@@ -383,10 +441,10 @@ def create_app(config_path: str | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail="Tail discovery schedule not found")
 
     @app.post("/api/tail-discovery/schedules/{schedule_id}/enabled")
-    async def set_tail_discovery_schedule_enabled(schedule_id: str, payload: dict = Body(...)) -> dict:
+    async def set_tail_discovery_schedule_enabled(schedule_id: str, payload: EnabledPayload) -> dict:
         try:
             return await asyncio.to_thread(
-                service.set_tail_schedule_enabled, schedule_id, bool(payload.get("enabled", False))
+                service.set_tail_schedule_enabled, schedule_id, payload.enabled
             )
         except (ValueError, TypeError) as exc:
             raise HTTPException(status_code=400, detail=str(exc))
@@ -500,28 +558,38 @@ def create_app(config_path: str | None = None) -> FastAPI:
     async def save_route(payload: dict = Body(...)) -> dict:
         try:
             return await asyncio.to_thread(service.upsert_route, payload)
+        except ConfigConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
 
     @app.post("/api/routes/{route_key:path}/auto-query")
-    async def update_route_auto_query(route_key: str, payload: dict = Body(...)) -> dict:
+    async def update_route_auto_query(route_key: str, payload: EnabledPayload) -> dict:
         try:
             return await asyncio.to_thread(
-                service.update_route_auto_query, route_key, enabled=bool(payload.get("enabled", False))
+                service.update_route_auto_query, route_key, enabled=payload.enabled
             )
+        except ConfigConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
         except KeyError:
             raise HTTPException(status_code=404, detail="Route not found")
 
     @app.delete("/api/routes/{route_key:path}")
     async def delete_route(route_key: str) -> dict:
-        deleted = await asyncio.to_thread(service.delete_route, route_key)
+        try:
+            deleted = await asyncio.to_thread(service.delete_route, route_key)
+        except ConfigConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
         if not deleted:
             raise HTTPException(status_code=404, detail="Route not found")
         return {"deleted": True}
 
     @app.delete("/api/route-groups/{group_id:path}")
     async def delete_route_group(group_id: str) -> dict:
-        deleted = await asyncio.to_thread(service.delete_route_group, group_id)
+        try:
+            deleted = await asyncio.to_thread(service.delete_route_group, group_id)
+        except ConfigConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
         if not deleted:
             raise HTTPException(status_code=404, detail="Route group not found")
         return {"deleted": True}
@@ -542,9 +610,13 @@ def create_app(config_path: str | None = None) -> FastAPI:
         for path in paths:
             if not path.exists():
                 continue
+            make_file_private(path)
             file_lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()[-40:]
             if file_lines:
-                lines.extend([f"[{path.name}] {line}" for line in file_lines])
+                lines.extend([
+                    f"[{path.name}] {sanitize_sensitive_text(line)}"
+                    for line in file_lines
+                ])
         lines = lines[-120:]
         return {"lines": lines}
 

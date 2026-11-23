@@ -1,10 +1,13 @@
 import json
 import os
+import stat
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 
-from config_manager import ConfigManager, normalize_airport_code
+from config_manager import ConfigConflictError, ConfigManager, RouteQuery, normalize_airport_code
 
 
 class ConfigManagerTests(unittest.TestCase):
@@ -196,6 +199,117 @@ class ConfigManagerTests(unittest.TestCase):
 
             with self.assertRaises(FileExistsError):
                 ConfigManager(config_path=config_path).init_config()
+
+    def test_concurrent_save_cannot_be_overwritten_by_stale_load_cache(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config_path = Path(tmp_dir) / "config.json"
+            config_path.write_text(json.dumps({
+                "storage": {"runtime_dir": "./runtime", "database_path": "./runtime/test.db"},
+                "providers": {"ctrip": {"enabled": True}},
+                "routes": [{
+                    "origin": "SHA", "destination": "PEK",
+                    "departure_date": "2099-01-01", "providers": ["ctrip"],
+                }],
+            }), encoding="utf-8")
+            manager = ConfigManager(config_path=config_path)
+            manager.load()
+            manager._config_cache = None
+
+            entered = threading.Event()
+            release = threading.Event()
+            save_started = threading.Event()
+            errors = []
+            original = manager._build_route
+
+            def slow_build(item):
+                entered.set()
+                release.wait(2)
+                return original(item)
+
+            manager._build_route = slow_build
+
+            def load_worker():
+                try:
+                    manager.load()
+                except Exception as exc:
+                    errors.append(exc)
+
+            def save_worker():
+                save_started.set()
+                try:
+                    manager.save_routes([RouteQuery(
+                        origin="SHA", destination="CAN", departure_date="2099-01-02",
+                        providers=["ctrip"],
+                    )])
+                except Exception as exc:
+                    errors.append(exc)
+
+            loader = threading.Thread(target=load_worker)
+            loader.start()
+            self.assertTrue(entered.wait(1))
+            saver = threading.Thread(target=save_worker)
+            saver.start()
+            self.assertTrue(save_started.wait(1))
+            time.sleep(0.05)
+            release.set()
+            loader.join(2)
+            saver.join(2)
+
+            self.assertFalse(errors)
+            self.assertEqual("CAN", json.loads(config_path.read_text())["routes"][0]["destination"])
+            self.assertEqual("CAN", manager.load().routes[0].destination)
+
+    def test_sensitive_config_inputs_are_migrated_to_private_permissions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            state_dir = root / "custom-state"
+            state_dir.mkdir()
+            state_path = state_dir / "ctrip.json"
+            state_path.write_text(json.dumps({"cookies": [{"name": "sid"}]}), encoding="utf-8")
+            env_path = root / ".env"
+            env_path.write_text("FLIGHT_TRACKER_MASTER_KEY=test\n", encoding="utf-8")
+            config_path = root / "config.json"
+            config_path.write_text(json.dumps({
+                "storage": {"runtime_dir": "./runtime", "database_path": "./runtime/test.db"},
+                "providers": {"ctrip": {"storage_state_file": str(state_path)}},
+                "routes": [],
+            }), encoding="utf-8")
+            for path in (state_path, env_path, config_path):
+                os.chmod(path, 0o644)
+
+            ConfigManager(config_path=config_path).load()
+
+            if os.name != "nt":
+                self.assertEqual(0o600, stat.S_IMODE(env_path.stat().st_mode))
+                self.assertEqual(0o600, stat.S_IMODE(config_path.stat().st_mode))
+                self.assertEqual(0o600, stat.S_IMODE(state_path.stat().st_mode))
+                self.assertEqual(0o700, stat.S_IMODE(state_dir.stat().st_mode))
+
+    def test_second_process_writer_detects_stale_config_instead_of_overwriting(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config_path = Path(tmp_dir) / "config.json"
+            config_path.write_text(json.dumps({
+                "storage": {"runtime_dir": "./runtime", "database_path": "./runtime/test.db"},
+                "providers": {"ctrip": {"enabled": True}},
+                "routes": [],
+            }), encoding="utf-8")
+            first = ConfigManager(config_path=config_path)
+            second = ConfigManager(config_path=config_path)
+            first.load()
+            second.load()
+
+            first.save_routes([RouteQuery(
+                origin="SHA", destination="PEK", departure_date="2099-01-01",
+                providers=["ctrip"],
+            )])
+            with self.assertRaises(ConfigConflictError):
+                second.save_routes([RouteQuery(
+                    origin="SHA", destination="CAN", departure_date="2099-01-02",
+                    providers=["ctrip"],
+                )])
+
+            saved = json.loads(config_path.read_text(encoding="utf-8"))
+            self.assertEqual("PEK", saved["routes"][0]["destination"])
 
 
 if __name__ == "__main__":

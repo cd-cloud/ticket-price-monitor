@@ -30,6 +30,7 @@
   国航没有官方 API 授权时仍走官网浏览器通道及人工验证，输出仅为不含税参考起价。
   国航 Source 已支持城市多机场串行展开、四舱位、全局结果限制和总超时诊断；
   往返/中转完整航段尚未完成采集，不会静默降级或拼造价格。
+  FlyClaw 密钥应放在已忽略的 `vendor/flyclaw/config.local.yaml` 或由 `FLYCLAW_CONFIG_FILE` 指定的本机文件，不要修改并提交跟踪的 `config.yaml`。
   与 `fliggy_mcp.py` 的逐项能力差异见 [迁移清单](docs/AIRCHINA_FLYCLAW_PARITY.md)。
 
 - 本地 Web UI 管理单程、往返、多程、多城市组合航线。
@@ -38,7 +39,10 @@
 - 支持手动查询单条航线、整组航线或全部航线。
 - 支持每条航线开启 12 小时自动查询，不同航线之间至少间隔 10 分钟。
 - 查询结果写入本地 SQLite，并生成 CSV 和 Markdown 报告。
-- 凭证、浏览器 profile 和登录状态只保存在本机。
+- 凭证、`.env`、浏览器 profile 和登录状态只保存在本机；POSIX 下运行目录尽量为 `0700`、敏感文件为 `0600`，既有状态文件和 FlyClaw local config 加载时也会迁移权限。
+- 报价入库前统一核对实际机场、日期、舱位、中转和 provider 能力；无法确认的实验报价会失败关闭。
+- 完整网络响应正文不写入 SQLite；CLI/甩尾/浏览器路径的持久化 URL 会去掉 query/fragment 并清理 token-like path，日志、`/api/log`、dashboard、内存 job、queue、attempt 和 CSV 会脱敏；普通查询/甩尾诊断的完整页面截图/HTML、trace 只有显式设置 `FLIGHT_TRACKER_CAPTURE_DEBUG_PAGES=true` 才保存（显式 inspect/probe 命令另有各自开关）。
+- 路线组的原始机场、provider、航司和 segment 集合在规范化前限制规模；配置写入使用跨进程锁，检测到其他进程已更新时返回冲突而不是覆盖。
 - 甩尾查询先过滤再选优，按首段航班展示多个尾段方案；结果页先显示路线/日期/首段低价总览，点击后展开详情。
 - 甩尾可一次并行查询携程和飞猪，分别展示平台状态，并统一查看、按平台筛选结果。
 - 支持断点继续、刷新已发现报价、单行程复核与城市/时间/结果数预算。
@@ -97,6 +101,16 @@ GET /api/browser-session/diagnostics
 
 它会返回当前默认 backend、每个 provider 的 backend 顺序、Chrome profile 路径和是否需要登录提示。
 
+## 本地 UI 安全
+
+默认绑定 `127.0.0.1` 时不要求 token，但所有浏览器变更请求都必须来自完全相同的 scheme、host 和 port；其他 localhost 端口不再被视为同源。若设置了 `FLIGHT_TRACKER_UI_TOKEN`，根页面先显示登录表单，token 通过同源 POST 换成 HttpOnly、SameSite=Strict cookie，不写入 URL 或 Web Storage。
+
+不允许直接以明文 HTTP 绑定非本机地址。远程管理需同时满足：
+
+- `FLIGHT_TRACKER_UI_TOKEN` 至少 24 个字符；
+- 已在可信反向代理终止 TLS；
+- 设置 `FLIGHT_TRACKER_UI_BEHIND_HTTPS_PROXY=1`。
+
 ## 查询可信度
 
 每条结果的 `raw_payload` 会记录解析来源：
@@ -135,8 +149,9 @@ output/                    # 导出报告，不应提交
 
 - `Python regression`：Python 3.12 全量回归，并保存 7 天的 JUnit 测试报告。
 - `Frontend regression`：Node.js 24 的 JavaScript 语法检查和前端回归。
+- `Offline browser smoke`：Playwright Chromium 全请求拦截的国航 UI 与高数据量压力检查，不访问航班平台。
 
-不需要配置飞猪 API key 或其他平台账号，也不安装 FlyAI CLI。
+不需要配置飞猪 API key 或其他平台账号，也不安装 FlyAI CLI。Python 直接依赖由 `requirements-constraints.txt` 固定到已回归版本。
 测试使用模拟平台响应；Python 测试只允许连接本机回环地址。
 在仓库 **Actions → Automated tests** 查看结果，或通过 **Run workflow** 手动重跑。
 详细范围和本地复现命令见 [docs/TESTING.md](docs/TESTING.md)。

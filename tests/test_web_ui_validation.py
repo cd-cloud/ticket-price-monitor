@@ -92,6 +92,24 @@ class WebUiValidationTests(unittest.TestCase):
         self.assertEqual(400, response.status_code)
         self.assertIn("must be later", response.json()["detail"])
 
+    def test_auto_query_enabled_requires_json_boolean(self) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
+            config_path = Path(tmp_dir) / "config.json"
+            write_config(config_path)
+
+            with TestClient(create_app(str(config_path))) as client:
+                created = client.post("/api/routes", json={
+                    "origin": "SHA", "destination": "PEK",
+                    "departure_date": "2099-07-01", "providers": ["ctrip"],
+                })
+                route_key = created.json()["route"]["route_key"]
+                response = client.post(
+                    f"/api/routes/{route_key}/auto-query",
+                    json={"enabled": "false"},
+                )
+
+            self.assertEqual(422, response.status_code)
+
     def test_browser_session_diagnostics_endpoint(self) -> None:
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
             config_path = Path(tmp_dir) / "config.json"
@@ -139,6 +157,27 @@ class WebUiValidationTests(unittest.TestCase):
         self.assertEqual(200, response.status_code)
         self.assertFalse((profile_dir / "Cookies").exists())
         self.assertEqual("recovery", profiles.json()["providers"][0]["chrome_profile"]["forced_profile"])
+
+    def test_browser_profile_clean_endpoint_refuses_locked_profile(self) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
+            config_path = Path(tmp_dir) / "config.json"
+            write_config(config_path)
+            profile_dir = Path(tmp_dir) / "runtime" / "browser_profiles" / "chrome" / "ctrip-v2"
+            (profile_dir / "Default").mkdir(parents=True)
+            lock = profile_dir / "SingletonLock"
+            cookies = profile_dir / "Default" / "Cookies"
+            lock.write_text("owned", encoding="utf-8")
+            cookies.write_text("cookies", encoding="utf-8")
+
+            with TestClient(create_app(str(config_path))) as client:
+                response = client.post(
+                    "/api/browser-profiles/ctrip/clean",
+                    json={"profile": "primary"},
+                )
+
+            self.assertEqual(409, response.status_code)
+            self.assertTrue(lock.exists())
+            self.assertTrue(cookies.exists())
 
     def test_mutating_endpoint_rejects_non_local_origin(self) -> None:
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:

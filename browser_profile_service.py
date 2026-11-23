@@ -119,6 +119,10 @@ class BrowserProfileService:
         manager = BrowserSessionManager(self.config)
         profile_name = self._resolve_profile_name(manager, provider, profile)
         profile_path = manager.persistent_profile_path_for_backend(provider, "chrome", profile_name)
+        if manager.chrome_profile_is_locked(profile_path):
+            raise RuntimeError(
+                f"Chrome profile is already in use or has an ambiguous lock: {profile_name}."
+            )
         profile_path.mkdir(parents=True, exist_ok=True)
         chrome_path = _find_system_chrome()
         if not chrome_path:
@@ -166,9 +170,17 @@ class BrowserProfileService:
             raise KeyError(provider_name)
         manager = BrowserSessionManager(self.config)
         base_name = manager.profile_name_for_backend(provider, "chrome")
+        paths = [
+            manager.persistent_profile_path_for_backend(provider, "chrome", f"{base_name}-{suffix}")
+            for suffix in CHROME_PROFILE_RECOVERY_SUFFIXES
+        ]
+        locked = [path.name for path in paths if manager.chrome_profile_is_locked(path)]
+        if locked:
+            raise RuntimeError(
+                "Recovery Chrome profile is in use or has an ambiguous lock: " + ", ".join(locked)
+            )
         removed: list[str] = []
-        for suffix in CHROME_PROFILE_RECOVERY_SUFFIXES:
-            path = manager.persistent_profile_path_for_backend(provider, "chrome", f"{base_name}-{suffix}")
+        for path in paths:
             if path.exists():
                 shutil.rmtree(path)
                 removed.append(str(path))

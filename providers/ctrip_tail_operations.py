@@ -46,7 +46,13 @@ class CtripTailOperations:
         await self.automation._prepare_results_page(provider, page, route)
 
     async def _ensure_ctrip_results_date(self, page: Page, route: RouteQuery, timeout_ms: int, *, offer=None) -> dict:
-        return await self.runtime.ensure_ctrip_results_date(page, route, timeout_ms, offer=offer)
+        return await self.runtime.ensure_ctrip_results_date(
+            page,
+            route,
+            timeout_ms,
+            offer=offer,
+            runtime_dir=self.app_config.runtime_dir,
+        )
 
     async def _wait_for_results(self, provider: ProviderConfig, page: Page) -> None:
         await self.runtime.wait_for_results(provider, page)
@@ -81,6 +87,7 @@ class CtripTailOperations:
             transfer=transfer,
             destination=destination,
             departure_date=departure_date,
+            runtime_dir=self.app_config.runtime_dir,
         )
 
     async def _stop_ctrip_tail_trace(

@@ -12,6 +12,7 @@ from zoneinfo import ZoneInfo
 from config_manager import AppConfig, ConfigManager, RouteQuery
 from data_storage import PriceRepository, PriceSnapshot
 from providers.registry import provider_definition
+from providers.response_capture import sanitize_payload_urls, sanitize_sensitive_text
 from run_summary import RunSummaryStore
 
 
@@ -96,6 +97,9 @@ class QueryService:
                 provider_filter=provider_filter,
                 backend_override=backend_override,
             )
+        except Exception as exc:
+            self._finish_with_setup_error(exc)
+            raise
         finally:
             self.run_lock.release()
 
@@ -289,6 +293,9 @@ class QueryService:
                 provider_filter=provider_filter,
                 backend_override=backend_override,
             )
+        except Exception as exc:
+            self._finish_with_setup_error(exc)
+            raise
         finally:
             self.run_lock.release()
 
@@ -315,6 +322,9 @@ class QueryService:
                 provider_filter=provider_filter,
                 backend_override=backend_override,
             )
+        except Exception as exc:
+            self._finish_with_setup_error(exc)
+            raise
         finally:
             self.run_lock.release()
 
@@ -360,7 +370,6 @@ class QueryService:
         backend_override: str | None = None,
     ) -> dict[str, Any]:
         config = self.get_config()
-        credentials = self.config_manager.load_credentials(allow_missing=True)
         saved = 0
         errors: list[str] = []
         targets = list(self._iter_query_targets(config, routes, provider_filter=provider_filter))
@@ -415,6 +424,7 @@ class QueryService:
 
         if browser_targets:
             try:
+                credentials = self._credentials_for_targets(browser_targets)
                 automation_context = self.automation_factory(config, credentials)
                 if backend_override and hasattr(automation_context, "backend_override"):
                     automation_context.backend_override = backend_override
@@ -486,18 +496,19 @@ class QueryService:
                             recent_failures[:] = recent_failures[-8:]
                             logging.error(message)
                         except Exception as exc:
-                            message = f"provider={provider_name} route={route.route_key} failed: {exc}"
+                            safe_error = sanitize_sensitive_text(exc)
+                            message = f"provider={provider_name} route={route.route_key} failed: {safe_error}"
                             errors.append(message)
                             recent_failures.append(
                                 {
                                     "provider": provider_name,
                                     "route_key": route.route_key,
                                     "route_display": getattr(route, "display_label", route.route_key),
-                                    "error": str(exc),
+                                    "error": safe_error,
                                 }
                             )
                             recent_failures[:] = recent_failures[-8:]
-                            logging.exception(message)
+                            logging.error(message)
                         completed_targets += 1
                         self._set_summary(
                             {
@@ -515,12 +526,13 @@ class QueryService:
                         )
             except Exception as exc:
                 target = provider_filter or "browser providers"
-                message = f"provider={target} failed before querying routes: {exc}"
+                safe_error = sanitize_sensitive_text(exc)
+                message = f"provider={target} failed before querying routes: {safe_error}"
                 errors.append(message)
                 recent_failures.append(
-                    {"provider": target, "route_key": "", "route_display": target, "error": str(exc)}
+                    {"provider": target, "route_key": "", "route_display": target, "error": safe_error}
                 )
-                logging.exception(message)
+                logging.error(message)
 
         summary = {
             "running": False,
@@ -639,18 +651,19 @@ class QueryService:
                 recent_failures[:] = recent_failures[-8:]
                 logging.error(message)
             except Exception as exc:
-                message = f"provider={provider_name} route={route.route_key} failed: {exc}"
+                safe_error = sanitize_sensitive_text(exc)
+                message = f"provider={provider_name} route={route.route_key} failed: {safe_error}"
                 errors.append(message)
                 recent_failures.append(
                     {
                         "provider": provider_name,
                         "route_key": route.route_key,
                         "route_display": getattr(route, "display_label", route.route_key),
-                        "error": str(exc),
+                        "error": safe_error,
                     }
                 )
                 recent_failures[:] = recent_failures[-8:]
-                logging.exception(message)
+                logging.error(message)
             completed_targets += 1
             self._set_summary(
                 {
@@ -693,7 +706,7 @@ class QueryService:
                 yield route, provider_name, provider_cfg
 
     def _insert_snapshot(self, route: RouteQuery, result: Any) -> None:
-        raw_payload = dict(result.raw_payload or {})
+        raw_payload = sanitize_payload_urls(dict(result.raw_payload or {}))
         snapshot = PriceSnapshot(
             provider=result.provider,
             route_key=route.route_key,
@@ -716,6 +729,44 @@ class QueryService:
             browser_backend=raw_payload.get("browser_backend"),
         )
         self.repository.insert_snapshot(snapshot)
+
+    def _credentials_for_targets(self, targets: list[tuple[RouteQuery, str, Any]]) -> dict[str, dict[str, str]]:
+        if any(
+            (definition := provider_definition(provider_name)) is not None
+            and definition.requires_credentials
+            for _route, provider_name, _provider_cfg in targets
+        ):
+            return self.config_manager.load_credentials(allow_missing=True)
+        loader = getattr(self.config_manager, "load_environment_credentials", None)
+        return loader() if callable(loader) else {}
+
+    def _finish_with_setup_error(self, exc: Exception) -> dict[str, Any]:
+        if isinstance(exc, (FileNotFoundError, RuntimeError, ValueError)):
+            detail = str(exc)
+        else:
+            detail = type(exc).__name__
+        detail = sanitize_sensitive_text(detail).strip()[:1000]
+        message = f"Query setup failed: {detail or type(exc).__name__}"
+        previous = self.summary_store.get()
+        summary = {
+            "running": False,
+            "saved": int(previous.get("saved", 0) or 0),
+            "errors": [message],
+            "completed_targets": int(previous.get("completed_targets", 0) or 0),
+            "total_targets": int(previous.get("total_targets", 0) or 0),
+            "current_target": None,
+            "started_at": previous.get("started_at") or self._now_iso(),
+            "finished_at": self._now_iso(),
+            "saved_pairs": list(previous.get("saved_pairs") or []),
+            "recent_successes": list(previous.get("recent_successes") or []),
+            "recent_failures": [
+                *(list(previous.get("recent_failures") or [])),
+                {"provider": "setup", "route_key": "", "route_display": "setup", "error": detail},
+            ][-8:],
+        }
+        logging.error("query setup failed: %s", detail or type(exc).__name__)
+        self._set_summary(summary)
+        return summary
 
     def _set_summary(self, summary: dict[str, Any]) -> None:
         self.last_run_summary = self.summary_store.set(summary)

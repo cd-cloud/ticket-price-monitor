@@ -3,11 +3,14 @@
 ## 触发和查看结果
 
 工作流 `.github/workflows/tests.yml` 在所有分支推送、PR 创建/更新及手动触发时运行。
-进入 GitHub 仓库的 **Actions → Automated tests**，查看两个检查：
+进入 GitHub 仓库的 **Actions → Automated tests**，查看三个检查：
 
 1. **Python regression**：现有 Python 测试，包括查询锁、自动调度、报价校验、
-   历史排序、预算及任务恢复。
-2. **Frontend regression**：前端语法和 Node 原生测试，包括展示、筛选与提交参数。
+   历史排序、预算及任务恢复；另覆盖诊断 capture opt-in、敏感文件权限、日志/URL 脱敏、
+   原始输入上限和跨进程配置冲突；也覆盖 Priceline 卡片方向/舱位绑定、dashboard 派生字段、内存 job/queue 和旧库迁移。
+2. **Frontend regression**：前端语法和 Node 原生测试，包括展示、筛选、提交参数及
+   航线组在不同币种/人数/舱位下禁止直接比价。
+3. **Offline browser smoke**：Playwright Chromium 全请求拦截的国航 UI 与高数据量压力检查。
 
 同一分支或 PR 的新运行会取消旧的未完成运行。任务有超时限制。
 Python 测试报告只上传 `test-results/python.xml`，保留 7 天；
@@ -20,7 +23,7 @@ Python 测试报告只上传 `test-results/python.xml`，保留 7 天；
 ## 无需平台密钥
 
 - 工作流不引用任何仓库 Secret，不需要飞猪 API key、携程账号或登录态。
-- 不安装 FlyAI CLI，不下载浏览器，不执行真实平台查询脚本。
+- 不安装 FlyAI CLI，不执行真实平台查询脚本；浏览器 job 只安装 Playwright Chromium，页面请求全部在本机拦截。
 - Python 使用 `pytest-socket` 只允许 `127.0.0.1`、`::1` 和 Unix socket，
   供本地冒烟服务、异步运行时使用；意外的外部 Python socket 连接会使测试失败。
 - 这不是操作系统网络沙箱，不能限制独立子进程。当前平台调用在测试中被模拟，
@@ -32,14 +35,19 @@ Python 测试报告只上传 `test-results/python.xml`，保留 7 天；
 在项目目录中，使用 Python 3.12 和 Node.js 24：
 
 ```sh
-python -m pip install -r requirements-dev.txt
+python -m pip install -r requirements-dev.txt -c requirements-constraints.txt
 python -m pytest tests -q -ra --allow-hosts=127.0.0.1,::1 --allow-unix-socket --junitxml=test-results/python.xml
 for file in static/app.js static/app/*.js static/airchina_experiment.js; do node --check "$file"; done
 node --test tests/test_tail_ui.cjs tests/test_app_infrastructure.cjs
 ```
 
-测试报告目录已加入 Git 忽略规则。无需安装浏览器即可运行以上测试。
-可选的 patchright、rebrowser-playwright 未安装时，对应后端测试会跳过。
+测试报告目录已加入 Git 忽略规则。上述 Python/Node 回归无需浏览器；可选的 patchright、rebrowser-playwright 未安装时会跳过。复现 CI 的离线浏览器 job：
+
+```sh
+python -m playwright install chromium
+FLIGHT_TRACKER_TEST_BROWSER_CHANNEL= python tests/browser_airchina_smoke.py --output-dir /tmp/airchina-smoke
+FLIGHT_TRACKER_TEST_BROWSER_CHANNEL= python tests/browser_ui_stress.py --output-dir /tmp/ui-stress
+```
 
 ## 甩尾折叠组件样式构建
 
@@ -69,7 +77,7 @@ npm run build:tail-ui
 ## 本轮范围与限制
 
 - CI 使用 Ubuntu 24.04、Python 3.12、Node.js 24；不是全操作系统兼容性认证。
-- 本轮固定运行时系列，没有锁定全部 Python 依赖；依赖锁定另行处理。
-- 桌面 Chrome 视觉冒烟脚本仍为可选手动检查，本轮未加入 CI。
+- Python 直接运行/测试依赖由 `requirements-constraints.txt` 固定；传递依赖仍由包管理器按兼容约束解析。
+- CI 的离线浏览器检查使用 Playwright Chromium；系统 Chrome 的其他视觉 smoke 仍可手动运行。
 - 测试通过意味着已覆盖规则未回归，不证明真实平台可用、库存完整或排序收益提高。
 - 新工作流推送后才会在 GitHub 运行；本地通过不能代替首次远程运行结果。

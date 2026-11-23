@@ -13,6 +13,8 @@ from providers.ctrip_date_evidence import collect_date_evidence, date_value_matc
 from providers.ctrip_support import ctrip_city_code, is_ctrip_international_or_special_region
 from providers.human_actions import human_like_type, hover_then_click, random_scroll_and_pause
 from tail_discovery import TAIL_CODE_TEXT
+from providers.response_capture import sanitize_url
+from private_files import atomic_write_text, debug_capture_directory, make_file_private
 
 
 LOGGER = logging.getLogger(__name__)
@@ -22,12 +24,22 @@ async def prepare_results_page(automation, page: Page, route: RouteQuery, timeou
     await page.wait_for_load_state("domcontentloaded", timeout=timeout_ms)
     await page.wait_for_timeout(2500)
     if not await page_has_departure_date(page, route.departure_date):
-        await try_set_results_departure_date(page, route.departure_date, timeout_ms)
+        await try_set_results_departure_date(
+            page, route.departure_date, timeout_ms,
+            runtime_dir=getattr(getattr(automation, "app_config", None), "runtime_dir", None),
+        )
 
     await apply_cabin_filter(automation, page, route, timeout_ms)
 
 
-async def ensure_results_departure_date(page: Page, route: RouteQuery, timeout_ms: int, *, offer=None) -> dict:
+async def ensure_results_departure_date(
+    page: Page,
+    route: RouteQuery,
+    timeout_ms: int,
+    *,
+    offer=None,
+    runtime_dir: Path | None = None,
+) -> dict:
     evidence = await collect_results_date_evidence(page, route.departure_date, route.return_date)
     if evidence["matched"]:
         return evidence
@@ -40,7 +52,9 @@ async def ensure_results_departure_date(page: Page, route: RouteQuery, timeout_m
         evidence.update(matched=True, status="confirmed", ui_status="unknown",
                         matched_source="network_itinerary", matched_value=route.departure_date)
         return evidence
-    await dump_datepicker_debug(page, route.departure_date, "results-page-date-check")
+    await dump_datepicker_debug(
+        page, route.departure_date, "results-page-date-check", runtime_dir=runtime_dir
+    )
     kind = "mismatch" if evidence["status"] == "mismatch" else "unconfirmed"
     raise RuntimeError(
         f"Ctrip result date {kind}: expected departure={route.departure_date}, return={route.return_date or '-'}; "
@@ -48,7 +62,13 @@ async def ensure_results_departure_date(page: Page, route: RouteQuery, timeout_m
     )
 
 
-async def try_set_results_departure_date(page: Page, departure_date: str, timeout_ms: int) -> None:
+async def try_set_results_departure_date(
+    page: Page,
+    departure_date: str,
+    timeout_ms: int,
+    *,
+    runtime_dir: Path | None = None,
+) -> None:
     selectors = [
         ".modifyDate.depart-date",
         ".flt-date .modifyDate",
@@ -64,7 +84,10 @@ async def try_set_results_departure_date(page: Page, departure_date: str, timeou
             count = 0
         for index in range(count):
             try:
-                await choose_date_by_trigger(page, selector, index, departure_date, timeout_ms)
+                await choose_date_by_trigger(
+                    page, selector, index, departure_date, timeout_ms,
+                    runtime_dir=runtime_dir,
+                )
                 if await page_has_departure_date(page, departure_date):
                     await page.wait_for_timeout(1800)
                     return
@@ -396,6 +419,7 @@ async def prepare_one_way_form(
         0,
         route.departure_date,
         timeout_ms,
+        runtime_dir=getattr(getattr(automation, "app_config", None), "runtime_dir", None),
     )
 
 
@@ -409,6 +433,7 @@ async def prepare_round_trip_form(automation, page: Page, route: RouteQuery, tim
         0,
         route.departure_date,
         timeout_ms,
+        runtime_dir=getattr(getattr(automation, "app_config", None), "runtime_dir", None),
     )
     if route.return_date:
         await choose_date_by_trigger(
@@ -417,6 +442,7 @@ async def prepare_round_trip_form(automation, page: Page, route: RouteQuery, tim
             1,
             route.return_date,
             timeout_ms,
+            runtime_dir=getattr(getattr(automation, "app_config", None), "runtime_dir", None),
         )
 
 
@@ -426,7 +452,10 @@ async def prepare_multi_city_form(automation, page: Page, segments: list[RouteSe
         segment_index = index + 1
         await choose_city(automation, page, f"mtDCity{segment_index}", segment.origin, timeout_ms)
         await choose_city(automation, page, f"mtACity{segment_index}", segment.destination, timeout_ms)
-        await choose_date(page, index, segment.departure_date, timeout_ms)
+        await choose_date(
+            page, index, segment.departure_date, timeout_ms,
+            runtime_dir=getattr(getattr(automation, "app_config", None), "runtime_dir", None),
+        )
 
 
 async def sync_multi_city_rows(page: Page, segment_count: int, timeout_ms: int) -> None:
@@ -481,7 +510,10 @@ async def choose_city(automation, page: Page, input_name: str, airport_code: str
         except Exception:
             pass
 
-    await dump_city_picker_debug(page, input_name, airport_code, tried_terms)
+    await dump_city_picker_debug(
+        page, input_name, airport_code, tried_terms,
+        runtime_dir=getattr(getattr(automation, "app_config", None), "runtime_dir", None),
+    )
     raise RuntimeError(
         f"Could not select Ctrip city option for {airport_code}; tried {', '.join(tried_terms)}."
     )
@@ -663,41 +695,59 @@ async def fill_city_input_directly(input_locator, page: Page, airport_code: str,
         return False
 
 
-async def dump_city_picker_debug(page: Page, input_name: str, airport_code: str, tried_terms: list[str]) -> None:
+async def dump_city_picker_debug(
+    page: Page,
+    input_name: str,
+    airport_code: str,
+    tried_terms: list[str],
+    *,
+    runtime_dir: Path | None = None,
+) -> None:
+    dump_dir = debug_capture_directory(runtime_dir, "city_picker_debug") if runtime_dir else None
+    if dump_dir is None:
+        return
     try:
         import json
 
-        dump_dir = Path("runtime") / "city_picker_debug"
-        dump_dir.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now().strftime("%Y%m%dT%H%M%S")
         prefix = dump_dir / f"ctrip_city_{input_name}_{airport_code}_{stamp}"
-        await page.screenshot(path=str(prefix.with_suffix(".png")), full_page=True)
-        prefix.with_suffix(".html").write_text(await page.content(), encoding="utf-8")
-        prefix.with_suffix(".json").write_text(
+        screenshot = prefix.with_suffix(".png")
+        await page.screenshot(path=str(screenshot), full_page=True)
+        make_file_private(screenshot)
+        atomic_write_text(prefix.with_suffix(".html"), await page.content())
+        atomic_write_text(
+            prefix.with_suffix(".json"),
             json.dumps(
                 {
                     "input_name": input_name,
                     "airport_code": airport_code,
                     "tried_terms": tried_terms,
-                    "url": page.url,
+                    "url": sanitize_url(page.url),
                     "title": await page.title(),
                 },
                 ensure_ascii=False,
                 indent=2,
             ),
-            encoding="utf-8",
         )
     except Exception as exc:
         LOGGER.debug("failed to dump ctrip city picker debug artifacts: %s", exc)
 
 
-async def choose_date(page: Page, picker_index: int, departure_date: str, timeout_ms: int) -> None:
+async def choose_date(
+    page: Page,
+    picker_index: int,
+    departure_date: str,
+    timeout_ms: int,
+    *,
+    runtime_dir: Path | None = None,
+) -> None:
     await choose_date_by_trigger(
         page,
         f"#multiDatePicker{picker_index} .modifyDate",
         0,
         departure_date,
         timeout_ms,
+        runtime_dir=runtime_dir,
     )
 
 
@@ -707,6 +757,8 @@ async def choose_date_by_trigger(
     picker_index: int,
     departure_date: str,
     timeout_ms: int,
+    *,
+    runtime_dir: Path | None = None,
 ) -> None:
     trigger = page.locator(trigger_selector).nth(picker_index)
     if await trigger_has_date_value(trigger, departure_date):
@@ -753,7 +805,9 @@ async def choose_date_by_trigger(
             await page.wait_for_timeout(700)
             return
 
-    await dump_datepicker_debug(page, departure_date, trigger_selector)
+    await dump_datepicker_debug(
+        page, departure_date, trigger_selector, runtime_dir=runtime_dir
+    )
     raise RuntimeError(f"Could not select Ctrip date {departure_date}.")
 
 
@@ -1031,26 +1085,37 @@ async def click_calendar_nav(page: Page, timeout_ms: int) -> bool:
     return await click_calendar_nav_safe(page, timeout_ms)
 
 
-async def dump_datepicker_debug(page: Page, departure_date: str, trigger_selector: str) -> None:
+async def dump_datepicker_debug(
+    page: Page,
+    departure_date: str,
+    trigger_selector: str,
+    *,
+    runtime_dir: Path | None = None,
+) -> None:
+    dump_dir = debug_capture_directory(runtime_dir, "datepicker_debug") if runtime_dir else None
+    if dump_dir is None:
+        return
     try:
-        dump_dir = Path("runtime") / "datepicker_debug"
-        dump_dir.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now().strftime("%Y%m%dT%H%M%S")
         prefix = dump_dir / f"ctrip_datepicker_{departure_date}_{stamp}"
 
-        await page.screenshot(path=str(prefix.with_suffix(".png")), full_page=True)
-        prefix.with_suffix(".html").write_text(await page.content(), encoding="utf-8")
+        screenshot = prefix.with_suffix(".png")
+        await page.screenshot(path=str(screenshot), full_page=True)
+        make_file_private(screenshot)
+        atomic_write_text(prefix.with_suffix(".html"), await page.content())
 
         body_text = await page.locator("body").inner_text()
-        prefix.with_suffix(".txt").write_text(body_text, encoding="utf-8")
+        atomic_write_text(prefix.with_suffix(".txt"), body_text)
 
         meta = {
             "departure_date": departure_date,
             "trigger_selector": trigger_selector,
-            "url": page.url,
+            "url": sanitize_url(page.url),
             "captured_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         }
-        prefix.with_suffix(".json").write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+        atomic_write_text(
+            prefix.with_suffix(".json"), json.dumps(meta, ensure_ascii=False, indent=2)
+        )
         LOGGER.warning("saved ctrip datepicker debug artifacts to %s", prefix)
-    except Exception:
-        LOGGER.exception("failed to dump ctrip datepicker debug artifacts for %s", departure_date)
+    except Exception as exc:
+        LOGGER.debug("failed to dump ctrip datepicker debug artifacts: %s", exc)

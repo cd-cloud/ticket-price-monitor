@@ -6,6 +6,7 @@ from zoneinfo import ZoneInfo
 
 from backends import backend_registry_payload
 from providers.registry import provider_definition, provider_registry_payload
+from providers.response_capture import sanitize_payload_urls
 
 
 CABIN_OPTIONS = [
@@ -45,7 +46,7 @@ def build_dashboard_payload(
             previous = previous_by_pair.get(key) if key in latest_by_pair else (
                 previous_by_pair.get(fallback_key) if fallback_key != key else None
             )
-            last_error = route_errors.get(route.route_key)
+            last_error = route_errors.get((provider_name, route.route_key))
             display_latest = None if last_error else latest
             display_previous = None if last_error else previous
             raw_payload = parse_json_field(display_latest.get("raw_payload")) if display_latest else {}
@@ -115,7 +116,7 @@ def build_dashboard_payload(
         previous_by_pair=previous_by_pair,
         last_run_summary=last_run_summary,
     )
-    return {
+    payload = {
         "tasks": tasks,
         "task_groups": task_groups,
         "routes": routes,
@@ -127,7 +128,7 @@ def build_dashboard_payload(
         "browser_backend_registry": backend_registry_payload(),
         "provider_registry": provider_registry_payload(),
         "cabin_options": CABIN_OPTIONS,
-        "snapshots": snapshots,
+        "snapshots": sanitize_payload_urls(snapshots),
         "last_run": last_run_summary,
         "run_feedback": run_feedback,
         "report_paths": report_paths,
@@ -137,6 +138,7 @@ def build_dashboard_payload(
         },
         "session_hints": session_hints or [],
     }
+    return sanitize_payload_urls(payload)
 
 
 def build_snapshot_history_maps(
@@ -297,7 +299,14 @@ def build_task_groups(tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
     for group in groups.values():
         group_tasks = group["tasks"]
         priced = [task for task in group_tasks if task.get("latest_price")]
-        lowest = min(priced, key=lambda item: item["latest_price"]) if priced else None
+        comparison_keys = {
+            (task.get("currency"), task.get("passengers"), task.get("cabin"))
+            for task in priced
+        }
+        comparable = bool(priced) and len(comparison_keys) == 1 and all(
+            task.get("currency") for task in priced
+        )
+        lowest = min(priced, key=lambda item: item["latest_price"]) if comparable else None
         errors = [task for task in group_tasks if task.get("last_error")]
         origins = sorted({task.get("origin") for task in group_tasks if task.get("origin")})
         destinations = sorted({task.get("destination") for task in group_tasks if task.get("destination")})
@@ -313,6 +322,8 @@ def build_task_groups(tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "lowest_price": lowest.get("latest_price") if lowest else None,
                 "lowest_currency": lowest.get("currency") if lowest else None,
                 "lowest_route_display": lowest.get("route_display") if lowest else None,
+                "lowest_price_comparable": comparable,
+                "currencies": sorted({str(task.get("currency")) for task in priced if task.get("currency")}),
                 "tasks": group_tasks,
             }
         )
@@ -401,16 +412,16 @@ def snapshot_looks_valid(snapshot: dict[str, Any] | None) -> bool:
     return bool(snapshot.get("price"))
 
 
-def summarize_route_errors(errors: Any) -> dict[str, str]:
+def summarize_route_errors(errors: Any) -> dict[tuple[str, str], str]:
     if not isinstance(errors, list):
         return {}
-    by_route: dict[str, str] = {}
+    by_pair: dict[tuple[str, str], str] = {}
     for error in errors:
         text = str(error)
-        match = re.search(r"route=([^ ]+) failed: (.+)", text)
+        match = re.search(r"provider=([^ ]+) route=([^ ]+) failed: (.+)", text)
         if match:
-            by_route[match.group(1)] = match.group(2)
-    return by_route
+            by_pair[(match.group(1), match.group(2))] = match.group(3)
+    return by_pair
 
 
 def build_task_status(

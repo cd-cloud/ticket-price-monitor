@@ -3,6 +3,7 @@ from copy import deepcopy
 import math
 
 from providers.ctrip_itinerary import endpoint_matches
+from providers.response_capture import sanitize_url
 from tail_quotes import stable_key
 from tail_validation import chronology_checks
 
@@ -56,7 +57,7 @@ def prepare_network_candidates(evidence, matches, route, transfer):
                 **deepcopy(evidence), "matched": True, "status": "confirmed",
                 "ui_status": "unknown", "matched_source": "network_itinerary",
                 "matched_value": route.departure_date, "scope": "candidate",
-                "response_url": match.get("response_url"),
+                "response_url": sanitize_url(match.get("response_url")),
                 "query_generation": match.get("query_generation"),
             }
             candidates.append(candidate)

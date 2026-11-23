@@ -8,6 +8,7 @@ from typing import Any, Callable
 from config_manager import AppConfig
 from data_storage import PriceRepository
 from run_summary import RunSummaryStore
+from providers.response_capture import sanitize_sensitive_text
 
 
 CompletedProcessRunner = Callable[..., subprocess.CompletedProcess]
@@ -55,12 +56,14 @@ class LegacyRunService:
 
         if completed.returncode != 0:
             stderr = (completed.stderr or completed.stdout or "").strip()
-            errors.append(stderr or f"run-once exited with code {completed.returncode}")
+            errors.append(sanitize_sensitive_text(
+                stderr or f"run-once exited with code {completed.returncode}"
+            ))
 
         return self.run_summary.finished(
             saved=saved,
             errors=errors,
-            stdout=(completed.stdout or "").strip(),
+            stdout=sanitize_sensitive_text((completed.stdout or "").strip()),
         )
 
     def start_run_cycle_via_cli(self, provider_filter: str | None = None) -> dict[str, Any]:

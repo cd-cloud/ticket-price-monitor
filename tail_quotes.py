@@ -11,6 +11,8 @@ import re
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from providers.response_capture import sanitize_url
+
 
 def stable_key(value: Any) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False, default=str).encode()).hexdigest()[:24]
@@ -186,7 +188,7 @@ def _comparison(result: dict[str, Any], baseline: dict[str, Any] | None, *, same
     savings = round(price - float(result["price"]), 2) if comparable else None
     return {
         "status": "comparable" if comparable else "reference_only", "price": price,
-        "observed_at": baseline.get("observed_at"), "review_url": baseline.get("review_url"),
+        "observed_at": baseline.get("observed_at"), "review_url": sanitize_url(baseline.get("review_url")),
         "quote_terms": other, "savings_amount": savings,
         "savings_percent": round(savings / price * 100, 2) if comparable else None,
         "reasons": reasons,
@@ -207,7 +209,7 @@ def apply_baselines(results: list[dict[str, Any]], baseline: dict[str, Any] | No
         values = {
             "baseline_price": comparisons["market"]["price"],
             "baseline_observed_at": (market or {}).get("observed_at"),
-            "baseline_review_url": (market or {}).get("review_url"),
+            "baseline_review_url": sanitize_url((market or {}).get("review_url")),
             "savings_amount": comparisons["market"]["savings_amount"],
             "savings_percent": comparisons["market"].get("savings_percent"),
         }
@@ -243,7 +245,7 @@ def build_baseline_catalog(
         item = {
             **offer, "price": price, "provider": provider, "departure_date": departure_date,
             "cabin": cabin, "passengers": passengers, "observed_at": observed_at,
-            "review_url": offer.get("final_url") or review_url,
+            "review_url": sanitize_url(offer.get("final_url") or review_url),
             "quote_terms": offer.get("quote_terms") or quote_terms(provider, passengers),
         }
         candidates.append(item)

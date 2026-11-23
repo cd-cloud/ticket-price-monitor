@@ -3,6 +3,7 @@ import argparse
 import asyncio
 import copy
 import json
+import os
 from pathlib import Path
 import sys
 import tempfile
@@ -32,7 +33,10 @@ async def run(output):
             policy_actions = []
             offline = False
             async with async_playwright() as p:
-                browser = await p.chromium.launch(channel="chrome", headless=True)
+                channel = os.getenv("FLIGHT_TRACKER_TEST_BROWSER_CHANNEL", "chrome").strip()
+                browser = await p.chromium.launch(
+                    headless=True, **({"channel": channel} if channel else {})
+                )
                 context = await browser.new_context(viewport={"width": 1280, "height": 1000})
 
                 async def intercept(route):

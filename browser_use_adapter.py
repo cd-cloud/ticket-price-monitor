@@ -18,6 +18,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from private_files import atomic_write_text, ensure_private_directory, make_file_private
+
 
 BROWSER_USE_MIN_PYTHON = (3, 11)
 LOGGER = logging.getLogger(__name__)
@@ -158,24 +160,31 @@ class BrowserUseAdapter:
         instruction: str,
         context: dict[str, Any] | None = None,
     ) -> BrowserUseAssistResult:
-        """Record a browser-use handoff, and optionally run a bounded agent.
+        """Optionally capture a handoff artifact or run a bounded agent.
 
-        By default this does not let an AI agent control the live Ctrip session.
+        Full-page artifacts require FLIGHT_TRACKER_CAPTURE_DEBUG_PAGES=true.
         Set BROWSER_USE_AGENT_FALLBACK=true after configuring a browser-use LLM
         key if you want to experiment with an isolated browser-use agent.
         """
+        capture_enabled = os.getenv(
+            "FLIGHT_TRACKER_CAPTURE_DEBUG_PAGES", "false"
+        ).strip().lower() in {"1", "true", "yes", "on"}
         artifact_path = await self._write_assist_artifact(
             page=page,
             kind=kind,
             instruction=instruction,
             context=context or {},
-        )
+        ) if capture_enabled else None
         enabled = os.getenv("BROWSER_USE_AGENT_FALLBACK", "false").lower()[:1] in {"1", "t", "y"}
         if not enabled:
             return BrowserUseAssistResult(
                 attempted=False,
                 success=False,
-                reason="browser-use agent fallback is disabled; handoff artifact was recorded.",
+                reason=(
+                    "browser-use agent fallback is disabled; handoff artifact was recorded."
+                    if artifact_path else
+                    "browser-use agent fallback and full-page artifact capture are disabled."
+                ),
                 artifact_path=str(artifact_path) if artifact_path else None,
                 page_state=self._last_page_state,
             )
@@ -236,25 +245,26 @@ class BrowserUseAdapter:
             return None
         safe_kind = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in kind)[:80]
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        assist_dir = self.runtime_dir / "browseruse" / "assist"
-        assist_dir.mkdir(parents=True, exist_ok=True)
+        assist_dir = ensure_private_directory(self.runtime_dir / "browseruse" / "assist")
         prefix = assist_dir / f"{safe_kind}_{stamp}"
         meta_path = prefix.with_suffix(".json")
         try:
             text = ""
             html = ""
             try:
-                await page.screenshot(path=str(prefix.with_suffix(".png")), full_page=True)
+                screenshot = prefix.with_suffix(".png")
+                await page.screenshot(path=str(screenshot), full_page=True)
+                make_file_private(screenshot)
             except Exception:
                 pass
             try:
                 html = await page.content()
-                prefix.with_suffix(".html").write_text(html, encoding="utf-8")
+                atomic_write_text(prefix.with_suffix(".html"), html)
             except Exception:
                 pass
             try:
                 text = await page.locator("body").inner_text(timeout=5000)
-                prefix.with_suffix(".txt").write_text(text, encoding="utf-8")
+                atomic_write_text(prefix.with_suffix(".txt"), text)
             except Exception:
                 pass
             title = await page.title() if hasattr(page, "title") else ""
@@ -269,8 +279,9 @@ class BrowserUseAdapter:
                 "page_state": page_state,
                 "captured_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
             }
-            meta_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-            return meta_path
+            return atomic_write_text(
+                meta_path, json.dumps(payload, ensure_ascii=False, indent=2)
+            )
         except Exception:
             LOGGER.exception("failed to write browser-use assist artifact")
             return None

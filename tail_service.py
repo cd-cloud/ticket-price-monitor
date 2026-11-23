@@ -16,6 +16,8 @@ from tail_discovery import (
 )
 from tail_models import TailQueueItem, coerce_tail_queue_item
 from providers.ctrip_tail_parser import details_match_airlines, tail_text_tokens
+from providers.response_capture import sanitize_payload_urls
+from private_files import atomic_write_text
 
 OPEN_DESTINATION = "__OPEN__"  # One atomic query checkpoint, never a result destination.
 
@@ -322,13 +324,13 @@ def tail_queue_key(**payload: Any) -> str:
     for field in ("candidates", "preferred_airlines"):
         if isinstance(payload.get(field), list):
             payload[field] = sorted(set(payload[field]))
-    text = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+    text = json.dumps(sanitize_payload_urls(payload), ensure_ascii=False, sort_keys=True)
     return hashlib.sha1(text.encode("utf-8")).hexdigest()[:16]
 
 
 def load_tail_queue(queue_file: Path, queue_key: str) -> dict[str, Any]:
     try:
-        data = json.loads(queue_file.read_text(encoding="utf-8"))
+        data = sanitize_payload_urls(json.loads(queue_file.read_text(encoding="utf-8")))
         if data.get("key") == queue_key:
             return data
     except Exception:
@@ -337,11 +339,8 @@ def load_tail_queue(queue_file: Path, queue_key: str) -> dict[str, Any]:
 
 
 def save_tail_queue(queue_file: Path, queue_key: str, state: dict[str, Any]) -> None:
-    queue_file.parent.mkdir(parents=True, exist_ok=True)
-    state["key"] = queue_key
-    temporary = queue_file.with_suffix(queue_file.suffix + ".tmp")
-    temporary.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
-    temporary.replace(queue_file)
+    safe_state = sanitize_payload_urls({**state, "key": queue_key})
+    atomic_write_text(queue_file, json.dumps(safe_state, ensure_ascii=False, indent=2))
 
 
 def build_tail_request_queue(

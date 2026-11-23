@@ -1,4 +1,5 @@
 import base64
+import hashlib
 import json
 import logging
 import os
@@ -19,12 +20,19 @@ from airport_aliases import AIRPORT_NAME_SUFFIXES, CLEAN_AIRPORT_ALIAS_CODE_MAP
 from providers.registry import provider_definition
 from browser_environment import BrowserEnvironment, parse_browser_environment, expand_environment_preset
 from browser_fingerprint import default_fingerprint
+from private_files import ensure_private_directory, interprocess_lock, make_file_private
 
 
 ROOT = Path(__file__).resolve().parent
 DEFAULT_CONFIG_PATH = ROOT / "config.json"
 LOGGER = logging.getLogger(__name__)
 DEFAULT_ENV_PATH = ROOT / ".env"
+
+
+class ConfigConflictError(RuntimeError):
+    """Raised when a writer tries to replace a config changed by another process."""
+
+
 TRANSFER_POLICY_ALIASES = {
     "any": "any",
     "direct": "direct_only",
@@ -212,6 +220,11 @@ def _read_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def _read_json_with_fingerprint(path: Path) -> tuple[dict[str, Any], str]:
+    data = path.read_bytes()
+    return json.loads(data.decode("utf-8")), hashlib.sha256(data).hexdigest()
+
+
 def _parse_fallbacks(value: Any) -> list[str]:
     if value is None:
         return []
@@ -364,24 +377,36 @@ def _derive_key(passphrase: str, salt: bytes) -> bytes:
 
 class ConfigManager:
     def __init__(self, config_path: Path | None = None, env_path: Path | None = None) -> None:
-        self.config_path = config_path or DEFAULT_CONFIG_PATH
-        self.env_path = env_path or (self.config_path.parent / ".env" if config_path else DEFAULT_ENV_PATH)
+        self.config_path = Path(config_path) if config_path else DEFAULT_CONFIG_PATH
+        self.env_path = Path(env_path) if env_path else (
+            self.config_path.parent / ".env" if config_path else DEFAULT_ENV_PATH
+        )
+        if self.env_path.exists():
+            make_file_private(self.env_path)
         load_dotenv(self.env_path, override=False)
         self.lock = threading.RLock()
         self._config_cache: AppConfig | None = None
+        self._loaded_fingerprint: str | None = None
+        self._config_lock_path = self.config_path.with_name(f".{self.config_path.name}.lock")
 
     def load(self) -> AppConfig:
         with self.lock:
-            if self._config_cache is not None:
-                return self._config_cache
+            with interprocess_lock(self._config_lock_path):
+                if not self.config_path.exists():
+                    raise FileNotFoundError(
+                        f"Missing config file: {self.config_path}. "
+                        "Run `python main.py init-config` to create a local config.json from config.example.json."
+                    )
 
-            if not self.config_path.exists():
-                raise FileNotFoundError(
-                    f"Missing config file: {self.config_path}. "
-                    "Run `python main.py init-config` to create a local config.json from config.example.json."
-                )
+                make_file_private(self.config_path)
+                raw, fingerprint = _read_json_with_fingerprint(self.config_path)
+                if self._config_cache is not None and fingerprint == self._loaded_fingerprint:
+                    return self._config_cache
+                config = self._load_from_raw(raw)
+                self._loaded_fingerprint = fingerprint
+                return config
 
-            raw = _read_json(self.config_path)
+    def _load_from_raw(self, raw: dict[str, Any]) -> AppConfig:
         storage = raw.get("storage", {})
         runtime_dir = _expand_path(storage.get("runtime_dir", "./runtime"), self.config_path.parent)
         output_dir = _expand_path(storage.get("output_dir", "./output"), self.config_path.parent)
@@ -393,12 +418,15 @@ class ConfigManager:
         salt_file = _expand_path(storage.get("salt_file", "./runtime/master.salt"), self.config_path.parent)
         log_file = _expand_path(storage.get("log_file", "./runtime/flight_tracker.log"), self.config_path.parent)
 
-        runtime_dir.mkdir(parents=True, exist_ok=True)
-        output_dir.mkdir(parents=True, exist_ok=True)
-        database_path.parent.mkdir(parents=True, exist_ok=True)
-        credentials_path.parent.mkdir(parents=True, exist_ok=True)
-        salt_file.parent.mkdir(parents=True, exist_ok=True)
-        log_file.parent.mkdir(parents=True, exist_ok=True)
+        for directory in {
+            runtime_dir,
+            output_dir,
+            database_path.parent,
+            credentials_path.parent,
+            salt_file.parent,
+            log_file.parent,
+        }:
+            ensure_private_directory(directory)
 
         defaults = raw.get("defaults", {})
         scheduler = raw.get("scheduler", {})
@@ -456,6 +484,11 @@ class ConfigManager:
                 browser_environment=environment,
             )
 
+        for provider in providers.values():
+            ensure_private_directory(provider.storage_state_file.parent)
+            if provider.storage_state_file.exists():
+                make_file_private(provider.storage_state_file)
+
         routes = [
             self._build_route(item)
             for item in raw.get("routes", [])
@@ -497,11 +530,14 @@ class ConfigManager:
         return self._config_cache
 
     def _read_salt(self, app_config: AppConfig) -> bytes:
-        if app_config.salt_file.exists():
-            return app_config.salt_file.read_bytes()
-        salt = os.urandom(16)
-        _atomic_write_bytes(app_config.salt_file, salt, mode=0o600)
-        return salt
+        lock_path = app_config.salt_file.with_name(f".{app_config.salt_file.name}.lock")
+        with interprocess_lock(lock_path):
+            if app_config.salt_file.exists():
+                make_file_private(app_config.salt_file)
+                return app_config.salt_file.read_bytes()
+            salt = os.urandom(16)
+            _atomic_write_bytes(app_config.salt_file, salt, mode=0o600)
+            return salt
 
     def _require_master_passphrase(self) -> str:
         passphrase = os.getenv("FLIGHT_TRACKER_MASTER_KEY")
@@ -521,10 +557,14 @@ class ConfigManager:
         with self.lock:
             app_config = self.load()
             fernet = self._build_fernet(app_config)
-            current = self.load_credentials(allow_missing=True)
-            current[provider] = {"username": username, "password": password}
-            encrypted = fernet.encrypt(json.dumps(current, ensure_ascii=False).encode("utf-8"))
-            _atomic_write_bytes(app_config.encrypted_credentials_path, encrypted, mode=0o600)
+            lock_path = app_config.encrypted_credentials_path.with_name(
+                f".{app_config.encrypted_credentials_path.name}.lock"
+            )
+            with interprocess_lock(lock_path):
+                current = self.load_credentials(allow_missing=True)
+                current[provider] = {"username": username, "password": password}
+                encrypted = fernet.encrypt(json.dumps(current, ensure_ascii=False).encode("utf-8"))
+                _atomic_write_bytes(app_config.encrypted_credentials_path, encrypted, mode=0o600)
             return app_config.encrypted_credentials_path
 
     def load_credentials(self, allow_missing: bool = False) -> dict[str, dict[str, str]]:
@@ -540,11 +580,15 @@ class ConfigManager:
                 )
 
             fernet = self._build_fernet(app_config)
+            make_file_private(path)
             decrypted = fernet.decrypt(path.read_bytes())
             payload = json.loads(decrypted.decode("utf-8"))
             merged = self._load_env_credentials()
             merged.update(payload)
             return merged
+
+    def load_environment_credentials(self) -> dict[str, dict[str, str]]:
+        return self._load_env_credentials()
 
     def _load_env_credentials(self) -> dict[str, dict[str, str]]:
         credentials: dict[str, dict[str, str]] = {}
@@ -563,27 +607,46 @@ class ConfigManager:
     def export_example_config(self, destination: Path) -> Path:
         example_path = ROOT / "config.example.json"
         raw = _shift_expired_example_routes(_read_json(example_path))
-        _atomic_write_bytes(destination, json.dumps(raw, ensure_ascii=False, indent=2).encode("utf-8"))
+        _atomic_write_bytes(
+            destination,
+            json.dumps(raw, ensure_ascii=False, indent=2).encode("utf-8"),
+            mode=0o600,
+        )
         return destination
 
     def init_config(self, *, overwrite: bool = False) -> Path:
         with self.lock:
-            if self.config_path.exists() and not overwrite:
-                raise FileExistsError(
-                    f"Config file already exists: {self.config_path}. "
-                    "Pass --overwrite only if you intentionally want to replace it."
-                )
-            self.export_example_config(self.config_path)
-            self._config_cache = None
-            return self.config_path
+            with interprocess_lock(self._config_lock_path):
+                if self.config_path.exists() and not overwrite:
+                    raise FileExistsError(
+                        f"Config file already exists: {self.config_path}. "
+                        "Pass --overwrite only if you intentionally want to replace it."
+                    )
+                self.export_example_config(self.config_path)
+                _raw, self._loaded_fingerprint = _read_json_with_fingerprint(self.config_path)
+                self._config_cache = None
+                return self.config_path
 
     def save_routes(self, routes: list[RouteQuery]) -> Path:
         with self.lock:
-            raw = _read_json(self.config_path)
-            raw["routes"] = [route.to_dict() for route in routes]
-            _atomic_write_bytes(self.config_path, json.dumps(raw, ensure_ascii=False, indent=2).encode("utf-8"))
-            self._config_cache = None
-            return self.config_path
+            with interprocess_lock(self._config_lock_path):
+                if not self.config_path.exists():
+                    raise FileNotFoundError(f"Missing config file: {self.config_path}.")
+                raw, current_fingerprint = _read_json_with_fingerprint(self.config_path)
+                if (
+                    self._loaded_fingerprint is not None
+                    and current_fingerprint != self._loaded_fingerprint
+                ):
+                    self._config_cache = None
+                    raise ConfigConflictError(
+                        "Config changed in another process; reload and retry the route update."
+                    )
+                raw["routes"] = [route.to_dict() for route in routes]
+                encoded = json.dumps(raw, ensure_ascii=False, indent=2).encode("utf-8")
+                _atomic_write_bytes(self.config_path, encoded, mode=0o600)
+                self._loaded_fingerprint = hashlib.sha256(encoded).hexdigest()
+                self._config_cache = None
+                return self.config_path
 
     @staticmethod
     def _validate_route_providers(routes: list[RouteQuery], providers: dict[str, ProviderConfig]) -> None:

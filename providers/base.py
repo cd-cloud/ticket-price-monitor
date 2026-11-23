@@ -8,6 +8,7 @@ from typing import Any, Protocol
 from playwright.async_api import Page
 
 from config_manager import ProviderConfig, RouteQuery
+from providers.response_capture import sanitize_url
 
 
 @dataclass(slots=True)
@@ -44,7 +45,7 @@ class ParsedProviderResult:
             payload.setdefault("parser_confidence", self.confidence)
         return ProviderQueryOutcome(
             price=float(self.price),
-            final_url=self.final_url,
+            final_url=sanitize_url(self.final_url),
             title=self.title,
             departure_time=self.departure_time,
             row_text=self.row_text,

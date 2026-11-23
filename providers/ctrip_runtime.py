@@ -8,8 +8,22 @@ class CtripRuntime(ProviderRuntime):
     async def warm_ctrip_result_data(self, page: Page, response_store: list[dict]) -> None:
         await self._automation.ctrip_tail._warm_ctrip_tail_result_data(page, response_store)
 
-    async def ensure_ctrip_results_date(self, page: Page, route: RouteQuery, timeout_ms: int, *, offer=None) -> dict:
-        return await self._automation.ctrip_browser._ensure_ctrip_results_date(page, route, timeout_ms, offer=offer)
+    async def ensure_ctrip_results_date(
+        self,
+        page: Page,
+        route: RouteQuery,
+        timeout_ms: int,
+        *,
+        offer=None,
+        runtime_dir=None,
+    ) -> dict:
+        return await self._automation.ctrip_browser._ensure_ctrip_results_date(
+            page,
+            route,
+            timeout_ms,
+            offer=offer,
+            runtime_dir=runtime_dir or self._automation.app_config.runtime_dir,
+        )
 
     async def activate_ctrip_one_way(self, page: Page, timeout_ms: int) -> None:
         await self._automation.ctrip_browser._activate_ctrip_one_way(page, timeout_ms)

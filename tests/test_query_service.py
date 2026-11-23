@@ -200,6 +200,36 @@ class QueryServiceTests(unittest.TestCase):
             self.assertEqual(snapshots[0]["provider"], "feizhu")
             self.assertEqual(snapshots[0]["price"], 520)
 
+    def test_feizhu_only_run_does_not_decrypt_unrelated_credentials(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config_path = Path(tmp_dir) / "config.json"
+            write_config(config_path)
+            payload = json.loads(config_path.read_text(encoding="utf-8"))
+            payload["routes"][0]["providers"] = ["feizhu"]
+            config_path.write_text(json.dumps(payload), encoding="utf-8")
+            manager = ConfigManager(config_path=config_path)
+            config = manager.load()
+            repository = PriceRepository(config.database_path)
+            repository.initialize()
+
+            async def fake_query(_runtime, _provider, _route, _page, _response_store):
+                return ProviderQueryOutcome(price=520, final_url="", title="fake")
+
+            service = QueryService(
+                config_manager=manager,
+                repository=repository,
+                run_lock=threading.Lock(),
+                get_config=lambda: config,
+                refresh_config=lambda: None,
+                automation_factory=lambda *_args: self.fail("browser should not start"),
+            )
+            with patch.object(manager, "load_credentials", side_effect=AssertionError("must not decrypt")), \
+                    patch("providers.feizhu.query", fake_query):
+                result = asyncio.run(service.run_once(provider_filter="feizhu"))
+
+            self.assertEqual(1, result["saved"])
+            self.assertFalse(result["running"])
+
     def test_provider_filter_can_skip_route_without_error(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             config_path = Path(tmp_dir) / "config.json"
@@ -348,6 +378,36 @@ class QueryServiceTests(unittest.TestCase):
             self.assertEqual(result["saved"], 0)
             self.assertIn("Route group not found", result["errors"][0])
             self.assertEqual(repository.count_snapshots(), 0)
+
+    def test_setup_failure_publishes_sanitized_terminal_summary(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config_path = Path(tmp_dir) / "config.json"
+            write_config(config_path)
+            manager = ConfigManager(config_path=config_path)
+            config = manager.load()
+            repository = PriceRepository(config.database_path)
+            repository.initialize()
+
+            def fail_refresh():
+                raise RuntimeError("bad https://example.test/?token=SECRET")
+
+            service = QueryService(
+                config_manager=manager,
+                repository=repository,
+                run_lock=threading.Lock(),
+                get_config=lambda: config,
+                refresh_config=fail_refresh,
+            )
+            with self.assertRaisesRegex(RuntimeError, "bad"):
+                asyncio.run(service.run_once())
+
+            result = service.summary_store.get()
+            self.assertFalse(result["running"])
+            self.assertTrue(result["finished_at"])
+            self.assertIn("[url]", result["errors"][0])
+            self.assertNotIn("SECRET", result["errors"][0])
+            self.assertFalse(service.summary_store.get()["running"])
+            self.assertFalse(service.run_lock.locked())
 
 
 if __name__ == "__main__":

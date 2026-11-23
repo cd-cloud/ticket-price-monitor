@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import sys
 import tempfile
 from datetime import datetime, timedelta, timezone
@@ -113,7 +114,10 @@ async def run(output: Path):
         metrics = {"tasks": 100, "stored_quotes": 240, "jobs": 20, "viewports": []}
 
         async with async_playwright() as p:
-            browser = await p.chromium.launch(channel="chrome", headless=True)
+            channel = os.getenv("FLIGHT_TRACKER_TEST_BROWSER_CHANNEL", "chrome").strip()
+            browser = await p.chromium.launch(
+                headless=True, **({"channel": channel} if channel else {})
+            )
             context = await browser.new_context(viewport={"width": 1280, "height": 900})
 
             async def route_request(route):
@@ -234,10 +238,12 @@ async def run(output: Path):
             await page.wait_for_function("tailState.results.view === 'current' && tailState.results.items.length === 200")
             slow_quotes["enabled"] = False
             metrics["slow_response_view_switch"] = True
-            await page.locator(".tail-details > summary").first.click()
-            assert await page.locator(".tail-details").first.evaluate("el => el.open")
+            await page.locator(".tail-overview-item > summary").first.click()
+            visible_details = page.locator(".tail-overview-item[open] .tail-details").first
+            await visible_details.locator("summary").first.click()
+            assert await visible_details.evaluate("el => el.open")
             await page.evaluate("fetchTailResults({background:true})")
-            assert await page.locator(".tail-details").first.evaluate("el => el.open")
+            assert await page.locator(".tail-overview-item[open] .tail-details").first.evaluate("el => el.open")
 
             for index in range(20):
                 await page.evaluate("setWorkspaceTab('tasks', {persist:false}); setWorkspaceTab('tail', {persist:false})")

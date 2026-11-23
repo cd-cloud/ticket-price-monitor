@@ -21,6 +21,26 @@ def _is_local_host(host: str) -> bool:
     return str(host or "").strip().lower() in LOCAL_HOSTS
 
 
+def _env_enabled(name: str) -> bool:
+    return os.getenv(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _validate_ui_bind(host: str) -> None:
+    if _is_local_host(host):
+        return
+    token = os.getenv("FLIGHT_TRACKER_UI_TOKEN", "").strip()
+    if len(token) < 24:
+        raise RuntimeError(
+            "Refusing to bind the admin UI remotely without a FLIGHT_TRACKER_UI_TOKEN "
+            "of at least 24 characters. Use --host 127.0.0.1 for the local UI."
+        )
+    if not _env_enabled("FLIGHT_TRACKER_UI_BEHIND_HTTPS_PROXY"):
+        raise RuntimeError(
+            "Refusing direct remote HTTP. Terminate TLS in a trusted reverse proxy and set "
+            "FLIGHT_TRACKER_UI_BEHIND_HTTPS_PROXY=1, or bind to 127.0.0.1."
+        )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Local flight price tracker with Playwright + SQLite")
     parser.add_argument("--config", default=str(Path(__file__).resolve().parent / "config.json"))
@@ -173,11 +193,7 @@ def main() -> int:
         app.export_csv(Path(args.output) if args.output else None)
         return 0
     if args.command == "serve-ui":
-        if not _is_local_host(args.host) and not os.getenv("FLIGHT_TRACKER_UI_TOKEN"):
-            raise RuntimeError(
-                "Refusing to bind the admin UI to a non-local host without FLIGHT_TRACKER_UI_TOKEN. "
-                "Set a strong token or use --host 127.0.0.1."
-            )
+        _validate_ui_bind(args.host)
         uvicorn.run(create_app(args.config), host=args.host, port=args.port)
         return 0
     if args.command == "internal-smoke-test":
