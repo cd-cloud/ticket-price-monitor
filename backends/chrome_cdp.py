@@ -18,6 +18,7 @@ from playwright.async_api import Browser, BrowserContext, Page, async_playwright
 
 from .base import BrowserBackend
 from .chrome import _find_system_chrome
+from private_files import ensure_private_directory
 
 LOGGER = logging.getLogger(__name__)
 
@@ -48,8 +49,9 @@ class CdpChromeBackend(BrowserBackend):
         self._chrome_path = chrome_path
         self._headless = headless
         user_data_dir = kwargs.get("user_data_dir")
-        self._profile_root = Path(user_data_dir) if user_data_dir else Path("runtime") / "browser_profiles" / "chrome_cdp"
-        self._profile_root.mkdir(parents=True, exist_ok=True)
+        self._profile_root = ensure_private_directory(
+            Path(user_data_dir) if user_data_dir else Path("runtime") / "browser_profiles" / "chrome_cdp"
+        )
         LOGGER.info("System Chrome CDP backend using: %s", chrome_path)
 
     async def stop(self) -> None:
@@ -93,8 +95,7 @@ class CdpChromeBackend(BrowserBackend):
             raise RuntimeError("BrowserBackend is not started")
 
         profile_name = str(kwargs.get("profile_name") or "default").strip().lower() or "default"
-        profile_dir = self._profile_root / profile_name
-        profile_dir.mkdir(parents=True, exist_ok=True)
+        profile_dir = ensure_private_directory(self._profile_root / profile_name)
         port = _free_port()
         args = [
             self._chrome_path,

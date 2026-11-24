@@ -84,6 +84,7 @@ class BrowserSessionManager:
 
     async def start(self, backend_names: list[str] | None = None) -> str:
         names = backend_names or [self.app_config.browser_backend, *list(self.app_config.browser_backend_fallbacks)]
+        ensure_private_directory(self.app_config.runtime_dir / "browser_profiles")
         self._backend_manager = BackendFallbackManager(
             backend_names=names,
             headless=self.app_config.headless,
