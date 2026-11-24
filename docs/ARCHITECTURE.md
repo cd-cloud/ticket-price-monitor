@@ -27,8 +27,9 @@ query results, reports, and schedule state on the user's machine.
 - `backends/chrome.py`: default backend. It launches the user's installed Chrome with a
   persistent provider-specific profile under `runtime/browser_profiles/chrome/`.
 - `backends/playwright.py`: Playwright Chromium fallback backend.
-- `backends/rebrowser.py`: Rebrowser drop-in replacement.
-- `backends/patchright.py`: Patchright drop-in replacement.
+- `backends/rebrowser.py`, `backends/patchright.py`, and `backends/camoufox.py`: optional
+  anti-detect backends. They are disabled by default and require
+  `FLIGHT_TRACKER_ENABLE_ANTI_DETECT_BACKENDS=1`; disabled backends cannot be selected or instantiated.
 - `backends/fallback.py`: `BackendFallbackManager` manages backend startup fallback and
   provider-level backend switching.
 - `browser_session_manager.py`: provider profile health checks, lock enforcement, session metadata and recovery-profile selection.

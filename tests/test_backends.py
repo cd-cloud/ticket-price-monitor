@@ -1,17 +1,22 @@
 import asyncio
+import os
 import unittest
 from unittest.mock import patch
 
 from backends import (
+    anti_detect_backends_enabled,
+    available_backend_names,
     backend_capabilities,
     backend_definition,
     backend_registry_payload,
     create_backend,
     known_backend_names,
+    selectable_backend_names,
 )
 from backends.base import BrowserBackend
 from backends.fallback import BackendFallbackManager
 from backends.playwright import PlaywrightBackend
+from main import build_parser
 
 
 class BackendFactoryTests(unittest.TestCase):
@@ -42,6 +47,45 @@ class BackendFactoryTests(unittest.TestCase):
         self.assertIn("camoufox", known_backend_names())
         definition = backend_definition("camoufox")
         self.assertIsNotNone(definition)
+
+    def test_anti_detect_backends_are_disabled_by_default(self) -> None:
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("FLIGHT_TRACKER_ENABLE_ANTI_DETECT_BACKENDS", None)
+            self.assertFalse(anti_detect_backends_enabled())
+            self.assertNotIn("camoufox", selectable_backend_names())
+            self.assertNotIn("camoufox", available_backend_names())
+            payload = next(
+                item for item in backend_registry_payload() if item["name"] == "camoufox"
+            )
+            self.assertFalse(payload["enabled"])
+            with self.assertRaisesRegex(ValueError, "disabled by default"):
+                create_backend("camoufox")
+
+    def test_anti_detect_backends_require_explicit_opt_in(self) -> None:
+        with patch.dict(
+            os.environ,
+            {"FLIGHT_TRACKER_ENABLE_ANTI_DETECT_BACKENDS": "1"},
+            clear=False,
+        ):
+            self.assertTrue(anti_detect_backends_enabled())
+            self.assertIn("camoufox", selectable_backend_names())
+            payload = next(
+                item for item in backend_registry_payload() if item["name"] == "camoufox"
+            )
+            self.assertTrue(payload["enabled"])
+
+    def test_cli_backend_choices_follow_the_switch(self) -> None:
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("FLIGHT_TRACKER_ENABLE_ANTI_DETECT_BACKENDS", None)
+            with self.assertRaises(SystemExit):
+                build_parser().parse_args(["run-once", "--backend", "camoufox"])
+        with patch.dict(
+            os.environ,
+            {"FLIGHT_TRACKER_ENABLE_ANTI_DETECT_BACKENDS": "1"},
+            clear=False,
+        ):
+            args = build_parser().parse_args(["run-once", "--backend", "camoufox"])
+            self.assertEqual("camoufox", args.backend)
 
     def test_playwright_capabilities_allow_session_reuse(self) -> None:
         capabilities = backend_capabilities("playwright")

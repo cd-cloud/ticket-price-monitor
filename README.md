@@ -91,6 +91,8 @@ python main.py export-csv
 
 默认使用本机 Chrome，并使用持久化 profile 保存站点状态。备用后端是 Playwright Chromium。配置项在 `config.json` 的 `defaults.browser_backend` 和 `defaults.browser_backend_fallbacks`；如果默认后端是 Chrome 但没有显式配置 fallback，程序会自动补 `playwright` 作为备用。
 
+`rebrowser`、`patchright` 和 `camoufox` 属于实验性 anti-detect backend，**默认关闭**。只有显式设置 `FLIGHT_TRACKER_ENABLE_ANTI_DETECT_BACKENDS=1` 后，它们才会出现在 CLI 可选列表并允许配置；关闭时配置或实例化会直接报错，不会静默切换。它们不提供验证码破解，也不应被当作绕过 403/429/432 或人工验证的手段。
+
 携程流程会优先用 Chrome persistent profile 直接打开结果页。Ctrip 不再强制先走账号密码登录，因为实际查询页可以在未预登录状态下完成；如果站点需要人工处理登录或验证，可以先通过 session bootstrap/手动浏览器 profile 让状态保留下来。
 
 诊断接口：

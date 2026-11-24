@@ -238,13 +238,18 @@ def _parse_fallbacks(value: Any) -> list[str]:
 
 def _validate_browser_backends(names: list[str]) -> None:
     """Validate backend names at config load time."""
-    from backends import backend_definition, known_backend_names
+    from backends import backend_definition, backend_is_enabled, known_backend_names
 
     for name in names:
         if backend_definition(name) is None:
             raise ValueError(
                 f"Unknown browser backend: {name!r}. "
                 f"Known: {known_backend_names()}"
+            )
+        if not backend_is_enabled(name):
+            raise ValueError(
+                f"Browser backend {name!r} is disabled by default. "
+                "Set FLIGHT_TRACKER_ENABLE_ANTI_DETECT_BACKENDS=1 to enable it explicitly."
             )
 
 

@@ -7,7 +7,7 @@
 
 1. **Python regression**：现有 Python 测试，包括查询锁、自动调度、报价校验、
    历史排序、预算及任务恢复；另覆盖诊断 capture opt-in、敏感文件权限、日志/URL 脱敏、
-   原始输入上限和跨进程配置冲突；也覆盖 Priceline 卡片方向/舱位绑定、dashboard 派生字段、内存 job/queue 和旧库迁移。
+   原始输入上限和跨进程配置冲突；也覆盖 Priceline 卡片方向/舱位绑定、dashboard 派生字段、内存 job/queue、旧库迁移和默认关闭的实验 backend 开关。
 2. **Frontend regression**：前端语法和 Node 原生测试，包括展示、筛选、提交参数及
    航线组在不同币种/人数/舱位下禁止直接比价。
 3. **Offline browser smoke**：Playwright Chromium 全请求拦截的国航 UI 与高数据量压力检查。

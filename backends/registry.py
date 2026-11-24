@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
 
 from .base import BrowserBackend
 from .playwright import PlaywrightBackend
@@ -96,6 +97,17 @@ _OPTIONAL_BACKENDS: dict[str, tuple[str, str, str, BackendCapabilities]] = {
         ),
     ),
 }
+_ANTI_DETECT_BACKENDS = {"rebrowser", "patchright", "camoufox"}
+_ANTI_DETECT_FLAG = "FLIGHT_TRACKER_ENABLE_ANTI_DETECT_BACKENDS"
+
+
+def anti_detect_backends_enabled() -> bool:
+    return os.getenv(_ANTI_DETECT_FLAG, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def backend_is_enabled(name: str | None) -> bool:
+    normalized = str(name or "").strip().lower()
+    return normalized not in _ANTI_DETECT_BACKENDS or anti_detect_backends_enabled()
 
 
 def _load_optional_backends() -> None:
@@ -158,28 +170,44 @@ def known_backend_names() -> list[str]:
     return list(_DEFINITIONS.keys())
 
 
+def selectable_backend_names() -> list[str]:
+    _load_optional_backends()
+    return [name for name in _DEFINITIONS if backend_is_enabled(name)]
+
+
 def available_backend_names() -> list[str]:
     _load_optional_backends()
-    return [name for name, definition in _DEFINITIONS.items() if definition.available]
+    return [
+        name
+        for name, definition in _DEFINITIONS.items()
+        if backend_is_enabled(name) and definition.available
+    ]
 
 
 def backend_registry_payload() -> list[dict[str, object]]:
     _load_optional_backends()
-    return [
-        {
+    payload = []
+    for definition in _DEFINITIONS.values():
+        enabled = backend_is_enabled(definition.name)
+        unavailable_reason = definition.unavailable_reason
+        if not enabled:
+            unavailable_reason = (
+                f"disabled; set {_ANTI_DETECT_FLAG}=1 to enable experimental anti-detect backends"
+            )
+        payload.append({
             "name": definition.name,
             "description": definition.description,
             "safety_tier": definition.safety_tier,
-            "available": definition.available,
-            "unavailable_reason": definition.unavailable_reason,
+            "enabled": enabled,
+            "available": enabled and definition.available,
+            "unavailable_reason": unavailable_reason,
             "capabilities": {
                 "supports_storage_state": definition.capabilities.supports_storage_state,
                 "supports_credential_login": definition.capabilities.supports_credential_login,
                 "supports_persistent_profile": definition.capabilities.supports_persistent_profile,
             },
-        }
-        for definition in _DEFINITIONS.values()
-    ]
+        })
+    return payload
 
 
 def create_backend(name: str) -> BrowserBackend:
@@ -189,6 +217,11 @@ def create_backend(name: str) -> BrowserBackend:
         raise ValueError(
             f"Unknown browser backend: {name!r}. "
             f"Known: {known_backend_names()}"
+        )
+    if not backend_is_enabled(normalized):
+        raise ValueError(
+            f"Browser backend {normalized!r} is disabled by default. "
+            f"Set {_ANTI_DETECT_FLAG}=1 to enable it explicitly."
         )
     if definition.cls is None:
         raise ValueError(

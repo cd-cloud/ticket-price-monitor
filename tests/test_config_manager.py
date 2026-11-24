@@ -6,6 +6,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from config_manager import ConfigConflictError, ConfigManager, RouteQuery, normalize_airport_code
 
@@ -74,6 +75,31 @@ class ConfigManagerTests(unittest.TestCase):
 
             self.assertEqual("chrome", config.browser_backend)
             self.assertEqual(["playwright"], config.browser_backend_fallbacks)
+
+    def test_anti_detect_backend_config_requires_explicit_switch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config_path = Path(tmp_dir) / "config.json"
+            config_path.write_text(
+                json.dumps({
+                    "storage": {"database_path": "./runtime/test.db"},
+                    "defaults": {"browser_backend": "camoufox"},
+                    "providers": {},
+                    "routes": [],
+                }),
+                encoding="utf-8",
+            )
+            with patch.dict(os.environ, {}, clear=False):
+                os.environ.pop("FLIGHT_TRACKER_ENABLE_ANTI_DETECT_BACKENDS", None)
+                with self.assertRaisesRegex(ValueError, "disabled by default"):
+                    ConfigManager(config_path=config_path).load()
+
+            with patch.dict(
+                os.environ,
+                {"FLIGHT_TRACKER_ENABLE_ANTI_DETECT_BACKENDS": "1"},
+                clear=False,
+            ):
+                config = ConfigManager(config_path=config_path).load()
+                self.assertEqual("camoufox", config.browser_backend)
 
     def test_provider_locale_follows_accept_language(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

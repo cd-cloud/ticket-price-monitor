@@ -6,7 +6,7 @@ from pathlib import Path
 import uvicorn
 
 from app_service import FlightPriceApplication
-from backends import known_backend_names
+from backends import selectable_backend_names
 from config_manager import ConfigManager
 from internal_smoke_test import run_internal_smoke_test
 from local_smoke_test import run_local_smoke_test
@@ -46,7 +46,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config", default=str(Path(__file__).resolve().parent / "config.json"))
     subparsers = parser.add_subparsers(dest="command", required=True)
     provider_choices = CLI_PROVIDER_CHOICES
-    backend_choices = known_backend_names()
+    backend_choices = selectable_backend_names()
 
     init_cmd = subparsers.add_parser("init-config", help="Create a local config.json from config.example.json")
     init_cmd.add_argument("--overwrite", action="store_true", help="Replace an existing config file")
