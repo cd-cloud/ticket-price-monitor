@@ -12,6 +12,13 @@ from providers import ctrip_itinerary
 from providers import ctrip_network_parser
 
 
+CTRIP_TEST_RESPONSE_URL = "https://flights.ctrip.com/soa2/flight"
+
+
+def trusted_response_store(items):
+    return [{"url": CTRIP_TEST_RESPONSE_URL, **item} for item in items]
+
+
 class CtripNetworkParserTests(unittest.TestCase):
     def test_builds_ctrip_online_results_url_for_one_way_and_round_trip(self) -> None:
         one_way = RouteQuery(
@@ -194,7 +201,7 @@ class CtripNetworkParserTests(unittest.TestCase):
                 }
             ],
         }
-        response_store = [{"payload": {"data": {"flightItineraryList": [itinerary]}}}]
+        response_store = trusted_response_store([{"payload": {"data": {"flightItineraryList": [itinerary]}}}])
 
         match = operations._extract_ctrip_tail_match_from_network(
             response_store,
@@ -220,12 +227,20 @@ class CtripNetworkParserTests(unittest.TestCase):
             self.assertTrue(BrowserAutomation._storage_state_is_usable(path))
 
     def test_extracts_generic_price_candidates_from_network(self) -> None:
-        response_store = [
+        response_store = trusted_response_store([
             {"payload": {"data": {"fare": 150, "adultPrice": 860, "sortPrice": 920}}},
             {"payload": {"data": {"ticketPrice": 4800}}},
-        ]
+        ])
 
         self.assertEqual(860, ctrip_network_parser.extract_price_from_network(response_store))
+
+    def test_untrusted_response_host_is_not_used_for_quotes(self) -> None:
+        response_store = [{
+            "url": "https://evil.test/soa2/flight",
+            "status": 200,
+            "payload": {"data": {"adultPrice": 860}},
+        }]
+        self.assertIsNone(ctrip_network_parser.extract_price_from_network(response_store))
 
     def test_calendar_dates_alone_do_not_establish_matching_quote(self) -> None:
         route = RouteQuery(
@@ -235,7 +250,7 @@ class CtripNetworkParserTests(unittest.TestCase):
             return_date="2026-11-20",
             cabin="economy_plus",
         )
-        response_store = [
+        response_store = trusted_response_store([
             {
                 "payload": {
                     "priceList": [
@@ -256,7 +271,7 @@ class CtripNetworkParserTests(unittest.TestCase):
                     ]
                 }
             }
-        ]
+        ])
 
         self.assertIsNone(ctrip_network_parser.extract_single_route_price_from_network(response_store, route))
 
@@ -299,7 +314,7 @@ class CtripNetworkParserTests(unittest.TestCase):
             ],
             "priceList": [price],
         }
-        response_store = [{"payload": {"data": {"flightItineraryList": [itinerary]}}}]
+        response_store = trusted_response_store([{"payload": {"data": {"flightItineraryList": [itinerary]}}}])
 
         match = ctrip_network_parser.extract_single_route_match_from_network(response_store, route)
 
@@ -340,7 +355,7 @@ class CtripNetworkParserTests(unittest.TestCase):
                 ']}}'
             ),
         }
-        response_store = [{"payload": {"data": {"flightItineraryList": [{"priceList": [price]}]}}}]
+        response_store = trusted_response_store([{"payload": {"data": {"flightItineraryList": [{"priceList": [price]}]}}}])
 
         match = ctrip_network_parser.extract_single_route_match_from_network(response_store, route)
 
@@ -358,7 +373,7 @@ class CtripNetworkParserTests(unittest.TestCase):
             return_date="2026-11-20",
             cabin="economy_plus",
         )
-        response_store = [
+        response_store = trusted_response_store([
             {
                 "payload": {
                     "priceList": [
@@ -372,7 +387,7 @@ class CtripNetworkParserTests(unittest.TestCase):
                     ]
                 }
             }
-        ]
+        ])
 
         self.assertIsNone(ctrip_network_parser.extract_single_route_price_from_network(response_store, route))
 
@@ -406,7 +421,7 @@ class CtripNetworkParserTests(unittest.TestCase):
                 ']}}'
             ),
         }
-        response_store = [{"payload": {"data": {"flightItineraryList": [{"priceList": [price]}]}}}]
+        response_store = trusted_response_store([{"payload": {"data": {"flightItineraryList": [{"priceList": [price]}]}}}])
 
         match = ctrip_network_parser.extract_multi_city_match_from_network(response_store, route)
 

@@ -21,7 +21,7 @@ def _sanitize_url_path(path: str) -> str:
     for segment in str(path or "").split("/"):
         decoded = unquote(segment)
         if _PATH_SECRET_PATTERN.search(decoded) or (
-            len(decoded) >= 32
+            len(decoded) >= 16
             and re.fullmatch(r"[A-Za-z0-9._~+=-]+", decoded)
             and not decoded.isdigit()
         ):
@@ -48,14 +48,30 @@ _URL_FIELD_NAMES = {
     "reviewurl", "jumpurl",
 }
 _SENSITIVE_FIELD_NAMES = {
-    "apikey", "accesstoken", "auth", "authorization", "authtoken", "clientsecret",
-    "cookie", "credential", "credentials", "masterkey", "password", "passwd",
-    "privatekey", "refreshtoken", "secret", "sessionid", "sign", "signature", "token",
+    "apikey", "accesstoken", "auth", "authorization", "authtoken", "bearer",
+    "clientsecret", "cookie", "credential", "credentials", "csrf", "jwt",
+    "masterkey", "password", "passwd", "privatekey", "refreshtoken", "secret",
+    "secretkey", "session", "sessionid", "sign", "signature", "token", "xsrf",
 }
+_SENSITIVE_FIELD_FRAGMENTS = (
+    "apikey", "authorization", "authtoken", "clientsecret", "cookie", "credential",
+    "masterkey", "password", "passwd", "privatekey", "secret", "signature", "token",
+)
+_CHINESE_SENSITIVE_FIELDS = {"密码", "口令", "令牌", "授权", "密钥", "会话", "凭据"}
 
 
 def _normalized_field_name(value: object) -> str:
     return re.sub(r"[^a-z0-9]", "", str(value or "").lower())
+
+
+def _is_sensitive_field_name(value: object) -> bool:
+    text = str(value or "").strip()
+    normalized = _normalized_field_name(text)
+    return bool(
+        text in _CHINESE_SENSITIVE_FIELDS
+        or normalized in _SENSITIVE_FIELD_NAMES
+        or any(fragment in normalized for fragment in _SENSITIVE_FIELD_FRAGMENTS)
+    )
 
 
 def sanitize_payload_urls(value, *, field_name: str | None = None):
@@ -63,11 +79,13 @@ def sanitize_payload_urls(value, *, field_name: str | None = None):
     if isinstance(value, dict):
         sanitized = {}
         for key, item in value.items():
-            normalized = _normalized_field_name(key)
-            if normalized in _SENSITIVE_FIELD_NAMES:
-                sanitized[key] = "[redacted]"
+            safe_key = sanitize_sensitive_text(key) if isinstance(key, str) else key
+            if safe_key in sanitized and safe_key != key:
+                safe_key = f"[redacted_key_{len(sanitized)}]"
+            if _is_sensitive_field_name(key):
+                sanitized[safe_key] = "[redacted]"
             else:
-                sanitized[key] = sanitize_payload_urls(item, field_name=str(key))
+                sanitized[safe_key] = sanitize_payload_urls(item, field_name=str(key))
         return sanitized
     if isinstance(value, list):
         return [sanitize_payload_urls(item, field_name=field_name) for item in value]
@@ -81,21 +99,35 @@ def sanitize_payload_urls(value, *, field_name: str | None = None):
 
 
 _URL_TEXT_PATTERN = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)
+_SENSITIVE_TEXT_MARKER = (
+    r"(?:api[_-]?key|access[_-]?token|auth[_-]?token|authorization|bearer|"
+    r"client[_-]?secret|cookie|credential|csrf|jwt|master[_-]?key|password|"
+    r"passwd|private[_-]?key|refresh[_-]?token|secret(?:[_-]?key)?|session|"
+    r"sign(?:ature)?|token|ui[_-]?token|xsrf|密码|口令|令牌|授权|密钥|会话|凭据)"
+)
 _STRUCTURED_SECRET_PATTERN = re.compile(
-    r'''(?i)(?P<prefix>["'](?:api[_-]?key|access[_-]?token|auth[_-]?token|'''
-    r'''client[_-]?secret|cookie|password|passwd|refresh[_-]?token|session[_-]?id|'''
-    r'''sign(?:ature)?|token|secret|authorization)["']\s*:\s*["'])'''
-    r'''(?P<value>[^"']*)(?P<suffix>["'])'''
+    r'''(?i)(?P<prefix>["'][^"']{0,128}'''
+    + _SENSITIVE_TEXT_MARKER
+    + r'''[^"']{0,128}["']\s*:\s*["'])(?P<value>[^"']*)(?P<suffix>["'])'''
 )
 _AUTHORIZATION_PATTERN = re.compile(
     r"(?i)(\bauthorization\s*:\s*)(bearer\s+)?[^\s,;&]+"
 )
 _BEARER_PATTERN = re.compile(r"(?i)(\bbearer\s+)[A-Za-z0-9._~+/=-]+")
 _SECRET_ASSIGNMENT_PATTERN = re.compile(
-    r"(?i)(?P<prefix>\b(?:api[_-]?key|access[_-]?token|auth[_-]?token|"
-    r"client[_-]?secret|cookie|password|passwd|refresh[_-]?token|session[_-]?id|"
-    r"sign(?:ature)?|token|secret)\s*[:=]\s*)(?P<value>[^\s,;&]+)"
+    r"(?i)(?P<prefix>(?<![A-Za-z0-9])[^=\s:]{0,128}"
+    + _SENSITIVE_TEXT_MARKER
+    + r"[^=\s:]{0,128}\s*[:=]\s*)(?P<value>[^\s,;&\"']+)"
 )
+
+
+def _redact_assignment(match: re.Match[str]) -> str:
+    if (
+        match.group("value") == "[redacted]"
+        or "authorization" in match.group("prefix").lower()
+    ):
+        return match.group(0)
+    return f"{match.group('prefix')}[redacted]"
 
 
 def sanitize_sensitive_text(value: object) -> str:
@@ -109,9 +141,7 @@ def sanitize_sensitive_text(value: object) -> str:
         lambda match: f"{match.group(1)}{match.group(2) or ''}[redacted]", text
     )
     text = _BEARER_PATTERN.sub(lambda match: f"{match.group(1)}[redacted]", text)
-    return _SECRET_ASSIGNMENT_PATTERN.sub(
-        lambda match: f"{match.group('prefix')}[redacted]", text
-    )
+    return _SECRET_ASSIGNMENT_PATTERN.sub(_redact_assignment, text)
 
 
 class ResponseStore(list):

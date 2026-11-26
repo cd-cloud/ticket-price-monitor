@@ -90,6 +90,14 @@ def test_save_schedule_strips_internal_fields_and_computes_next_local_time(tmp_p
     assert "_checkpoint_job_id" not in stored
 
 
+def test_save_schedule_requires_boolean_enabled(tmp_path):
+    service, _repo, _calls = make_service(tmp_path)
+    with pytest.raises(ValueError, match="enabled must be a boolean"):
+        service.save_schedule({
+            "payload": payload(), "interval_days": 1, "run_time": "09:00", "enabled": "false",
+        })
+
+
 def test_save_dual_provider_schedule_keeps_feizhu_call_budget(tmp_path):
     service, repo, _ = make_service(tmp_path)
     dual = payload(

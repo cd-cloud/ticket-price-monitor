@@ -12,6 +12,7 @@ from uuid import uuid4
 from config_manager import RouteQuery
 from provider_runtime import ProviderRuntime
 from providers import airchina
+from private_files import atomic_write_text, ensure_private_directory, make_file_private
 
 
 async def inspect_airchina_page(
@@ -39,10 +40,11 @@ async def inspect_airchina_page(
         report = await gate.run(key, execute, cancel_event=threading.Event(),
                                 progress=lambda _: None, cache_allowed=False)
     if captured is None:
-        folder = automation.app_config.runtime_dir / "airchina_probes" / uuid4().hex
-        folder.mkdir(parents=True, exist_ok=False)
+        folder = ensure_private_directory(
+            automation.app_config.runtime_dir / "airchina_probes" / uuid4().hex
+        )
         captured = folder / "report.json"
-    captured.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    atomic_write_text(captured, json.dumps(report, ensure_ascii=False, indent=2))
     return captured
 
 
@@ -95,25 +97,30 @@ async def _inspect_airchina_page(
             report.update(state="probe_error", error_type=type(exc).__name__,
                           message="读取官网页面失败；没有自动重试，也没有保存报价。")
 
-        folder = automation.app_config.runtime_dir / "airchina_probes" / (
-            datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid4().hex[:8]
+        folder = ensure_private_directory(
+            automation.app_config.runtime_dir
+            / "airchina_probes"
+            / (datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid4().hex[:8])
         )
-        folder.mkdir(parents=True, exist_ok=False)
         if capture_visible_page:
             # Explicit opt-in: visible text/screenshot may contain account info.
             # Do not store full HTML, scripts, cookies, headers, or network bodies.
             try:
                 text_path = folder / "visible-page.txt"
-                text_path.write_text(await page.locator("body").inner_text(timeout=5000), encoding="utf-8")
+                atomic_write_text(
+                    text_path,
+                    await page.locator("body").inner_text(timeout=5000),
+                )
                 report["visible_text_path"] = str(text_path)
                 screenshot_path = folder / "page.png"
                 await page.screenshot(path=str(screenshot_path), full_page=True)
+                make_file_private(screenshot_path)
                 report["screenshot_path"] = str(screenshot_path)
             except Exception as exc:
                 report["capture_error_type"] = type(exc).__name__
         report["captured_at"] = datetime.now(timezone.utc).isoformat()
         path = folder / "report.json"
-        path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+        atomic_write_text(path, json.dumps(report, ensure_ascii=False, indent=2))
         return path
     finally:
         try:

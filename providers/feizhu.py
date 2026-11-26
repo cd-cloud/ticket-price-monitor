@@ -47,7 +47,10 @@ def details_match_request(details: list[dict], route: RouteQuery) -> bool:
     requested_cabin = (route.cabin or "economy").lower()
     if any(not leg.get("cabin") or not cabin_matches(leg["cabin"], requested_cabin) for leg in details):
         return False
-    return not route.preferred_airlines or details_match_airlines(details, route.preferred_airlines)
+    return not route.preferred_airlines or all(
+        details_match_airlines([leg], route.preferred_airlines)
+        for leg in details
+    )
 
 
 async def query(

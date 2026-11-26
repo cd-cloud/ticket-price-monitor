@@ -6,6 +6,7 @@ Reads config.yaml and provides defaults for all settings.
 import json
 import logging
 import os
+from pathlib import Path
 import yaml
 
 logger = logging.getLogger("flyclaw.config")
@@ -195,11 +196,15 @@ def get_config(config_path: str | None = None) -> dict:
     )
     cfg = {}
     if os.path.exists(path):
-        if os.name != "nt":
-            try:
-                os.chmod(path, 0o600)
-            except OSError:
-                logger.warning("could not restrict FlyClaw config permissions: %s", path)
+        try:
+            from private_files import make_file_private
+            make_file_private(Path(path))
+        except ImportError:
+            if os.name != "nt":
+                try:
+                    os.chmod(path, 0o600)
+                except OSError:
+                    logger.warning("could not restrict FlyClaw config permissions: %s", path)
         with open(path, "r", encoding="utf-8") as f:
             cfg = yaml.safe_load(f) or {}
     return _deep_merge(DEFAULTS, cfg)

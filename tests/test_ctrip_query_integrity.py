@@ -29,6 +29,13 @@ def route(**kwargs):
                          "cabin": "economy", **kwargs})
 
 
+def test_ctrip_result_url_requires_https_ctrip_host():
+    assert ctrip.is_ctrip_results_url("https://flights.ctrip.com/online/list/x")
+    assert not ctrip.is_ctrip_results_url("http://flights.ctrip.com/online/list/x")
+    assert not ctrip.is_ctrip_results_url("https://evil.test/online/list/x")
+    assert not ctrip.is_ctrip_results_url("https://flights.ctrip.com.evil.test/online/list/x")
+
+
 def response(*, cabin="Y", airline="CA", amount=500, flight="CA1234", day=DAY, airport="PEK"):
     return {"url": "https://flights.ctrip.com/soa2/flight", "status": 200, "query_generation": 1,
             "payload": {"flightItineraryList": [{

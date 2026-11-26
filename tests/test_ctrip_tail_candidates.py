@@ -136,7 +136,7 @@ def test_network_date_evidence_only_uses_successful_current_generation(status, g
     responses = ResponseStore()
     responses.clear()
     responses.append({
-        "status": status, "query_generation": generation, "url": "https://example.test/flight",
+        "status": status, "query_generation": generation, "url": "https://flights.ctrip.com/soa2/flight",
         "payload": {"flightItineraryList": [{"priceList": [{"adultPrice": 700}]}]},
     })
     legs = match()["details"]

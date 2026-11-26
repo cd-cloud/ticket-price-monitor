@@ -113,6 +113,36 @@ class RouteServiceTests(unittest.TestCase):
             self.assertIsNone(disabled["auto_query_next_run_at"])
             self.assertEqual(disabled["origin"], "SHA")
 
+    def test_auto_query_schedule_is_rebalanced_before_persistence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config_path = Path(tmp_dir) / "config.json"
+            write_config(config_path)
+            manager = ConfigManager(config_path=config_path)
+            config = manager.load()
+
+            def refresh() -> None:
+                nonlocal config
+                config = manager.load()
+
+            def rebalance(routes) -> None:
+                for route in routes:
+                    if route.auto_query_enabled:
+                        route.auto_query_next_run_at = "2099-01-01T00:00:00Z"
+
+            service = RouteService(
+                config_manager=manager,
+                get_config=lambda: config,
+                refresh_config=refresh,
+                rebalance_auto_query=rebalance,
+                auto_query_interval_hours=12,
+            )
+            service.upsert_route({
+                "origin": "SHA", "destination": "PEK", "departure_date": FUTURE_DATE,
+                "providers": ["ctrip"], "auto_query_enabled": True,
+            })
+
+            self.assertEqual("2099-01-01T00:00:00Z", manager.load().routes[0].auto_query_next_run_at)
+
     def test_upsert_route_rejects_same_origin_and_destination(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             config_path = Path(tmp_dir) / "config.json"

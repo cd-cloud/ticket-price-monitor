@@ -1,4 +1,5 @@
 import json
+import os
 import sqlite3
 import tempfile
 import unittest
@@ -10,6 +11,14 @@ from tail_models import TailDiscoveryAttempt, TailDiscoveryResult
 
 
 class DataStorageTests(unittest.TestCase):
+    def test_repository_hardens_database_on_connect(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            db_path = Path(tmp_dir) / "storage.db"
+            repo = PriceRepository(db_path)
+            repo.initialize()
+            if os.name != "nt":
+                self.assertEqual(0o600, db_path.stat().st_mode & 0o777)
+
     def test_price_snapshot_quality_fields_round_trip_and_migrate(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             db_path = Path(tmp_dir) / "storage.db"

@@ -243,6 +243,34 @@ class DashboardBuilderTests(unittest.TestCase):
         self.assertFalse(groups[0]["lowest_price_comparable"])
         self.assertEqual(["CNY", "USD"], groups[0]["currencies"])
 
+    def test_task_group_comparison_requires_dates_filters_and_quote_terms(self) -> None:
+        base = {
+            "group_id": "g", "group_label": "G", "route_display": "A",
+            "origin": "AAA", "destination": "BBB", "latest_price": 100,
+            "currency": "CNY", "passengers": 1, "cabin": "economy",
+            "departure_date": "2099-01-01", "return_date": None,
+            "route_type": "one_way", "transfer_policy": "any", "preferred_airlines": [],
+            "quote_terms": {"price_basis": "per_person", "tax_included": True, "priced_passengers": 1},
+        }
+        different_date = build_task_groups([
+            base,
+            {**base, "route_display": "B", "latest_price": 90, "departure_date": "2099-01-02"},
+        ])[0]
+        self.assertFalse(different_date["lowest_price_comparable"])
+
+        missing_terms = build_task_groups([
+            base,
+            {**base, "route_display": "B", "latest_price": 90, "quote_terms": None},
+        ])[0]
+        self.assertFalse(missing_terms["lowest_price_comparable"])
+
+        comparable = build_task_groups([
+            base,
+            {**base, "route_display": "B", "latest_price": 90},
+        ])[0]
+        self.assertTrue(comparable["lowest_price_comparable"])
+        self.assertEqual(90, comparable["lowest_price"])
+
     def test_dashboard_sanitizes_derived_tasks_and_run_feedback(self) -> None:
         route = RouteQuery("AAA", "BBB", "2099-01-01", providers=["ctrip"])
         config = SimpleNamespace(

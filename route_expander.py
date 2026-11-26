@@ -119,7 +119,7 @@ def validate_raw_payload_bounds(payload: dict[str, Any]) -> None:
             parse_city_list(payload.get(field))
     for segment in segments:
         if not isinstance(segment, dict):
-            continue
+            raise ValueError("Each multi-city segment must be an object.")
         for field in ("origin_options", "destination_options", "origin", "destination"):
             if field in segment:
                 parse_city_list(segment.get(field))
@@ -213,7 +213,7 @@ def _expand_multi_city(
     segment_options: list[list[RouteSegment]] = []
     for item in segments_payload:
         if not isinstance(item, dict):
-            continue
+            raise ValueError("Each multi-city segment must be an object.")
         origins = parse_city_list(item.get("origin_options") or item.get("origin"))
         destinations = parse_city_list(item.get("destination_options") or item.get("destination"))
         if len(origins) * len(destinations) > MAX_EXPANDED_ROUTES:
@@ -233,6 +233,8 @@ def _expand_multi_city(
 
     routes: list[RouteQuery] = []
     expansion_mode = str(payload.get("expansion_mode") or "cartesian")
+    if expansion_mode not in {"paired", "cartesian"}:
+        raise ValueError("expansion_mode must be paired or cartesian.")
     if expansion_mode == "paired":
         routes.extend(_paired_multi_city_routes(payload, segment_options, group_id, group_label, auto_query_interval_hours))
     else:

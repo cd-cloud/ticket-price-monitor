@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from adaptive_selectors import observe_selector_candidates
-from providers.ctrip_support import ctrip_city_code
+from providers.ctrip_support import ctrip_city_code, is_ctrip_https_url
 from html_text_cleaner import clean_html_text
 from providers import ctrip
 from providers import ctrip_itinerary
@@ -35,6 +35,8 @@ LOGGER = logging.getLogger(__name__)
 
 def response_store_has_flight_itineraries(response_store: list[dict], *, data_walker: Any) -> bool:
     for item in response_store:
+        if not is_ctrip_https_url(item.get("url")):
+            continue
         payload = item.get("payload")
         if not isinstance(payload, dict):
             continue
@@ -54,6 +56,8 @@ def extract_tail_matches_from_network(
 ) -> list[dict[str, object]]:
     matches = []
     for item in response_store:
+        if not is_ctrip_https_url(item.get("url")):
+            continue
         if item.get("status", 200) != 200:
             continue
         generation = getattr(response_store, "generation", None)

@@ -214,17 +214,22 @@ test('dashboard task groups never compare different currencies or quote terms', 
   vm.runInContext(dashboardSource, ctx);
 
   const result = vm.runInContext(`(() => {
+    const base = {
+      currency: 'CNY', passengers: 1, cabin: 'economy', departure_date: '2099-01-01',
+      route_type: 'one_way', transfer_policy: 'any', preferred_airlines: [],
+      quote_terms: {price_basis: 'per_person', tax_included: true, priced_passengers: 1},
+    };
     const differentCurrency = summarizeTaskGroup({tasks: [
-      {latest_price: 100, currency: 'USD', passengers: 1, cabin: 'economy'},
-      {latest_price: 1000, currency: 'CNY', passengers: 1, cabin: 'economy'},
+      {...base, latest_price: 100, currency: 'USD'},
+      {...base, latest_price: 1000},
     ]});
     const differentPassengers = summarizeTaskGroup({tasks: [
-      {latest_price: 100, currency: 'CNY', passengers: 1, cabin: 'economy'},
-      {latest_price: 90, currency: 'CNY', passengers: 2, cabin: 'economy'},
+      {...base, latest_price: 100},
+      {...base, latest_price: 90, passengers: 2, quote_terms: {...base.quote_terms, priced_passengers: 2}},
     ]});
     const comparable = summarizeTaskGroup({tasks: [
-      {latest_price: 100, currency: 'CNY', passengers: 1, cabin: 'economy'},
-      {latest_price: 90, currency: 'CNY', passengers: 1, cabin: 'economy'},
+      {...base, latest_price: 100},
+      {...base, latest_price: 90},
     ]});
     return {
       differentCurrency: {best: differentCurrency.best, comparable: differentCurrency.comparable},

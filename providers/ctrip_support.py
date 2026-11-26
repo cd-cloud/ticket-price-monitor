@@ -1,4 +1,31 @@
+from urllib.parse import urlsplit
+
 from config_manager import RouteQuery
+
+
+CTRIP_RESULT_HOSTS = {"flights.ctrip.com"}
+
+
+def is_ctrip_https_url(value: object, *, exact_hosts: set[str] | None = None) -> bool:
+    try:
+        parsed = urlsplit(str(value or ""))
+        hostname = (parsed.hostname or "").lower().rstrip(".")
+        port = parsed.port
+    except (TypeError, ValueError):
+        return False
+    host_allowed = (
+        hostname in exact_hosts
+        if exact_hosts is not None
+        else hostname == "ctrip.com" or hostname.endswith(".ctrip.com")
+    )
+    return bool(
+        parsed.scheme.lower() == "https"
+        and hostname
+        and host_allowed
+        and parsed.username is None
+        and parsed.password is None
+        and port in {None, 443}
+    )
 
 
 CTRIP_CITY_CODE_MAP = {

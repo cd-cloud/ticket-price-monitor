@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import subprocess
 import tempfile
 from contextlib import contextmanager
 from pathlib import Path
@@ -20,6 +21,29 @@ PRIVATE_DIR_MODE = 0o700
 PRIVATE_FILE_MODE = 0o600
 
 
+def _restrict_windows_acl(path: Path, *, directory: bool) -> None:
+    if os.name != "nt":  # pragma: no cover - Windows-only branch
+        return
+    username = os.environ.get("USERNAME") or os.environ.get("USER")
+    if not username:
+        return
+    grant = f"{username}:(OI)(CI)F" if directory else f"{username}:(F)"
+    args = ["icacls", str(path), "/inheritance:r"]
+    for sid in ("*S-1-1-0", "*S-1-5-11", "*S-1-5-32-545"):
+        args.extend(["/remove:g", sid])
+    args.extend(["/grant:r", grant])
+    try:
+        subprocess.run(
+            args,
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
 def ensure_private_directory(path: Path) -> Path:
     path.mkdir(parents=True, exist_ok=True)
     if os.name != "nt":
@@ -27,6 +51,8 @@ def ensure_private_directory(path: Path) -> Path:
             path.chmod(PRIVATE_DIR_MODE)
         except OSError:
             pass
+    else:
+        _restrict_windows_acl(path, directory=True)
     return path
 
 
@@ -36,6 +62,8 @@ def make_file_private(path: Path) -> Path:
             path.chmod(PRIVATE_FILE_MODE)
         except OSError:
             pass
+    else:
+        _restrict_windows_acl(path, directory=False)
     return path
 
 
@@ -43,7 +71,7 @@ def make_file_private(path: Path) -> Path:
 def interprocess_lock(path: Path):
     """Serialize a small file-based critical section across local processes."""
     path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
+    ensure_private_directory(path.parent)
     descriptor = os.open(path, os.O_CREAT | os.O_RDWR, PRIVATE_FILE_MODE)
     windows_locked = False
     try:
@@ -98,11 +126,7 @@ def atomic_write_bytes(path: Path, data: bytes, *, mode: int = PRIVATE_FILE_MODE
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temporary, path)
-        if os.name != "nt":
-            try:
-                path.chmod(mode)
-            except OSError:
-                pass
+        make_file_private(path)
     finally:
         if os.path.exists(temporary):
             os.unlink(temporary)

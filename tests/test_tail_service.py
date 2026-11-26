@@ -34,6 +34,15 @@ class TailServiceTests(unittest.TestCase):
         self.assertIn("SHA", request.candidates)
         self.assertTrue(request.ignore_cache)
 
+    def test_tail_request_rejects_oversized_raw_candidate_and_airline_lists(self) -> None:
+        base = {"origin": "BJS", "transfer": "CTU", "departure_date": "2099-01-01"}
+        with self.assertRaisesRegex(ValueError, "500"):
+            normalize_tail_discovery_request({**base, "candidates": ["CAN"] * 501})
+        with self.assertRaisesRegex(ValueError, "20"):
+            normalize_tail_discovery_request({
+                **base, "candidates": ["CAN"], "preferred_airlines": ["CA"] * 21,
+            })
+
     def test_all_domestic_profile_uses_broad_candidate_list(self) -> None:
         request = normalize_tail_discovery_request(
             {

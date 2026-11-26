@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import nullcontext
+from copy import deepcopy
 import re
 from datetime import date, datetime
 from typing import Any, Callable
@@ -414,6 +415,7 @@ class RouteService:
         return parsed
 
     def _save_and_refresh(self, routes: list[RouteQuery]) -> None:
-        self.config_manager.save_routes(routes)
-        self.rebalance_auto_query(routes)
+        routes_to_save = deepcopy(routes)
+        self.rebalance_auto_query(routes_to_save)
+        self.config_manager.save_routes(routes_to_save)
         self.refresh_config()

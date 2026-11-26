@@ -475,7 +475,7 @@ class ExtraQuoteRegressionTests(unittest.TestCase):
 
     def test_network_parser_returns_all_prices_before_filtering(self):
         from providers.ctrip_tail_discovery import extract_tail_matches_from_network
-        response = [{"payload": {"flightItineraryList": [{"priceList": [{"p":600},{"p":700}]}]}}]
+        response = [{"url": "https://flights.ctrip.com/soa2/flight", "payload": {"flightItineraryList": [{"priceList": [{"p":600},{"p":700}]}]}}]
         with patch("providers.ctrip_itinerary.total_price", side_effect=lambda item:item["p"]), \
              patch("providers.ctrip_itinerary.build_itinerary_details", return_value=quote()["flight_details"]):
             matches = extract_tail_matches_from_network(None, response, origin="BJS", transfer="SHA", destination="CAN")

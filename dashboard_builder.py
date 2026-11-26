@@ -107,6 +107,7 @@ def build_dashboard_payload(
                     "auto_query_next_run_at": route.auto_query_next_run_at,
                     "group_id": route.group_id,
                     "group_label": route.group_label,
+                    "quote_terms": raw_payload.get("quote_terms") if isinstance(raw_payload.get("quote_terms"), dict) else None,
                 }
             )
 
@@ -281,6 +282,32 @@ def route_completion_date(route: Any) -> date | None:
     return max(parsed) if parsed else None
 
 
+def task_comparison_key(task: dict[str, Any]) -> tuple[Any, ...] | None:
+    required = ("currency", "passengers", "cabin", "departure_date", "route_type", "transfer_policy")
+    if any(task.get(field) in (None, "") for field in required):
+        return None
+    if "preferred_airlines" not in task or task.get("preferred_airlines") is None:
+        return None
+    terms = task.get("quote_terms")
+    if not isinstance(terms, dict):
+        return None
+    term_fields = ("price_basis", "tax_included", "priced_passengers")
+    if any(terms.get(field) in (None, "", "unknown") for field in term_fields):
+        return None
+    try:
+        passengers = int(task["passengers"])
+        priced_passengers = int(terms["priced_passengers"])
+    except (TypeError, ValueError):
+        return None
+    airlines = tuple(sorted(str(item).upper() for item in task["preferred_airlines"]))
+    return (
+        str(task["currency"]).upper(), passengers, str(task["cabin"]).lower(),
+        str(task["departure_date"]), str(task.get("return_date") or ""),
+        str(task["route_type"]), str(task["transfer_policy"]), airlines,
+        str(terms["price_basis"]), terms["tax_included"], priced_passengers,
+    )
+
+
 def build_task_groups(tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
     groups: dict[str, dict[str, Any]] = {}
     for task in tasks:
@@ -299,13 +326,8 @@ def build_task_groups(tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
     for group in groups.values():
         group_tasks = group["tasks"]
         priced = [task for task in group_tasks if task.get("latest_price")]
-        comparison_keys = {
-            (task.get("currency"), task.get("passengers"), task.get("cabin"))
-            for task in priced
-        }
-        comparable = bool(priced) and len(comparison_keys) == 1 and all(
-            task.get("currency") for task in priced
-        )
+        comparison_keys = [task_comparison_key(task) for task in priced]
+        comparable = bool(priced) and all(key is not None for key in comparison_keys) and len(set(comparison_keys)) == 1
         lowest = min(priced, key=lambda item: item["latest_price"]) if comparable else None
         errors = [task for task in group_tasks if task.get("last_error")]
         origins = sorted({task.get("origin") for task in group_tasks if task.get("origin")})

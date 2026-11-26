@@ -57,7 +57,7 @@
 ## 常用命令
 
 ```powershell
-python -m pip install -r requirements.txt
+python -m pip install -r requirements.txt -c requirements-constraints.txt
 python -m playwright install chromium
 python main.py init-config
 python main.py serve-ui --host 127.0.0.1 --port 8765

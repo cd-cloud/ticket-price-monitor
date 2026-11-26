@@ -44,7 +44,10 @@ class TailScheduleService:
         if not SCHEDULE_ID_PATTERN.fullmatch(schedule_id):
             raise ValueError("定时计划 ID 无效。")
         existing = self.repository.fetch_tail_schedule(schedule_id)
-        enabled = bool(body.get("enabled", existing["enabled"] if existing else True))
+        enabled_value = body.get("enabled", existing["enabled"] if existing else True)
+        if type(enabled_value) is not bool:
+            raise ValueError("enabled must be a boolean.")
+        enabled = enabled_value
         if enabled:
             enabled_count = sum(1 for item in self.repository.fetch_tail_schedules(enabled_only=True)
                                 if item["schedule_id"] != schedule_id)

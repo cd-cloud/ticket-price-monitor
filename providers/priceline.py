@@ -435,7 +435,7 @@ async def _is_leaf_result_card(item) -> bool:
     for selector in _CHILD_CARD_SELECTORS:
         try:
             descendants = item.locator(selector)
-            if await descendants.count() > 1:
+            if await descendants.count() > 0:
                 return False
         except Exception:
             continue

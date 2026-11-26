@@ -20,6 +20,10 @@ from providers.response_capture import sanitize_payload_urls
 from private_files import atomic_write_text
 
 OPEN_DESTINATION = "__OPEN__"  # One atomic query checkpoint, never a result destination.
+MAX_TAIL_CANDIDATES = 500
+MAX_TAIL_PREFERRED_AIRLINES = 20
+MAX_TAIL_RAW_TEXT_LENGTH = 4096
+MAX_TAIL_RAW_ITEM_LENGTH = 256
 
 @dataclass(slots=True)
 class TailDiscoveryRequest:
@@ -65,12 +69,20 @@ def normalize_tail_discovery_request(payload: dict[str, Any]) -> TailDiscoveryRe
     candidate_profile = str(payload.get("candidate_profile") or "").strip().upper()
     airline_input = payload.get("preferred_airlines") or ""
     if isinstance(airline_input, list):
+        if len(airline_input) > MAX_TAIL_PREFERRED_AIRLINES:
+            raise ValueError(f"航司偏好最多 {MAX_TAIL_PREFERRED_AIRLINES} 个。")
+        if any(len(str(item or "")) > MAX_TAIL_RAW_ITEM_LENGTH for item in airline_input):
+            raise ValueError("航司偏好项过长。")
         airline_input = ",".join(str(item) for item in airline_input)
+    elif len(str(airline_input)) > MAX_TAIL_RAW_TEXT_LENGTH:
+        raise ValueError("航司偏好输入过长。")
     preferred_airlines = sorted(set(
         item.strip().upper()
         for item in str(airline_input).replace("\uff0c", ",").split(",")
         if item.strip()
     ))
+    if len(preferred_airlines) > MAX_TAIL_PREFERRED_AIRLINES:
+        raise ValueError(f"航司偏好最多 {MAX_TAIL_PREFERRED_AIRLINES} 个。")
     try:
         passengers = int(payload.get("passengers", 1))
         if not 1 <= passengers <= 9:
@@ -105,6 +117,13 @@ def normalize_tail_discovery_request(payload: dict[str, Any]) -> TailDiscoveryRe
         raise ValueError("筛选范围必须为首段或全行程。")
     if search_scope not in {"candidates", "open", "hybrid"}:
         raise ValueError("不支持的目的地查询范围。")
+    raw_candidates = payload.get("candidates", [])
+    if not isinstance(raw_candidates, list):
+        raise ValueError("候选目的地必须为列表。")
+    if len(raw_candidates) > MAX_TAIL_CANDIDATES:
+        raise ValueError(f"候选种子最多 {MAX_TAIL_CANDIDATES} 个城市。")
+    if any(len(str(item or "")) > MAX_TAIL_RAW_ITEM_LENGTH for item in raw_candidates):
+        raise ValueError("候选目的地项过长。")
     if search_scope in {"open", "hybrid"}:
         if provider != "feizhu":
             raise ValueError("开放目的地仅支持飞猪官方 CLI。")
@@ -133,7 +152,7 @@ def normalize_tail_discovery_request(payload: dict[str, Any]) -> TailDiscoveryRe
         raise ValueError("混合模式候选种子必须为列表，可为空。")
     requested_candidates = [
         code
-        for item in (payload.get("candidates", []) if search_scope != "open" else [])
+        for item in (raw_candidates if search_scope != "open" else [])
         if (code := normalize_airport_code(item))
     ]
     candidates = requested_candidates if "candidates" in payload else list(
@@ -147,8 +166,8 @@ def normalize_tail_discovery_request(payload: dict[str, Any]) -> TailDiscoveryRe
         ],
         preferred_airlines,
     )
-    if len(candidates) > 500:
-        raise ValueError("候选种子最多 500 个城市。")
+    if len(candidates) > MAX_TAIL_CANDIDATES:
+        raise ValueError(f"候选种子最多 {MAX_TAIL_CANDIDATES} 个城市。")
     return TailDiscoveryRequest(
         provider=provider,
         origin=origin,

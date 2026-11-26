@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 
 from config_manager import RouteQuery
 from providers import ctrip_itinerary
+from providers.ctrip_support import is_ctrip_https_url
 from providers.response_capture import sanitize_url
 
 
@@ -28,6 +29,8 @@ def extract_price_from_network(response_store: list[dict]) -> float | None:
                 walk(item)
 
     for item in response_store:
+        if not is_ctrip_https_url(item.get("url")):
+            continue
         walk(item.get("payload"))
 
     filtered = [price for price in candidates if 200 <= price <= 5000]
@@ -47,6 +50,8 @@ def extract_single_route_match_from_network(response_store: list[dict], route: R
     itinerary_matches = []
 
     for item in response_store:
+        if not is_ctrip_https_url(item.get("url")):
+            continue
         if item.get("status", 200) != 200:
             continue
         payload = item.get("payload")
@@ -91,6 +96,8 @@ def extract_multi_city_match_from_network(
     source_item = None
 
     for item in response_store:
+        if not is_ctrip_https_url(item.get("url")):
+            continue
         if item.get("status", 200) != 200:
             continue
         payload = item.get("payload")

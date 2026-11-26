@@ -1,6 +1,8 @@
 """Offline probe tests. Synthetic page text is not a live fare sample."""
 import asyncio
 import json
+import os
+import stat
 from dataclasses import replace
 from datetime import date
 from pathlib import Path
@@ -159,6 +161,9 @@ def test_existing_inspect_entry_uses_dedicated_probe(tmp_path):
     automation, page = fake_automation(tmp_path)
     path = asyncio.run(BrowserAutomation.inspect_query_page(automation, "airchina", ROUTE, pause=False))
     assert json.loads(path.read_text())["state"] == "needs_verification"
+    if os.name != "nt":
+        assert stat.S_IMODE(path.parent.stat().st_mode) == 0o700
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
     page.goto.assert_awaited_once()
 
 

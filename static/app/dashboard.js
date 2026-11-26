@@ -561,20 +561,35 @@ function collapseTaskGroups(tasks) {
   return rows;
 }
 
+function taskComparisonKey(task) {
+  const required = ["currency", "passengers", "cabin", "departure_date", "route_type", "transfer_policy"];
+  if (required.some((field) => task[field] === null || task[field] === undefined || task[field] === "")) return null;
+  if (!Array.isArray(task.preferred_airlines)) return null;
+  const terms = task.quote_terms;
+  if (!terms || typeof terms !== "object") return null;
+  const termFields = ["price_basis", "tax_included", "priced_passengers"];
+  if (termFields.some((field) => terms[field] === null || terms[field] === undefined || terms[field] === "" || terms[field] === "unknown")) return null;
+  const passengers = Number(task.passengers);
+  const pricedPassengers = Number(terms.priced_passengers);
+  if (!Number.isInteger(passengers) || !Number.isInteger(pricedPassengers)) return null;
+  return [
+    String(task.currency).toUpperCase(), passengers, String(task.cabin).toLowerCase(),
+    String(task.departure_date), String(task.return_date || ""), String(task.route_type),
+    String(task.transfer_policy), task.preferred_airlines.map((item) => String(item).toUpperCase()).sort().join(","),
+    String(terms.price_basis), terms.tax_included, pricedPassengers,
+  ].join("|");
+}
+
 function summarizeTaskGroup(group) {
   const tasks = group.tasks || [];
   const priced = tasks.filter((task) => {
     if (task.latest_price === null || task.latest_price === undefined || task.latest_price === "") return false;
     return Number.isFinite(Number(task.latest_price));
   });
-  const comparisonKeys = new Set(priced.map((task) => [
-    String(task.currency || ""),
-    String(task.passengers === undefined || task.passengers === null ? 1 : task.passengers),
-    String(task.cabin || "economy"),
-  ].join("|")));
+  const comparisonKeys = priced.map(taskComparisonKey);
   const comparable = priced.length > 0
-    && priced.every((task) => Boolean(task.currency))
-    && comparisonKeys.size === 1;
+    && comparisonKeys.every((key) => key !== null)
+    && new Set(comparisonKeys).size === 1;
   const best = comparable
     ? priced.reduce((winner, task) => Number(task.latest_price) < Number(winner.latest_price) ? task : winner)
     : null;

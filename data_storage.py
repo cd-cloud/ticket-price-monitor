@@ -257,6 +257,13 @@ class PriceRepository:
             yield active
             return
         conn = sqlite3.connect(self.database_path, timeout=30)
+        for path in (
+            self.database_path,
+            Path(str(self.database_path) + "-wal"),
+            Path(str(self.database_path) + "-shm"),
+        ):
+            if path.exists():
+                make_file_private(path)
         conn.row_factory = sqlite3.Row
         try:
             yield conn

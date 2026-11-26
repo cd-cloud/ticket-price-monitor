@@ -1,6 +1,9 @@
 import asyncio
+import json
 import os
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from backends import (
@@ -16,7 +19,7 @@ from backends import (
 from backends.base import BrowserBackend
 from backends.fallback import BackendFallbackManager
 from backends.playwright import PlaywrightBackend
-from main import build_parser
+from main import _preload_cli_environment, build_parser
 
 
 class BackendFactoryTests(unittest.TestCase):
@@ -86,6 +89,21 @@ class BackendFactoryTests(unittest.TestCase):
         ):
             args = build_parser().parse_args(["run-once", "--backend", "camoufox"])
             self.assertEqual("camoufox", args.backend)
+
+    def test_cli_preloads_selected_config_env_before_choices(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            (root / ".env").write_text(
+                "FLIGHT_TRACKER_ENABLE_ANTI_DETECT_BACKENDS=1\n",
+                encoding="utf-8",
+            )
+            config_path = root / "config.json"
+            config_path.write_text("{}", encoding="utf-8")
+            with patch.dict(os.environ, {}, clear=False):
+                os.environ.pop("FLIGHT_TRACKER_ENABLE_ANTI_DETECT_BACKENDS", None)
+                _preload_cli_environment(["--config", str(config_path)])
+                args = build_parser().parse_args(["run-once", "--backend", "camoufox"])
+                self.assertEqual("camoufox", args.backend)
 
     def test_playwright_capabilities_allow_session_reuse(self) -> None:
         capabilities = backend_capabilities("playwright")

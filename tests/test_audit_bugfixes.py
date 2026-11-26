@@ -22,6 +22,7 @@ from providers import feizhu, priceline
 from providers.airchina_direct import flyclaw_records_from_report
 from providers.airchina_parser import parse_reference_fares
 from providers.base import ProviderQueryOutcome
+from providers.response_capture import sanitize_payload_urls, sanitize_sensitive_text, sanitize_url
 from query_service import QueryService
 from main import _validate_ui_bind
 from route_service import RouteService
@@ -331,6 +332,24 @@ class AuditBugfixRegressionTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "matched route/date/cabin"):
                 asyncio.run(feizhu.query(runtime, provider_cfg, route, None, []))
 
+    def test_feizhu_airline_filter_requires_every_leg_to_match(self) -> None:
+        route = RouteQuery(
+            "SHA", "CAN", "2099-06-01", preferred_airlines=["CA"], providers=["feizhu"]
+        )
+        details = [
+            {
+                "origin": "SHA", "destination": "CTU", "departure_airport": "SHA",
+                "arrival_airport": "CTU", "departure_date": "2099-06-01",
+                "cabin": "economy", "airline": "CA", "flight_no": "CA123",
+            },
+            {
+                "origin": "CTU", "destination": "CAN", "departure_airport": "CTU",
+                "arrival_airport": "CAN", "departure_date": "2099-06-01",
+                "cabin": "economy", "airline": "XX", "flight_no": "XX456",
+            },
+        ]
+        self.assertFalse(feizhu.details_match_request(details, route))
+
     def test_feizhu_accepts_exact_airport_date_and_cabin(self) -> None:
         provider_cfg = SimpleNamespace(timeout_ms=5000, min_delay_seconds=0, max_delay_seconds=0)
         runtime = SimpleNamespace(throttle=lambda _cfg: asyncio.sleep(0))
@@ -447,6 +466,17 @@ class AuditBugfixRegressionTests(unittest.TestCase):
         ))
         self.assertEqual(120, offer.price)
 
+        single_parent = Card("JFK to LAX | June 1, 2099 | Economy $999", [target])
+
+        class SingleParentPage:
+            def locator(self, _selector):
+                return CardList([single_parent])
+
+        with self.assertRaisesRegex(RuntimeError, "unambiguous"):
+            asyncio.run(priceline.extract_offer(
+                runtime, SingleParentPage(), RouteQuery("JFK", "LAX", "2099-06-01", cabin="economy")
+            ))
+
     def test_airchina_parser_and_flyclaw_bridge_support_overnight_and_cross_timezone_duration(self) -> None:
         fixture_path = Path(__file__).parent / "fixtures" / "airchina_visible_oneway.json"
         sample = json.loads(fixture_path.read_text(encoding="utf-8"))
@@ -551,6 +581,28 @@ class AuditBugfixRegressionTests(unittest.TestCase):
             self.assertEqual(2, len(window))
             self.assertEqual([750.0, 700.0], [row["price"] for row in window])
 
+    def test_sanitizer_covers_environment_names_json_keys_and_opaque_paths(self) -> None:
+        for text in (
+            "FLIGHT_TRACKER_MASTER_KEY=MASTER_SECRET",
+            "FLIGHT_TRACKER_UI_TOKEN=UI_SECRET",
+            "FLYCLAW_FLIGGY_API_KEY=API_SECRET",
+        ):
+            self.assertNotIn("SECRET", sanitize_sensitive_text(text))
+        payload = sanitize_payload_urls({
+            "session": "SESSION_SECRET",
+            "secretKey": "SECRET_KEY_VALUE",
+            "密码": "PASSWORD_SECRET",
+            "https://x.test/?token=KEY_SECRET": "value",
+        })
+        self.assertNotIn("SESSION_SECRET", json.dumps(payload, ensure_ascii=False))
+        self.assertNotIn("SECRET_KEY_VALUE", json.dumps(payload, ensure_ascii=False))
+        self.assertNotIn("PASSWORD_SECRET", json.dumps(payload, ensure_ascii=False))
+        self.assertNotIn("KEY_SECRET", json.dumps(payload, ensure_ascii=False))
+        self.assertNotIn(
+            "abcdefghijklmnopqrstuv",
+            sanitize_url("https://x.test/callback/abcdefghijklmnopqrstuv"),
+        )
+
     def test_setup_failure_never_persists_raw_secret_in_log_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             log_path = Path(tmp_dir) / "runtime" / "tracker.log"
@@ -568,6 +620,31 @@ class AuditBugfixRegressionTests(unittest.TestCase):
                         handler.close()
 
             self.assertNotIn("SECRET", content)
+
+    def test_existing_log_handlers_are_sanitized_before_emit(self) -> None:
+        class CaptureHandler(logging.Handler):
+            def __init__(self):
+                super().__init__()
+                self.messages = []
+
+            def emit(self, record):
+                self.messages.append(record.getMessage())
+
+        handler = CaptureHandler()
+        logging.getLogger().addHandler(handler)
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            configure_logging(Path(tmp_dir) / "tracker.log")
+            try:
+                logging.error("value=%s", "FLIGHT_TRACKER_UI_TOKEN=HANDLER_SECRET")
+            finally:
+                root = logging.getLogger()
+                for item in list(root.handlers):
+                    if getattr(item, "_flight_tracker_handler", False) or item is handler:
+                        root.removeHandler(item)
+                        item.close()
+
+        self.assertTrue(handler.messages)
+        self.assertNotIn("HANDLER_SECRET", handler.messages[-1])
 
     def test_log_api_redacts_legacy_sensitive_lines_and_hardens_log_file(self) -> None:
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:

@@ -20,13 +20,40 @@ from scheduling.auto_worker import AutoQueryWorker
 from scheduler import TaskScheduler
 from tail_discovery_manager import TailDiscoveryManager
 from tail_schedule_service import TailScheduleService
-from providers.response_capture import sanitize_sensitive_text
+from providers.response_capture import sanitize_payload_urls, sanitize_sensitive_text
 from private_files import ensure_private_directory, make_file_private
+
+
+class SanitizingFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.exc_info:
+            message = record.getMessage()
+            record.msg = sanitize_sensitive_text(message)
+            record.args = ()
+            record.exc_info = None
+            record.exc_text = None
+            return True
+        if isinstance(record.msg, str):
+            record.msg = sanitize_sensitive_text(record.msg)
+        if isinstance(record.args, tuple):
+            record.args = tuple(
+                sanitize_payload_urls(item) if isinstance(item, (dict, list, tuple))
+                else sanitize_sensitive_text(item) if isinstance(item, str) else item
+                for item in record.args
+            )
+        elif isinstance(record.args, dict):
+            record.args = sanitize_payload_urls(record.args)
+        return True
 
 
 class SanitizingFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
         return sanitize_sensitive_text(super().format(record))
+
+
+def _install_sanitizing_filter(handler: logging.Handler) -> None:
+    if not any(isinstance(item, SanitizingFilter) for item in handler.filters):
+        handler.addFilter(SanitizingFilter())
 
 
 def configure_logging(log_file: Path) -> None:
@@ -38,12 +65,16 @@ def configure_logging(log_file: Path) -> None:
         if getattr(handler, "_flight_tracker_handler", False):
             root_logger.removeHandler(handler)
             handler.close()
+        else:
+            _install_sanitizing_filter(handler)
     file_handler = logging.FileHandler(log_file, encoding="utf-8")
     make_file_private(log_file)
     file_handler.setFormatter(formatter)
+    _install_sanitizing_filter(file_handler)
     file_handler._flight_tracker_handler = True  # type: ignore[attr-defined]
     stream_handler = logging.StreamHandler()
     stream_handler.setFormatter(formatter)
+    _install_sanitizing_filter(stream_handler)
     stream_handler._flight_tracker_handler = True  # type: ignore[attr-defined]
     root_logger.addHandler(file_handler)
     root_logger.addHandler(stream_handler)

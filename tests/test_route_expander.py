@@ -138,6 +138,27 @@ class RouteExpanderTests(unittest.TestCase):
                 "providers": ["ctrip"],
             }, auto_query_interval_hours=12)
 
+    def test_rejects_malformed_segments_and_unknown_expansion_mode(self) -> None:
+        base = {
+            "route_type": "multi_city",
+            "segments": [
+                {"origin": "AAA", "destination": "BBB", "departure_date": "2099-01-01"},
+                "malformed",
+            ],
+            "providers": ["ctrip"],
+        }
+        with self.assertRaisesRegex(ValueError, "segment"):
+            expand_route_payload(base, auto_query_interval_hours=12)
+        with self.assertRaisesRegex(ValueError, "expansion_mode"):
+            expand_route_payload({
+                **base,
+                "segments": [
+                    {"origin": "AAA", "destination": "BBB", "departure_date": "2099-01-01"},
+                    {"origin": "BBB", "destination": "CCC", "departure_date": "2099-01-02"},
+                ],
+                "expansion_mode": "unknown",
+            }, auto_query_interval_hours=12)
+
     def test_rejects_overlong_group_label(self) -> None:
         with self.assertRaisesRegex(ValueError, "at most 120"):
             expand_route_payload({

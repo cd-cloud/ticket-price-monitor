@@ -10,7 +10,12 @@ from providers import ctrip_page
 from providers import ctrip_result
 from providers.response_capture import begin_response_batch, sanitize_url
 from providers.base import ProviderQueryOutcome
-from providers.ctrip_support import ctrip_city_code, route_prefers_international_entry
+from providers.ctrip_support import (
+    CTRIP_RESULT_HOSTS,
+    ctrip_city_code,
+    is_ctrip_https_url,
+    route_prefers_international_entry,
+)
 from providers.human_actions import hover_then_click, random_scroll_and_pause
 from browser_retry_policy import looks_like_rate_limit
 from private_files import atomic_write_text, debug_capture_directory, make_file_private
@@ -567,6 +572,8 @@ async def ensure_results_page(
 
 
 async def ensure_results_cabin_url(page: Page, route: RouteQuery, timeout_ms: int, response_store=None) -> None:
+    if not is_ctrip_results_url(page.url):
+        raise RuntimeError("Ctrip cabin correction refused a non-Ctrip result URL.")
     expected_cabin = CTRIP_ONLINE_CABIN_PARAMS.get((route.cabin or "").lower(), "y")
     parts = urlsplit(page.url)
     query = dict(parse_qsl(parts.query, keep_blank_values=True))
@@ -587,8 +594,10 @@ async def ensure_results_cabin_url(page: Page, route: RouteQuery, timeout_ms: in
 
 
 def is_ctrip_results_url(url: str) -> bool:
-    normalized = (url or "").lower()
-    return any(marker in normalized for marker in CTRIP_RESULT_URL_MARKERS)
+    if not is_ctrip_https_url(url, exact_hosts=CTRIP_RESULT_HOSTS):
+        return False
+    path = (urlsplit(url).path or "").lower()
+    return any(marker in path for marker in CTRIP_RESULT_URL_MARKERS)
 
 
 async def dump_submit_debug(

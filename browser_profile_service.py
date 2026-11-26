@@ -7,6 +7,7 @@ from typing import Any
 
 from config_manager import AppConfig
 from data_storage import PriceRepository
+from private_files import ensure_private_directory
 
 
 class BrowserProfileService:
@@ -123,7 +124,7 @@ class BrowserProfileService:
             raise RuntimeError(
                 f"Chrome profile is already in use or has an ambiguous lock: {profile_name}."
             )
-        profile_path.mkdir(parents=True, exist_ok=True)
+        ensure_private_directory(profile_path)
         chrome_path = _find_system_chrome()
         if not chrome_path:
             raise RuntimeError("System Chrome not found.")

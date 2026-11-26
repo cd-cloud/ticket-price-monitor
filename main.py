@@ -1,6 +1,7 @@
 import argparse
 import asyncio
 import os
+import sys
 from pathlib import Path
 
 import uvicorn
@@ -39,6 +40,25 @@ def _validate_ui_bind(host: str) -> None:
             "Refusing direct remote HTTP. Terminate TLS in a trusted reverse proxy and set "
             "FLIGHT_TRACKER_UI_BEHIND_HTTPS_PROXY=1, or bind to 127.0.0.1."
         )
+
+
+def _preload_cli_environment(argv: list[str] | None = None) -> None:
+    """Load the selected config's sibling .env before backend choices are built."""
+    from dotenv import load_dotenv
+
+    values = list(sys.argv[1:] if argv is None else argv)
+    config_value = None
+    for index, value in enumerate(values):
+        if value == "--config" and index + 1 < len(values):
+            config_value = values[index + 1]
+            break
+        if value.startswith("--config="):
+            config_value = value.split("=", 1)[1]
+            break
+    config_path = Path(config_value) if config_value else Path(__file__).resolve().parent / "config.json"
+    env_path = config_path.parent / ".env"
+    if env_path.exists():
+        load_dotenv(env_path, override=False)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -124,6 +144,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> int:
+    _preload_cli_environment()
     parser = build_parser()
     args = parser.parse_args()
     config_manager = ConfigManager(config_path=Path(args.config))
