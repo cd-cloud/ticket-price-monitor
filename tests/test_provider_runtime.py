@@ -3,10 +3,10 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-import browser_automation
-from browser_automation import BrowserAutomation
-from config_manager import RouteQuery
-from provider_runtime import ProviderRuntime
+from browser import browser_automation
+from browser.browser_automation import BrowserAutomation
+from core.config_manager import RouteQuery
+from browser.provider_runtime import ProviderRuntime
 from providers.base import ParsedProviderResult, ProviderQueryOutcome
 
 

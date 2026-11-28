@@ -10,12 +10,12 @@ import threading
 import unittest
 from unittest.mock import AsyncMock, patch
 
-from data_storage import PriceRepository
-from tail_discovery_service import TailDiscoveryService, validate_tail_results_for_run
-from tail_discovery_manager import TailDiscoveryManager
-from tail_quotes import (annotate_quote, apply_baselines, build_baseline_catalog, first_leg_key,
+from core.data_storage import PriceRepository
+from tail.tail_discovery_service import TailDiscoveryService, validate_tail_results_for_run
+from tail.tail_discovery_manager import TailDiscoveryManager
+from tail.tail_quotes import (annotate_quote, apply_baselines, build_baseline_catalog, first_leg_key,
                          itinerary_key, public_quote_metadata, quote_terms)
-from tail_service import normalize_tail_discovery_request, tail_queue_key
+from tail.tail_service import normalize_tail_discovery_request, tail_queue_key
 from providers.feizhu_tail_runner import FeizhuTailDiscoveryRunner
 
 DATE = "2027-06-20"
@@ -253,7 +253,7 @@ class TailImprovementTests(unittest.TestCase):
         self.assertEqual("KMG", order[1])
 
     def cache_negative(self, destination):
-        from tail_discovery_service import negative_cache_signature
+        from tail.tail_discovery_service import negative_cache_signature
         entry = dict(provider="feizhu", origin="BJS", transfer="SHA", destination=destination,
                      departure_date=DATE, cabin="economy", passengers=1, preferred_airlines=[])
         signature = negative_cache_signature(**entry)

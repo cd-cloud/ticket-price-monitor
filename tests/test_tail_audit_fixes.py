@@ -7,9 +7,9 @@ from unittest.mock import AsyncMock, patch
 import test_tail_improvements as helpers
 from providers import feizhu_flyai_adapter as adapter
 from providers.feizhu_tail_runner import FeizhuTailDiscoveryRunner
-from tail_discovery_service import negative_cache_signature, validate_tail_results_for_run
-from tail_quotes import annotate_quote, itinerary_key, public_quote_metadata
-from tail_service import normalize_tail_discovery_request, tail_queue_key
+from tail.tail_discovery_service import negative_cache_signature, validate_tail_results_for_run
+from tail.tail_quotes import annotate_quote, itinerary_key, public_quote_metadata
+from tail.tail_service import normalize_tail_discovery_request, tail_queue_key
 
 
 class AuditFixTests(unittest.TestCase):
@@ -239,7 +239,7 @@ class AuditFixTests(unittest.TestCase):
             return [] if kw["journey_type"] == "1" else [
                 helpers.quote(kw["destination"], flight="CA1001" if kw["destination"] == "CAN" else "CA1003")]
         self.search(response)
-        with patch("tail_discovery_service.asyncio.sleep", AsyncMock()):
+        with patch("tail.tail_discovery_service.asyncio.sleep", AsyncMock()):
             self.run_service(candidates=["CAN", "SZX"], max_baseline_queries=1)
         self.assertEqual(len([c for c in self.calls if c.get("transport_no")]), 1)
         self.calls.clear()

@@ -5,9 +5,9 @@ from types import SimpleNamespace
 import pytest
 from fastapi.testclient import TestClient
 
-from data_storage import PriceRepository
-from tail_schedule_service import TailScheduleService, next_run_at, parse_utc
-from web_ui import create_app
+from core.data_storage import PriceRepository
+from tail.tail_schedule_service import TailScheduleService, next_run_at, parse_utc
+from web.web_ui import create_app
 from test_web_ui_validation import write_config
 
 

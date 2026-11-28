@@ -12,13 +12,13 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 from fastapi.testclient import TestClient
 
-from config_manager import ConfigManager
-from data_storage import PriceRepository
-from experimental_query_service import ACTIVE, ExperimentalQueryService
-from query_service import QueryService
+from core.config_manager import ConfigManager
+from core.data_storage import PriceRepository
+from experiments.experimental_query_service import ACTIVE, ExperimentalQueryService
+from services.query_service import QueryService
 from test_airchina_adapter import snapshot, TARGET
 from test_web_ui_validation import write_config
-from web_ui import create_app
+from web.web_ui import create_app
 
 
 REQUEST = {"origin": "PEK", "destination": "SHA", "departure_date": "2099-01-01"}
@@ -95,7 +95,7 @@ def env(tmp_path):
                          get_config=lambda: config, refresh_config=lambda: None, automation_factory=factory)
     # These are browser lifecycle tests: execute every requested sample without
     # wall-clock throttling. Dedicated policy tests exercise real TTL/spacing.
-    from airchina_query_gate import AirChinaQueryGate
+    from experiments.airchina_query_gate import AirChinaQueryGate
     gate = AirChinaQueryGate(config.runtime_dir, min_interval=0, ttl=0)
     query.airchina_query_gate = lambda: gate
     service = ExperimentalQueryService(query_service=query, repository=repo, run_lock=lock, timeout_seconds=5)
@@ -174,7 +174,7 @@ def test_http_429_stops_current_wait_and_closes_browser(env):
 def test_policy_resume_api_requires_confirmation_and_respects_wait(tmp_path):
     application = create_app(str(config_file(tmp_path)))
     with TestClient(application) as client:
-        from airchina_query_gate import AirChinaQueryGate
+        from experiments.airchina_query_gate import AirChinaQueryGate
         cfg = ConfigManager(config_file(tmp_path)).load()
         gate = AirChinaQueryGate(cfg.runtime_dir)
         gate.pause("needs_verification")
@@ -188,7 +188,7 @@ def test_policy_resume_api_requires_confirmation_and_respects_wait(tmp_path):
 
 
 def test_profile_unavailable_is_actionable_without_query_or_retry(env):
-    from browser_session_manager import AirChinaSessionUnavailable
+    from browser.browser_session_manager import AirChinaSessionUnavailable
     service, repo, control, page, automation, query = env
     automation._new_page.side_effect = AirChinaSessionUnavailable()
     final = wait(service, service.submit(REQUEST)["job_id"])
@@ -716,7 +716,7 @@ def test_prepare_ready_and_close_persistent_session(env):
 
 
 def test_restore_failure_remains_visible_until_explicit_close(env, monkeypatch):
-    from local_session_state_store import SessionStateError
+    from core.local_session_state_store import SessionStateError
 
     service, *_ = env
     monkeypatch.setattr(
@@ -769,7 +769,7 @@ def test_verification_cleared_without_fares_retains_and_reuses_session(env, monk
 
 
 def test_session_api_prepare_restore_ready_cancel_and_delete(tmp_path, monkeypatch):
-    from experimental_session_service import ExperimentalSessionService
+    from experiments.experimental_session_service import ExperimentalSessionService
 
     calls = []
 

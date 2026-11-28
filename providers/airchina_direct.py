@@ -9,10 +9,10 @@ from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
 
-from config_manager import ConfigManager, RouteQuery
-from data_storage import PriceRepository
+from core.config_manager import ConfigManager, RouteQuery
+from core.data_storage import PriceRepository
 from providers.airchina_page import build_search_url
-from query_service import QueryService
+from services.query_service import QueryService
 from providers.airchina_source_contract import CABIN_NAMES, CAPABILITIES
 
 ROOT = Path(__file__).resolve().parents[1]

@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from playwright.async_api import async_playwright
-from config_manager import RouteQuery
+from core.config_manager import RouteQuery
 from providers.airchina_form import validate_entry
 from providers.airchina_requery import ResultsRequery
 from providers.airchina_result_wait import wait_for_results

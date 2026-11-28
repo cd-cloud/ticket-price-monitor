@@ -1,6 +1,6 @@
 from urllib.parse import urlsplit
 
-from config_manager import RouteQuery
+from core.config_manager import RouteQuery
 
 
 CTRIP_RESULT_HOSTS = {"flights.ctrip.com"}

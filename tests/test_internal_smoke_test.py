@@ -1,7 +1,7 @@
 import os
 import unittest
 
-from internal_smoke_test import cloudflare_access_headers, detect_verification, parse_viewport
+from tools.internal_smoke_test import cloudflare_access_headers, detect_verification, parse_viewport
 
 
 class InternalSmokeTestTests(unittest.TestCase):

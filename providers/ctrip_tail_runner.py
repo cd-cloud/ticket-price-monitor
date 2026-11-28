@@ -9,11 +9,11 @@ from datetime import datetime, timezone
 from time import monotonic
 from typing import Any, Callable
 
-from config_manager import RouteQuery
+from core.config_manager import RouteQuery
 from providers import ctrip, ctrip_page, ctrip_itinerary, ctrip_parser
 from providers.ctrip_tail_discovery import extract_tail_matches_from_network, extract_tail_matches_from_page, code_matches_target
-from browser_retry_policy import looks_like_rate_limit
-from tail_quotes import build_baseline_catalog, quote_terms
+from browser.browser_retry_policy import looks_like_rate_limit
+from tail.tail_quotes import build_baseline_catalog, quote_terms
 from providers.ctrip_tail_discovery import classify_tail_no_match, tail_network_route_stats
 from providers.response_capture import attach_response_listeners, ResponseStore, sanitize_url
 from providers.ctrip_tail_candidates import prepare_network_candidates, merge_tail_candidates

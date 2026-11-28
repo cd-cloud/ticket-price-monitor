@@ -11,7 +11,7 @@ import re
 from datetime import date
 from urllib.parse import urlsplit
 
-from config_manager import RouteQuery
+from core.config_manager import RouteQuery
 
 
 HOME_URL = "https://www.airchina.com.cn/zh-CN"

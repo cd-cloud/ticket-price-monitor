@@ -12,10 +12,11 @@ Prerequisite:
 
 from __future__ import annotations
 
-from config_manager import ProviderConfig, RouteQuery
+from core.config_manager import ProviderConfig, RouteQuery
 from providers.base import ParsedProviderResult, ProviderQueryOutcome
 from providers import feizhu_flyai_adapter
 from providers import ctrip_itinerary
+from tail.tail_quotes import quote_terms
 
 
 name = "feizhu"
@@ -41,7 +42,7 @@ def details_match_request(details: list[dict], route: RouteQuery) -> bool:
     if route.transfer_policy == "transfer_only" and len(details) < 2:
         return False
 
-    from tail_quotes import cabin_matches
+    from tail.tail_quotes import cabin_matches
     from providers.ctrip_tail_parser import details_match_airlines
 
     requested_cabin = (route.cabin or "economy").lower()
@@ -117,6 +118,14 @@ async def query(
             "search_metadata": best.get("search_metadata") or {},
             "source_price_field": best.get("source_price_field"),
             "source_price_value": best.get("source_price_value"),
+            "quote_terms": quote_terms(
+                "feizhu",
+                route.passengers,
+                "CNY",
+                price_basis="per_person",
+                priced_passengers=1 if route.passengers == 1 else None,
+                source_price_field=best.get("source_price_field") or "ticketPrice",
+            ),
             "validation": {
                 "status": "valid",
                 "scope": "route_date_cabin_transfer_airline",

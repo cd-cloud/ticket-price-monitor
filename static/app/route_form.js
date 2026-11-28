@@ -174,6 +174,69 @@ function syncRoundTripDateBounds(changedField = "") {
   departure.max = returnDate.value ? shiftDateInputValue(returnDate.value, -1) : "";
 }
 
+function providerDefinitionMap() {
+  const map = new Map();
+  for (const item of dashboardState.data.provider_registry || []) {
+    if (item && item.name) map.set(String(item.name).toLowerCase(), item);
+  }
+  return map;
+}
+
+function providerIncompatibilityReason(providerName) {
+  const def = providerDefinitionMap().get(String(providerName || "").toLowerCase());
+  if (!def) return "";
+  const routeType = document.getElementById("routeTypeSelect")?.value || "one_way";
+  const isMultiCity = routeType === "multi_city";
+  const hasReturn = !isMultiCity && Boolean(document.getElementById("returnDateInput")?.value);
+  const passengers = Number(document.getElementById("passengersInput")?.value || 1);
+  const transferPolicy = document.getElementById("transferPolicySelect")?.value || "any";
+  const airlines = normalizeAirlines(document.getElementById("airlinesInput")?.value || "");
+
+  if (isMultiCity && !def.supports_multi_city) return "不支持多程";
+  if (hasReturn && !def.supports_round_trip) return "仅支持单程";
+  if (passengers > Number(def.max_passengers || 1)) return `最多 ${def.max_passengers || 1} 人`;
+  if (transferPolicy !== "any" && !def.supports_transfer_filter) return "不支持中转筛选";
+  if (airlines.length > 0 && !def.supports_airline_filter) return "不支持航司筛选";
+  return "";
+}
+
+function syncProviderCapabilities() {
+  const container = document.getElementById("providerCheckboxes");
+  const hint = document.getElementById("providerCapabilityHint");
+  if (!container) return;
+  const disabledReasons = [];
+  container.querySelectorAll('input[type="checkbox"]').forEach((checkbox) => {
+    const reason = providerIncompatibilityReason(checkbox.value);
+    const pill = checkbox.closest(".provider-pill");
+    if (reason) {
+      if (checkbox.checked) checkbox.dataset.wasCheckedBeforeDisable = "true";
+      checkbox.checked = false;
+      checkbox.disabled = true;
+      if (pill) {
+        pill.classList.add("is-disabled");
+        pill.title = `${providerLabel(checkbox.value)}：${reason}`;
+      }
+      disabledReasons.push(`${providerLabel(checkbox.value)}（${reason}）`);
+    } else {
+      checkbox.disabled = false;
+      if (checkbox.dataset.wasCheckedBeforeDisable === "true") {
+        checkbox.checked = true;
+        delete checkbox.dataset.wasCheckedBeforeDisable;
+      }
+      if (pill) {
+        pill.classList.remove("is-disabled");
+        pill.removeAttribute("title");
+      }
+    }
+  });
+  if (hint) {
+    hint.hidden = disabledReasons.length === 0;
+    hint.textContent = disabledReasons.length
+      ? `按当前条件已自动排除不支持的平台：${disabledReasons.join("、")}`
+      : "";
+  }
+}
+
 function syncRouteTypeMode() {
   const isMultiCity = document.getElementById("routeTypeSelect").value === "multi_city";
   document.getElementById("multiCityBuilder").hidden = !isMultiCity;
@@ -187,14 +250,10 @@ function syncRouteTypeMode() {
   if (isMultiCity && !document.querySelectorAll(".segment-row").length) {
     renderSegmentRows();
   }
-  if (isMultiCity) {
-    document.querySelectorAll('#providerCheckboxes input[type="checkbox"]').forEach((checkbox) => {
-      checkbox.checked = checkbox.value === "ctrip";
-    });
-  }
   syncRouteFormVisibility();
   syncRouteFormRequirements();
   syncRoundTripDateBounds();
+  syncProviderCapabilities();
   renderRouteExpansionPreview();
 }
 
@@ -206,8 +265,12 @@ function resetRouteForm() {
   document.getElementById("routeGroupLabelInput").value = "";
   document.getElementById("originOptionsInput").value = "";
   document.getElementById("destinationOptionsInput").value = "";
+  const targetInput = document.getElementById("targetPriceInput");
+  if (targetInput) targetInput.value = "";
   renderSegmentRows();
   for (const checkbox of document.querySelectorAll('#providerCheckboxes input[type="checkbox"]')) {
+    delete checkbox.dataset.wasCheckedBeforeDisable;
+    checkbox.disabled = false;
     checkbox.checked = true;
   }
   syncRouteTypeMode();
@@ -229,6 +292,8 @@ function fillRouteForm(routeKey) {
   document.getElementById("cabinSelect").value = route.cabin;
   document.getElementById("transferPolicySelect").value = route.transfer_policy || "any";
   document.getElementById("passengersInput").value = route.passengers;
+  const targetInput = document.getElementById("targetPriceInput");
+  if (targetInput) targetInput.value = route.target_price != null ? String(route.target_price) : "";
   document.getElementById("airlinesInput").value = (route.preferred_airlines || []).join(", ");
   document.getElementById("routeGroupEnabled").checked = Boolean(route.group_id);
   document.getElementById("routeGroupLabelInput").value = route.group_label || "";
@@ -236,11 +301,67 @@ function fillRouteForm(routeKey) {
   document.getElementById("destinationOptionsInput").value = route.destination;
   renderSegmentRows(route.segments || []);
   for (const checkbox of document.querySelectorAll('#providerCheckboxes input[type="checkbox"]')) {
+    delete checkbox.dataset.wasCheckedBeforeDisable;
     checkbox.checked = (route.providers || []).includes(checkbox.value);
   }
   syncRouteTypeMode();
   renderRouteExpansionPreview();
   enhanceAirportInputs(document.getElementById("routeForm"));
+  document.getElementById("routeForm")?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+function fillRouteGroupForm(groupId) {
+  setWorkspaceTab("routes");
+  const routes = (dashboardState.data.routes || []).filter((item) => item.group_id === groupId);
+  if (!routes.length) return;
+  const first = routes[0];
+  document.getElementById("previousRouteKey").value = "";
+  document.getElementById("previousGroupId").value = groupId;
+  document.getElementById("routeTypeSelect").value = first.route_type || "one_way";
+  document.getElementById("departureDateInput").value = first.departure_date || "";
+  document.getElementById("returnDateInput").value = first.return_date || "";
+  document.getElementById("cabinSelect").value = first.cabin || "economy";
+  document.getElementById("transferPolicySelect").value = first.transfer_policy || "any";
+  document.getElementById("passengersInput").value = first.passengers || 1;
+  const targetInput = document.getElementById("targetPriceInput");
+  if (targetInput) targetInput.value = first.target_price != null ? String(first.target_price) : "";
+  document.getElementById("airlinesInput").value = (first.preferred_airlines || []).join(", ");
+  document.getElementById("routeGroupEnabled").checked = true;
+  document.getElementById("routeGroupLabelInput").value = first.group_label || "";
+
+  if (first.route_type === "multi_city") {
+    const segmentCount = Math.max(...routes.map((item) => (item.segments || []).length), 2);
+    const mergedSegments = [];
+    for (let i = 0; i < segmentCount; i += 1) {
+      const segs = routes.map((item) => (item.segments || [])[i]).filter(Boolean);
+      const origins = Array.from(new Set(segs.map((seg) => seg.origin).filter(Boolean)));
+      const destinations = Array.from(new Set(segs.map((seg) => seg.destination).filter(Boolean)));
+      mergedSegments.push({
+        origin: origins.join("/"),
+        destination: destinations.join("/"),
+        departure_date: segs[0]?.departure_date || "",
+      });
+    }
+    renderSegmentRows(mergedSegments);
+  } else {
+    const origins = Array.from(new Set(routes.map((item) => item.origin).filter(Boolean)));
+    const destinations = Array.from(new Set(routes.map((item) => item.destination).filter(Boolean)));
+    document.getElementById("originInput").value = origins[0] || "";
+    document.getElementById("destinationInput").value = destinations[0] || "";
+    document.getElementById("originOptionsInput").value = origins.join("/");
+    document.getElementById("destinationOptionsInput").value = destinations.join("/");
+    renderSegmentRows();
+  }
+
+  const groupProviders = new Set(routes.flatMap((item) => item.providers || []));
+  for (const checkbox of document.querySelectorAll('#providerCheckboxes input[type="checkbox"]')) {
+    delete checkbox.dataset.wasCheckedBeforeDisable;
+    checkbox.checked = groupProviders.has(checkbox.value);
+  }
+  syncRouteTypeMode();
+  renderRouteExpansionPreview();
+  enhanceAirportInputs(document.getElementById("routeForm"));
+  document.getElementById("routeForm")?.scrollIntoView({ behavior: "smooth", block: "nearest" });
 }
 
 async function submitRouteForm(event) {
@@ -287,6 +408,10 @@ async function submitRouteForm(event) {
     cabin: document.getElementById("cabinSelect").value,
     transfer_policy: document.getElementById("transferPolicySelect").value,
     passengers: Number(document.getElementById("passengersInput").value || 1),
+    target_price: (() => {
+      const raw = document.getElementById("targetPriceInput")?.value?.trim();
+      return raw ? Number(raw) : null;
+    })(),
     preferred_airlines: normalizeAirlines(document.getElementById("airlinesInput").value),
     segments: groupEnabled && isMultiCity
       ? segments.map((segment) => ({
@@ -295,11 +420,11 @@ async function submitRouteForm(event) {
           destination_options: segment.destination_options?.length ? segment.destination_options : [segment.destination].filter(Boolean),
         }))
       : segments,
-    providers: Array.from(document.querySelectorAll('#providerCheckboxes input[type="checkbox"]:checked'))
+    providers: Array.from(document.querySelectorAll('#providerCheckboxes input[type="checkbox"]:checked:not(:disabled)'))
       .map((checkbox) => checkbox.value),
   };
   if (!payload.providers.length) {
-    throw new Error("请至少选择一个查询平台。");
+    throw new Error("请至少选择一个支持当前条件的查询平台。");
   }
 
   const expansionIssue = routeExpansionIssue();
@@ -325,8 +450,7 @@ async function submitRouteForm(event) {
 async function deleteRoute(routeKey) {
   const response = await fetchApi(`/api/routes/${encodeURIComponent(routeKey)}`, { method: "DELETE" });
   if (!response.ok) {
-    const error = await response.text();
-    throw new Error(error || "删除航线失败");
+    throw new Error(await responseErrorMessage(response, "删除航线失败"));
   }
   await fetchDashboard();
   notifyComplete("航线已删除");
@@ -335,8 +459,7 @@ async function deleteRoute(routeKey) {
 async function deleteRouteGroup(groupId) {
   const response = await fetchApi(`/api/route-groups/${encodeURIComponent(groupId)}`, { method: "DELETE" });
   if (!response.ok) {
-    const error = await response.text();
-    throw new Error(error || "删除查询组失败");
+    throw new Error(await responseErrorMessage(response, "删除查询组失败"));
   }
   await fetchDashboard();
   notifyComplete("航线组已删除");
@@ -345,9 +468,8 @@ async function deleteRouteGroup(groupId) {
 async function runRouteGroup(groupId, provider = "") {
   const params = provider ? `?provider=${encodeURIComponent(provider)}` : "";
   const response = await fetchApi(`/api/route-groups/${encodeURIComponent(groupId)}/run-once${params}`, { method: "POST" });
-  const data = await response.json();
   if (!response.ok) {
-    throw new Error(data.detail || "查询整组失败");
+    throw new Error(await responseErrorMessage(response, "查询整组失败"));
   }
   notifyComplete(provider ? `已开始查询${providerLabel(provider)}航线组` : "已开始查询整组");
   await fetchDashboard();
@@ -362,11 +484,23 @@ async function toggleAutoQuery(routeKey, enabled) {
     body: JSON.stringify({ enabled }),
   });
   if (!response.ok) {
-    const error = await response.text();
-    throw new Error(error || "更新自动查询状态失败");
+    throw new Error(await responseErrorMessage(response, "更新自动查询状态失败"));
   }
   await fetchDashboard();
   notifyComplete(enabled ? "已开启自动查询" : "已关闭自动查询");
+}
+
+async function toggleGroupAutoQuery(groupId, enabled) {
+  const response = await fetchApi(`/api/route-groups/${encodeURIComponent(groupId)}/auto-query`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ enabled }),
+  });
+  if (!response.ok) {
+    throw new Error(await responseErrorMessage(response, "更新整组自动查询状态失败"));
+  }
+  await fetchDashboard();
+  notifyComplete(enabled ? "已开启整组自动查询" : "已关闭整组自动查询");
 }
 
 async function runSingleRoute(routeKey, provider) {

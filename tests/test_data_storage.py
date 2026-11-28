@@ -6,8 +6,8 @@ import unittest
 from contextlib import closing
 from pathlib import Path
 
-from data_storage import PriceRepository, PriceSnapshot
-from tail_models import TailDiscoveryAttempt, TailDiscoveryResult
+from core.data_storage import PriceRepository, PriceSnapshot
+from tail.tail_models import TailDiscoveryAttempt, TailDiscoveryResult
 
 
 class DataStorageTests(unittest.TestCase):

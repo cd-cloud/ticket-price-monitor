@@ -3,8 +3,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from config_manager import ConfigManager
-from route_service import RouteService
+from core.config_manager import ConfigManager
+from services.route_service import RouteService
 
 
 FUTURE_DATE = "2099-01-01"

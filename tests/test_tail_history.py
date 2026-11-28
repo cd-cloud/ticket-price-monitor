@@ -10,10 +10,10 @@ from unittest.mock import AsyncMock, Mock, patch
 import test_tail_improvements as helpers
 from providers import feizhu_flyai_adapter as adapter
 from providers.feizhu_tail_runner import FeizhuTailDiscoveryRunner
-from tail_service import OPEN_DESTINATION, normalize_tail_discovery_request
-from tail_history import history_context, rank_candidates, context_similarity
-from tail_discovery_manager import TailDiscoveryManager
-from tail_call_budget import TailCallBudget, ProviderCallBudgetExceeded
+from tail.tail_service import OPEN_DESTINATION, normalize_tail_discovery_request
+from tail.tail_history import history_context, rank_candidates, context_similarity
+from tail.tail_discovery_manager import TailDiscoveryManager
+from tail.tail_call_budget import TailCallBudget, ProviderCallBudgetExceeded
 
 
 class HistoryIntegrationTests(unittest.TestCase):
@@ -36,7 +36,7 @@ class HistoryIntegrationTests(unittest.TestCase):
                             if kw.get("destination") else self.rows)
         for p in (patch.object(adapter, "search_flights", side_effect=search),
                   patch.object(FeizhuTailDiscoveryRunner, "_cancellable_wait", AsyncMock()),
-                  patch("tail_discovery_service.asyncio.sleep", AsyncMock())):
+                  patch("tail.tail_discovery_service.asyncio.sleep", AsyncMock())):
             p.start()
             self.addCleanup(p.stop)
 

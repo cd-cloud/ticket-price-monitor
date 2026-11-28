@@ -101,11 +101,11 @@ function taskRouteDisplay(task) {
 }
 
 function detailButton(task) {
-  const hasDetails = (task.lowest_flight_details || []).length || task.lowest_flight_no || task.lowest_departure_time;
+  const hasDetails = (task.lowest_flight_details || []).length || task.lowest_flight_no || task.lowest_departure_time || task.latest_price;
   if (!hasDetails) return '<span class="muted">暂无详情</span>';
   return `
-    <button class="ghost compact" data-task-action="show-detail" data-key="${escapeHtml(task.route_key)}" data-provider="${escapeHtml(task.provider)}">
-      查看详情
+    <button class="ghost compact" type="button" data-task-action="show-detail" data-key="${escapeHtml(task.route_key)}" data-provider="${escapeHtml(task.provider)}">
+      详情 / 走势
     </button>
   `;
 }
@@ -231,6 +231,67 @@ function ensureTaskDetailDrawer() {
   document.body.appendChild(drawer);
 }
 
+function renderPriceHistorySparkline(points, targetPrice = null) {
+  const valid = (points || []).filter((item) => Number.isFinite(Number(item.price)));
+  if (!valid.length) {
+    return '<p class="muted">暂无历史价格快照。</p>';
+  }
+  const prices = valid.map((item) => Number(item.price));
+  const minVal = Math.min(...prices, ...(Number.isFinite(Number(targetPrice)) ? [Number(targetPrice)] : []));
+  const maxVal = Math.max(...prices, ...(Number.isFinite(Number(targetPrice)) ? [Number(targetPrice)] : []));
+  const span = Math.max(maxVal - minVal, 1);
+  const width = 460;
+  const height = 136;
+  const padX = 16;
+  const padY = 16;
+  const innerW = width - padX * 2;
+  const innerH = height - padY * 2;
+  const coords = valid.map((item, idx) => {
+    const x = valid.length === 1 ? width / 2 : padX + (idx / (valid.length - 1)) * innerW;
+    const y = padY + innerH - ((Number(item.price) - minVal) / span) * innerH;
+    return { x: Number(x.toFixed(1)), y: Number(y.toFixed(1)), item };
+  });
+  const polyline = coords.map((pt) => `${pt.x},${pt.y}`).join(" ");
+  const dots = coords.map((pt) => `
+    <circle cx="${pt.x}" cy="${pt.y}" r="3.5" class="history-chart-dot">
+      <title>${escapeHtml(formatQueryTime(pt.item.observed_at))} · ${escapeHtml(pt.item.currency || "CNY")} ${escapeHtml(pt.item.price)}</title>
+    </circle>
+  `).join("");
+  let targetLine = "";
+  if (targetPrice != null && Number.isFinite(Number(targetPrice))) {
+    const ty = Number((padY + innerH - ((Number(targetPrice) - minVal) / span) * innerH).toFixed(1));
+    targetLine = `<line x1="${padX}" y1="${ty}" x2="${width - padX}" y2="${ty}" class="history-target-line" />`;
+  }
+  const currency = valid[valid.length - 1].currency || "CNY";
+  const recentRows = valid.slice(-10).reverse().map((item) => `
+    <tr>
+      <td>${escapeHtml(formatQueryTime(item.observed_at))}</td>
+      <td><strong>${escapeHtml(item.currency || currency)} ${escapeHtml(item.price)}</strong></td>
+      <td>${escapeHtml(item.flight_no || "-")} ${escapeHtml(item.departure_time || "")}</td>
+    </tr>
+  `).join("");
+  return `
+    <div class="history-chart-wrap">
+      <svg class="history-chart" viewBox="0 0 ${width} ${height}" role="img" aria-label="价格历史趋势图">
+        ${targetLine}
+        ${coords.length > 1 ? `<polyline fill="none" class="history-chart-line" points="${polyline}" />` : ""}
+        ${dots}
+      </svg>
+      <div class="history-chart-axis">
+        <span>${escapeHtml(formatQueryDate(valid[0].observed_at))}</span>
+        <span>区间 ${escapeHtml(currency)} ${Math.min(...prices).toFixed(0)} - ${Math.max(...prices).toFixed(0)}${targetPrice != null ? ` · 目标 ≤ ${escapeHtml(targetPrice)}` : ""}</span>
+        <span>${escapeHtml(formatQueryDate(valid[valid.length - 1].observed_at))}</span>
+      </div>
+    </div>
+    <table class="history-table">
+      <thead><tr><th>查询时间</th><th>价格</th><th>航班</th></tr></thead>
+      <tbody>${recentRows}</tbody>
+    </table>
+  `;
+}
+
+let taskDetailRequestId = 0;
+
 function showTaskDetail(routeKey, provider) {
   ensureTaskDetailDrawer();
   const drawer = document.getElementById("taskDetailDrawer");
@@ -242,6 +303,9 @@ function showTaskDetail(routeKey, provider) {
   const queryTime = formatQueryTime(task.last_query_time);
   const transferPolicy = transferPolicyLabel(task.transfer_policy || "any");
   const airlines = task.preferred_airlines?.length ? task.preferred_airlines.join(", ") : "不限";
+  const targetMeta = task.target_price != null
+    ? ` · 目标价 ≤ ${task.currency} ${task.target_price}${task.target_price_hit ? "（已达标）" : ""}`
+    : "";
   const details = formatFlightDetails(task) || '<p class="muted">暂无可展示的航班分段详情。</p>';
 
   if (drawer.hidden) drawer.returnFocus = document.activeElement;
@@ -250,17 +314,46 @@ function showTaskDetail(routeKey, provider) {
     <div class="detail-kpis">
       <div><span>最新价格</span><strong>${escapeHtml(price)}</strong></div>
       <div><span>最近查询</span><strong>${escapeHtml(queryTime)}</strong></div>
-      <div><span>平台</span><strong>${escapeHtml(task.provider)}</strong></div>
+      <div><span>平台</span><strong>${escapeHtml(providerLabel(task.provider))}</strong></div>
     </div>
     <div class="detail-meta">
-      <p>${escapeHtml(cabinLabel(task.cabin))} · ${escapeHtml(transferPolicy)} · ${escapeHtml(airlines)}</p>
+      <p>${escapeHtml(cabinLabel(task.cabin))} · ${escapeHtml(transferPolicy)} · ${escapeHtml(airlines)}${escapeHtml(targetMeta)}</p>
       <p>${escapeHtml(task.itinerary_summary || task.departure_date || "-")}</p>
     </div>
+    <section class="detail-history-section">
+      <div class="detail-section-head">
+        <h3>历史价格走势</h3>
+        <span id="drawerHistorySummary" class="muted">正在加载历史记录…</span>
+      </div>
+      <div id="drawerHistoryBody" class="detail-history-body"></div>
+    </section>
     ${details}
   `;
   drawer.hidden = false;
-  cleanVisibleText(drawer);
   drawer.querySelector("button[data-drawer-close]").focus({ preventScroll: true });
+
+  const reqId = ++taskDetailRequestId;
+  fetchApi(`/api/routes/${encodeURIComponent(routeKey)}/history?provider=${encodeURIComponent(provider)}&limit=60`, { timeoutMs: 10000 })
+    .then(async (response) => {
+      if (!response.ok) throw new Error(await responseErrorMessage(response, "历史记录加载失败"));
+      return response.json();
+    })
+    .then((history) => {
+      if (reqId !== taskDetailRequestId) return;
+      const summaryEl = document.getElementById("drawerHistorySummary");
+      const bodyEl = document.getElementById("drawerHistoryBody");
+      if (!summaryEl || !bodyEl) return;
+      const stats = history.stats || {};
+      summaryEl.textContent = stats.count
+        ? `共 ${stats.count} 条 · 最低 ${stats.currency || task.currency} ${stats.min_price} · 均价 ${stats.avg_price}`
+        : "暂无历史记录";
+      bodyEl.innerHTML = renderPriceHistorySparkline(history.points || [], history.target_price ?? task.target_price);
+    })
+    .catch((error) => {
+      if (reqId !== taskDetailRequestId) return;
+      const summaryEl = document.getElementById("drawerHistorySummary");
+      if (summaryEl) summaryEl.textContent = error.message || "历史记录加载失败";
+    });
 }
 
 function routeLabel(route) {
@@ -624,8 +717,31 @@ function groupStatusBadge(summary) {
   return statusBadge("idle");
 }
 
+function renderTargetPricePill(task) {
+  if (task.target_price == null) return "";
+  if (task.target_price_hit) {
+    return `<span class="price-change-pill target-hit">已低于目标 ${escapeHtml(task.target_price)}</span>`;
+  }
+  return `<span class="muted target-hint">目标 ≤ ${escapeHtml(task.target_price)}</span>`;
+}
+
+function toggleTaskGroupExpanded(groupKey) {
+  if (!groupKey) return;
+  if (!(dashboardState.expandedTaskGroups instanceof Set)) {
+    dashboardState.expandedTaskGroups = new Set();
+  }
+  if (dashboardState.expandedTaskGroups.has(groupKey)) {
+    dashboardState.expandedTaskGroups.delete(groupKey);
+  } else {
+    dashboardState.expandedTaskGroups.add(groupKey);
+  }
+  dashboardState.taskRenderSignature = "";
+  renderTasks(dashboardState.data.tasks || []);
+}
+
 function renderTaskRow(task) {
   const row = document.createElement("tr");
+  if (task.target_price_hit) row.className = "target-hit-row";
   const transferPolicy = transferPolicyLabel(task.transfer_policy || "any");
   const airlines = task.preferred_airlines?.length ? task.preferred_airlines.join(", ") : "不限";
   const dateText = task.route_type === "multi_city"
@@ -635,8 +751,8 @@ function renderTaskRow(task) {
   const runDisabled = task.is_expired ? "disabled" : "";
   const runTitle = task.is_expired ? 'title="航线日期较早，请更新日期后查询"' : "";
   const deleteAction = task.group_id
-    ? `<button class="ghost compact danger" data-task-action="delete-group" data-group-id="${escapeHtml(task.group_id)}">删除整组</button>`
-    : `<button class="ghost compact danger" data-task-action="delete-route" data-key="${escapeHtml(task.route_key)}">删除</button>`;
+    ? `<button class="ghost compact danger" type="button" data-task-action="delete-group" data-group-id="${escapeHtml(task.group_id)}">删除整组</button>`
+    : `<button class="ghost compact danger" type="button" data-task-action="delete-route" data-key="${escapeHtml(task.route_key)}">删除</button>`;
   row.innerHTML = `
     <td>${statusBadge(task.status)}</td>
     <td>${escapeHtml(providerLabel(task.provider))}</td>
@@ -647,6 +763,7 @@ function renderTaskRow(task) {
       <div class="price-cell">
         <strong>${task.latest_price ? `${escapeHtml(task.currency)} ${escapeHtml(task.latest_price)}` : "暂无"}</strong>
         ${renderPriceChangePill(task)}
+        ${renderTargetPricePill(task)}
       </div>
     </td>
     <td>${escapeHtml(formatQueryTime(task.last_query_time))}</td>
@@ -659,7 +776,7 @@ function renderTaskRow(task) {
     <td>${formatAutoQueryStatus(task)}</td>
     <td>
       <div class="task-action-stack">
-        <button class="ghost compact" data-task-action="run-route" data-key="${escapeHtml(task.route_key)}" data-provider="${escapeHtml(task.provider)}" ${runDisabled} ${runTitle}>
+        <button class="ghost compact" type="button" data-task-action="run-route" data-key="${escapeHtml(task.route_key)}" data-provider="${escapeHtml(task.provider)}" ${runDisabled} ${runTitle}>
           查询此航线
         </button>
         ${deleteAction}
@@ -679,22 +796,9 @@ function renderTaskGroupRow(group) {
   const runDisabled = summary.expired ? "disabled" : "";
   const runTitle = summary.expired ? 'title="航线日期较早，请更新日期后查询"' : "";
   const routePreview = summary.tasks.slice(0, 4).map(taskRouteDisplay).join(" / ");
-  const detailRows = summary.tasks.map((task) => `
-    <div class="multi-city-detail-row">
-      <div>
-        <strong>${escapeHtml(taskRouteDisplay(task))}</strong>
-        <span>${escapeHtml(task.itinerary_summary || task.departure_date || "-")}</span>
-      </div>
-      <div>${task.latest_price ? `${escapeHtml(task.currency)} ${escapeHtml(task.latest_price)}` : "暂无"}</div>
-      <div>${escapeHtml(formatQueryTime(task.last_query_time))}</div>
-      <div>${detailButton(task)}</div>
-      <div>
-        <button class="ghost compact" data-task-action="run-route" data-key="${escapeHtml(task.route_key)}" data-provider="${escapeHtml(task.provider)}" ${task.is_expired ? "disabled" : ""}>查询</button>
-      </div>
-    </div>
-  `).join("");
+  const expanded = dashboardState.expandedTaskGroups instanceof Set && dashboardState.expandedTaskGroups.has(group.key);
   const row = document.createElement("tr");
-  row.className = "multi-city-group-row";
+  row.className = `multi-city-group-row${expanded ? " is-expanded" : ""}`;
   row.innerHTML = `
     <td>${groupStatusBadge(summary)}</td>
     <td>${escapeHtml(providerLabel(group.provider))}</td>
@@ -707,20 +811,44 @@ function renderTaskGroupRow(group) {
     <td>${bestLabel}<br><span class="muted">${summary.priced.length}/${summary.tasks.length} 已有价格</span></td>
     <td>${escapeHtml(formatQueryTime(best?.last_query_time || sampleTask.last_query_time))}</td>
     <td>
-      <details class="multi-city-group-details">
-        <summary>展开具体航线</summary>
-        <div class="multi-city-detail-list">${detailRows}</div>
-      </details>
+      <button class="ghost compact" type="button" data-task-action="toggle-group-expand" data-group-key="${escapeHtml(group.key)}" aria-expanded="${expanded ? "true" : "false"}">
+        ${expanded ? "收起具体航线" : `展开 ${summary.tasks.length} 条航线`}
+      </button>
     </td>
     <td>${summary.autoEnabled ? `${summary.autoEnabled}/${summary.tasks.length} 开启` : "未开启"}</td>
     <td>
       <div class="task-action-stack">
-        <button class="ghost compact" data-task-action="run-group" data-group-id="${escapeHtml(group.group_id)}" data-provider="${escapeHtml(group.provider)}" ${runDisabled} ${runTitle}>查询本平台组</button>
-        <button class="ghost compact danger" data-task-action="delete-group" data-group-id="${escapeHtml(group.group_id)}">删除整组</button>
+        <button class="ghost compact" type="button" data-task-action="run-group" data-group-id="${escapeHtml(group.group_id)}" data-provider="${escapeHtml(group.provider)}" ${runDisabled} ${runTitle}>查询本平台组</button>
+        <button class="ghost compact danger" type="button" data-task-action="delete-group" data-group-id="${escapeHtml(group.group_id)}">删除整组</button>
       </div>
     </td>
   `;
   return row;
+}
+
+function renderTaskGroupDetailRow(group) {
+  const summary = summarizeTaskGroup(group);
+  const detailRows = summary.tasks.map((task) => `
+    <div class="multi-city-detail-row${task.target_price_hit ? " target-hit-row" : ""}">
+      <div>
+        <strong>${escapeHtml(taskRouteDisplay(task))}</strong>
+        <span>${escapeHtml(task.itinerary_summary || task.departure_date || "-")}</span>
+      </div>
+      <div>
+        <strong>${task.latest_price ? `${escapeHtml(task.currency)} ${escapeHtml(task.latest_price)}` : "暂无"}</strong>
+        ${renderPriceChangePill(task)}
+      </div>
+      <div>${escapeHtml(formatQueryTime(task.last_query_time))}</div>
+      <div>${detailButton(task)}</div>
+      <div>
+        <button class="ghost compact" type="button" data-task-action="run-route" data-key="${escapeHtml(task.route_key)}" data-provider="${escapeHtml(task.provider)}" ${task.is_expired ? "disabled" : ""}>查询</button>
+      </div>
+    </div>
+  `).join("");
+  const detailRow = document.createElement("tr");
+  detailRow.className = "multi-city-group-detail-tr";
+  detailRow.innerHTML = `<td colspan="10"><div class="multi-city-detail-list">${detailRows}</div></td>`;
+  return detailRow;
 }
 
 function renderTasks(tasks) {
@@ -729,11 +857,15 @@ function renderTasks(tasks) {
   const body = document.getElementById("taskTableBody");
   renderTaskViewTabs(tasks);
   renderTaskSummary(filtered);
+  const expandedKeys = dashboardState.expandedTaskGroups instanceof Set
+    ? Array.from(dashboardState.expandedTaskGroups).sort()
+    : [];
   const signature = JSON.stringify({
     view: dashboardState.activeTaskView,
     provider: document.getElementById("providerFilter")?.value || "",
     cabin: document.getElementById("cabinFilter")?.value || "",
     search: document.getElementById("routeSearchInput")?.value || "",
+    expanded: expandedKeys,
     rows: displayRows,
   });
   if (signature === dashboardState.taskRenderSignature) return;
@@ -746,9 +878,14 @@ function renderTasks(tasks) {
   }
 
   for (const rowItem of displayRows) {
-    body.appendChild(rowItem.type === "task_group"
-      ? renderTaskGroupRow(rowItem)
-      : renderTaskRow(rowItem.task));
+    if (rowItem.type === "task_group") {
+      body.appendChild(renderTaskGroupRow(rowItem));
+      if (dashboardState.expandedTaskGroups instanceof Set && dashboardState.expandedTaskGroups.has(rowItem.key)) {
+        body.appendChild(renderTaskGroupDetailRow(rowItem));
+      }
+    } else {
+      body.appendChild(renderTaskRow(rowItem.task));
+    }
   }
 }
 
@@ -788,9 +925,18 @@ function renderRoutes(routes) {
     const providers = route.providers?.join(", ") || "-";
     const airlines = route.preferred_airlines?.join(", ") || "不限";
     const transferPolicy = transferPolicyLabel(route.transfer_policy || "any");
-    const autoQueryStatus = route.auto_query_enabled
-      ? `已开启，每 ${route.auto_query_interval_hours || 12} 小时一次；下次：${formatQueryTime(route.auto_query_next_run_at)}`
-      : "未开启自动查询";
+    const autoEnabledCount = group.routes.filter((item) => item.auto_query_enabled).length;
+    const groupAutoAllOn = group.routes.length > 1 && autoEnabledCount === group.routes.length;
+    const autoQueryStatus = group.routes.length > 1
+      ? (autoEnabledCount
+        ? `已开启 ${autoEnabledCount}/${group.routes.length} 条（12h 错峰）`
+        : "未开启自动查询")
+      : (route.auto_query_enabled
+        ? `已开启，每 ${route.auto_query_interval_hours || 12} 小时一次；下次：${formatQueryTime(route.auto_query_next_run_at)}`
+        : "未开启自动查询");
+    const targetLine = route.target_price != null
+      ? `<p>目标价提醒：≤ ${escapeHtml(route.target_price)}</p>`
+      : "";
     const segments = (route.segments || [])
       .map((item) => `${item.origin}->${item.destination} ${item.departure_date}`)
       .join(" / ");
@@ -799,7 +945,7 @@ function renderRoutes(routes) {
       : "";
     const groupProviderButtons = groupProviderNames(group.routes)
       .map((provider) => `
-        <button class="ghost" data-action="run-group" data-group-id="${escapeHtml(group.group_id)}" data-provider="${escapeHtml(provider)}">
+        <button class="ghost" type="button" data-action="run-group" data-group-id="${escapeHtml(group.group_id)}" data-provider="${escapeHtml(provider)}">
           查询${escapeHtml(providerLabel(provider))}
         </button>
       `)
@@ -807,17 +953,21 @@ function renderRoutes(routes) {
     const routeActions = group.routes.length > 1
       ? `
         ${groupProviderButtons}
-        <button class="ghost" data-action="run-group" data-group-id="${escapeHtml(group.group_id)}">
+        <button class="ghost" type="button" data-action="run-group" data-group-id="${escapeHtml(group.group_id)}">
           查询整组
         </button>
-        <button class="ghost danger" data-action="delete-group" data-group-id="${escapeHtml(group.group_id)}">删除整组</button>
+        <button class="ghost" type="button" data-action="toggle-group-auto" data-enabled="${groupAutoAllOn ? "true" : "false"}" data-group-id="${escapeHtml(group.group_id)}">
+          ${groupAutoAllOn ? "关闭整组自动查询" : "开启整组 12h 自动"}
+        </button>
+        <button class="ghost" type="button" data-action="edit-group" data-group-id="${escapeHtml(group.group_id)}">编辑整组</button>
+        <button class="ghost danger" type="button" data-action="delete-group" data-group-id="${escapeHtml(group.group_id)}">删除整组</button>
       `
       : `
-        <button class="ghost" data-action="toggle-auto" data-enabled="${route.auto_query_enabled ? "true" : "false"}" data-key="${escapeHtml(route.route_key)}">
+        <button class="ghost" type="button" data-action="toggle-auto" data-enabled="${route.auto_query_enabled ? "true" : "false"}" data-key="${escapeHtml(route.route_key)}">
           ${route.auto_query_enabled ? "关闭自动查询" : "开启 12h 自动查询"}
         </button>
-        <button class="ghost" data-action="edit" data-key="${escapeHtml(route.route_key)}">编辑</button>
-        <button class="ghost danger" data-action="delete" data-key="${escapeHtml(route.route_key)}">删除</button>
+        <button class="ghost" type="button" data-action="edit" data-key="${escapeHtml(route.route_key)}">编辑</button>
+        <button class="ghost danger" type="button" data-action="delete" data-key="${escapeHtml(route.route_key)}">删除</button>
       `;
     const dateLine = route.route_type === "multi_city"
       ? segments
@@ -831,6 +981,7 @@ function renderRoutes(routes) {
         <p>舱位：${escapeHtml(cabinLabel(route.cabin))}，${escapeHtml(transferPolicy)}，人数：${escapeHtml(route.passengers)}</p>
         <p>平台：${escapeHtml(providers)}</p>
         <p>航司偏好：${escapeHtml(airlines)}</p>
+        ${targetLine}
         <p>自动查询：${escapeHtml(autoQueryStatus)}</p>
         <p>后台错峰：至少间隔 10 分钟</p>
       </div>
@@ -842,32 +993,58 @@ function renderRoutes(routes) {
   }
 }
 
+function renderGlobalRunStatus(progress = {}) {
+  const badge = document.getElementById("globalRunStatus");
+  if (!badge) return;
+  const tailRunning = typeof tailState !== "undefined"
+    && (tailState.job?.items || []).some((job) => ACTIVE_TAIL_JOB_STATUSES.includes(job.status));
+  if (progress.running) {
+    badge.className = "status-badge scheduled";
+    badge.textContent = "航线查询中";
+  } else if (tailRunning) {
+    badge.className = "status-badge scheduled";
+    badge.textContent = "甩尾任务运行中";
+  } else if ((progress.errors || []).length) {
+    badge.className = "status-badge warning";
+    badge.textContent = `最近有 ${progress.errors.length} 项异常`;
+  } else {
+    badge.className = "status-badge ok";
+    badge.textContent = "就绪";
+  }
+}
+
 function renderDashboard(data) {
   dashboardState.data = data;
   const optionsSignature = JSON.stringify({
     providers: data.provider_options || [],
     cabins: data.cabin_options || [],
+    registry: data.provider_registry || [],
   });
   if (optionsSignature !== dashboardState.optionsSignature) {
     dashboardState.optionsSignature = optionsSignature;
     renderProviderOptions(data.provider_options || []);
     renderCabinOptions(data.cabin_options || []);
+    if (typeof syncProviderCapabilities === "function") {
+      syncProviderCapabilities();
+    }
   }
   renderTasks(data.tasks || []);
   renderRunProgressSummary(data.run_feedback?.progress || {});
+  renderGlobalRunStatus(data.run_feedback?.progress || {});
   renderResultChangeSummary(data.run_feedback || {});
   renderRoutes(data.routes || []);
   renderSessionHints(data.session_hints || []);
   updateWorkspaceTabs();
-  syncRouteTypeMode();
-  cleanVisibleText();
 }
 
 async function fetchDashboard() {
   const currentProvider = document.getElementById("providerFilter").value;
   const currentCabin = document.getElementById("cabinFilter").value;
   const currentSearch = document.getElementById("routeSearchInput").value;
-  const response = await fetchApi("/api/dashboard");
+  const response = await fetchApi("/api/dashboard", { timeoutMs: 12000 });
+  if (!response.ok) {
+    throw new Error(await responseErrorMessage(response, "读取控制台数据失败"));
+  }
   const data = await response.json();
   renderDashboard(data);
   document.getElementById("providerFilter").value = currentProvider;
@@ -917,11 +1094,24 @@ function scheduleDashboardPolling(delayMs = 4000) {
 
 async function pollDashboardLoop() {
   if (dashboardState.pollInFlight) return;
+  if (typeof document !== "undefined" && document.hidden) {
+    scheduleDashboardPolling(10000);
+    return;
+  }
+  const onDashboardTab = typeof workspaceState === "undefined"
+    || workspaceState.activeTab === "routes"
+    || workspaceState.activeTab === "tasks"
+    || workspaceState.activeTab === "insights";
+  const runningNow = Boolean(dashboardState.data.last_run?.running);
+  if (!onDashboardTab && !runningNow) {
+    scheduleDashboardPolling(15000);
+    return;
+  }
   dashboardState.pollInFlight = true;
   try {
     await fetchDashboard();
     const running = Boolean(dashboardState.data.last_run?.running);
-    if (running || tailState.job.activeId) {
+    if (running || (typeof workspaceState !== "undefined" && workspaceState.activeTab === "insights")) {
       await fetchLog();
     }
     scheduleDashboardPolling(running ? 1500 : 8000);

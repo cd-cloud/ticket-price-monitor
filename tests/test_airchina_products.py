@@ -8,8 +8,8 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from airchina_probe import inspect_airchina_page
-from config_manager import RouteQuery
+from experiments.airchina_probe import inspect_airchina_page
+from core.config_manager import RouteQuery
 from providers.airchina_products import parse_product_fares, expand_fare_products
 from test_airchina_probe import fake_automation
 

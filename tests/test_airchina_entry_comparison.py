@@ -9,7 +9,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
-from config_manager import RouteQuery
+from core.config_manager import RouteQuery
 from providers.airchina_parser import parse_reference_fares
 from providers.airchina_result_wait import wait_for_results
 

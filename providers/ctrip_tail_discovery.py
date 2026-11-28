@@ -14,15 +14,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from adaptive_selectors import observe_selector_candidates
+from browser.adaptive_selectors import observe_selector_candidates
 from providers.ctrip_support import ctrip_city_code, is_ctrip_https_url
-from html_text_cleaner import clean_html_text
+from core.html_text_cleaner import clean_html_text
 from providers import ctrip
 from providers import ctrip_itinerary
 from providers import ctrip_network_parser
 from providers import ctrip_tail_parser
 from providers.response_capture import sanitize_url
-from private_files import (
+from core.private_files import (
     atomic_write_text,
     debug_capture_directory,
     debug_capture_enabled,

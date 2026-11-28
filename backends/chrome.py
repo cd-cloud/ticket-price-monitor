@@ -9,7 +9,7 @@ from pathlib import Path
 from playwright.async_api import BrowserContext, Page, async_playwright
 
 from .base import BrowserBackend
-from private_files import ensure_private_directory
+from core.private_files import ensure_private_directory
 
 LOGGER = logging.getLogger(__name__)
 
@@ -101,8 +101,8 @@ class SystemChromeBackend(BrowserBackend):
         timezone_id: str | None = None,
         **kwargs,
     ) -> BrowserContext:
-        from browser_environment import launch_options
-        from browser_fingerprint import fingerprint_script
+        from browser.browser_environment import launch_options
+        from browser.browser_fingerprint import fingerprint_script
         environment_options = launch_options(kwargs)
         script = fingerprint_script((kwargs.get("browser_environment_options") or {}).get("fingerprint"))
         if self._playwright is None or self._chrome_path is None or self._profile_root is None:

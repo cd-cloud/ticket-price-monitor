@@ -7,8 +7,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from config_manager import RouteQuery
-from experimental_query_service import validate_payload
+from core.config_manager import RouteQuery
+from experiments.experimental_query_service import validate_payload
 from providers.airchina_form import FormEntry, FormStop, HOME_URL, matches, validate_entry
 from providers import airchina
 

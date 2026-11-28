@@ -4,7 +4,7 @@ import threading
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from config_manager import RouteQuery
+from core.config_manager import RouteQuery
 
 
 class AutoQueryWorker:

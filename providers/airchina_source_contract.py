@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from datetime import date
 import math
 
-from config_manager import RouteQuery
+from core.config_manager import RouteQuery
 from providers.airchina_form import validate_entry
 
 CABIN_ALIASES = {

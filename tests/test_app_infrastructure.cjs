@@ -245,3 +245,74 @@ test('dashboard task groups never compare different currencies or quote terms', 
   assert.equal(result.comparable.best, 90);
   assert.equal(result.comparable.comparable, true);
 });
+
+test('workspace tab persistence writes and reads the same localStorage key with ARIA tabs', () => {
+  const workspaceSource = fs.readFileSync(path.join(__dirname, '../static/app/workspace.js'), 'utf8');
+  const saved = new Map();
+  const makeNode = () => ({
+    hidden: false,
+    dataset: {},
+    attrs: {},
+    classList: {add() {}, toggle() {}},
+    setAttribute(k, v) { this.attrs[k] = v; },
+    addEventListener() {},
+    querySelector() { return null; },
+    querySelectorAll() { return []; },
+  });
+  const panels = {
+    routes: makeNode(),
+    tasks: makeNode(),
+    tail: makeNode(),
+    profiles: makeNode(),
+    insights: makeNode(),
+    experiments: makeNode(),
+  };
+  const ctx = vm.createContext({
+    localStorage: {
+      getItem: key => saved.get(key) ?? null,
+      setItem: (key, value) => saved.set(key, value),
+    },
+    window: {tailCandidateNames: {}},
+    document: {
+      body: {dataset: {}},
+      getElementById: id => ({
+        tailDiscoveryPanel: panels.tail,
+        browserProfilePanel: panels.profiles,
+        airchinaExperimentPanel: panels.experiments,
+      }[id] || null),
+      querySelector: sel => ({
+        '.route-grid': panels.routes,
+        '.log-workspace': panels.insights,
+      }[sel] || null),
+      querySelectorAll: () => [],
+    },
+  });
+  vm.runInContext(storeSource, ctx);
+  vm.runInContext(workspaceSource, ctx);
+  vm.runInContext('setWorkspaceTab("tail")', ctx);
+  assert.equal(saved.get('activeWorkspaceTab'), 'tail');
+  // Re-initialize store against the same storage to verify round-trip restore.
+  const reloaded = vm.createContext({
+    localStorage: {getItem: key => saved.get(key) ?? null},
+    window: {tailCandidateNames: {}},
+  });
+  vm.runInContext(storeSource, reloaded);
+  assert.equal(vm.runInContext('workspaceState.activeTab', reloaded), 'tail');
+});
+
+test('renderPriceHistorySparkline renders SVG trend line and escapes labels', () => {
+  const commonSource = fs.readFileSync(path.join(__dirname, '../static/app/common.js'), 'utf8');
+  const dashboardSource = fs.readFileSync(path.join(__dirname, '../static/app/dashboard.js'), 'utf8');
+  const ctx = vm.createContext({window: {}, Intl, Date, JSON, Number, String, Boolean, Array, Set, Map});
+  vm.runInContext(commonSource, ctx);
+  vm.runInContext(dashboardSource, ctx);
+  const html = vm.runInContext(`renderPriceHistorySparkline([
+    {observed_at: '2099-01-01T00:00:00Z', price: 900, currency: 'CNY', flight_no: 'CA1501'},
+    {observed_at: '2099-01-02T00:00:00Z', price: 780, currency: 'CNY', flight_no: '<img src=x>'}
+  ], 800)`, ctx);
+  assert.ok(html.includes('<svg'));
+  assert.ok(html.includes('history-chart-line'));
+  assert.ok(html.includes('history-target-line'));
+  assert.ok(!html.includes('<img src=x>'));
+});
+

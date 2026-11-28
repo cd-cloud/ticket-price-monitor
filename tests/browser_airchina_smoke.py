@@ -15,7 +15,7 @@ sys.path.insert(0, str(ROOT))
 from fastapi.testclient import TestClient
 from playwright.async_api import async_playwright, expect
 from test_experimental_queries import config_file
-from web_ui import create_app
+from web.web_ui import create_app
 from providers.airchina_notices import NoticeHandler
 from providers.airchina_parser import DOM_SCRIPT
 
@@ -194,8 +194,9 @@ async def run(output):
                 await expect(page.locator("#airchinaQueryPolicy")).to_contain_text("已暂停：验证码")
                 await expect(page.locator("#airchinaQueryResume")).to_be_enabled()
                 await page.locator("#airchinaSessionCard .airchina-secondary summary").click()
-                page.once("dialog", lambda dialog: dialog.accept())
                 await page.locator("#airchinaQueryResume").click()
+                await expect(page.locator("#appConfirmDialog")).to_be_visible()
+                await page.locator("#appConfirmDialog [data-confirm-ok]").click()
                 await expect(page.locator("#airchinaQueryResume")).to_be_hidden()
                 assert policy_actions == [{"confirmed": True}]
                 assert len(actions) == 2  # Resume never submits a query.

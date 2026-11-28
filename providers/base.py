@@ -7,7 +7,7 @@ from typing import Any, Protocol
 
 from playwright.async_api import Page
 
-from config_manager import ProviderConfig, RouteQuery
+from core.config_manager import ProviderConfig, RouteQuery
 from providers.response_capture import sanitize_url
 
 

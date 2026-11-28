@@ -13,12 +13,13 @@
         <div>
           <p class="eyebrow">Local Dashboard</p>
           <h1>航班价格监控</h1>
-          <p class="subcopy">在本地浏览器里管理航线、筛选任务、查看最新查询结果，并手动或自动触发查询。</p>
+          <p class="subcopy">本地管理航线监控、甩尾发现、浏览器档案与国航实验任务。</p>
         </div>
-        <div class="actions">
-          <button id="runAllBtn" class="primary">立即查询全部</button>
-          <button id="reportBtn" class="secondary">刷新报告</button>
-          <a class="secondary linkish" href="{{ csv_url }}">下载 CSV</a>
+        <div class="hero-status">
+          <span id="globalRunStatus" class="status-badge idle">空闲</span>
+          {% if ui_token_enabled %}
+          <button id="logoutBtn" class="ghost compact" type="button">退出登录</button>
+          {% endif %}
         </div>
       </section>
 
@@ -109,6 +110,11 @@
               <input id="passengersInput" name="passengers" type="number" min="1" max="9" value="1" required />
             </label>
 
+            <label>
+              目标价提醒（可选）
+              <input id="targetPriceInput" name="target_price" type="number" min="1" max="1000000" step="1" placeholder="达到或低于此价高亮提醒，如 1200" />
+            </label>
+
             <label class="span-2">
               航司偏好
               <input id="airlinesInput" name="preferred_airlines" placeholder="可填 CA,MU,CZ，用逗号分隔；留空为不限" />
@@ -128,6 +134,7 @@
             <fieldset class="span-2 provider-fieldset">
               <legend>查询平台</legend>
               <div id="providerCheckboxes" class="provider-options"></div>
+              <p id="providerCapabilityHint" class="muted provider-capability-hint" hidden></p>
             </fieldset>
 
             <div class="span-2 form-actions">
@@ -146,9 +153,17 @@
       </section>
 
       <section class="panel">
-        <div class="panel-head">
-          <h2>任务与筛选</h2>
-          <button id="reloadBtn" class="ghost">刷新数据</button>
+        <div class="panel-head task-panel-head">
+          <div>
+            <h2>任务与筛选</h2>
+            <p class="muted">普通航线监控查询、价格对比与导出。</p>
+          </div>
+          <div class="actions">
+            <button id="runAllBtn" class="primary" type="button">立即查询全部</button>
+            <button id="reportBtn" class="secondary" type="button">刷新报告</button>
+            <a class="secondary linkish" href="{{ csv_url }}">下载 CSV</a>
+            <button id="reloadBtn" class="ghost" type="button">刷新数据</button>
+          </div>
         </div>
         <div id="runProgressSummary" class="run-progress-summary"></div>
         <div id="resultChangeSummary" class="result-change-summary"></div>

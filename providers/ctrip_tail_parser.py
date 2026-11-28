@@ -1,9 +1,9 @@
 import re
 from typing import Any
 
-from adaptive_selectors import SelectorCandidate, observe_selector_candidates
+from browser.adaptive_selectors import SelectorCandidate, observe_selector_candidates
 from providers.ctrip_support import ctrip_city_code
-from tail_discovery import TAIL_CODE_TEXT
+from tail.tail_discovery import TAIL_CODE_TEXT
 
 
 TRANSIT_CARD_SELECTOR = ".list-content-item-transit"

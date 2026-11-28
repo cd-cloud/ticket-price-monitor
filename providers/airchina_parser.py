@@ -10,7 +10,7 @@ from datetime import date, timedelta
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from config_manager import RouteQuery
+from core.config_manager import RouteQuery
 
 
 DOM_SCRIPT = Path(__file__).with_name("airchina_dom.js").read_text(encoding="utf-8")

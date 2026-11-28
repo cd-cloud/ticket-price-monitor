@@ -31,7 +31,11 @@ function ensureBrowserProfilePanel() {
         await postBrowserProfileAction(provider, "switch", { profile: button.dataset.profile || "primary" });
         notifyComplete(button.dataset.profile === "recovery" ? "已切到 recovery 档案" : "已切回主档案");
       } else if (action === "reset-recovery") {
-        if (!window.confirm("确定重置 recovery 档案？这会删除备用 Chrome 档案里的登录态和缓存。")) return;
+        const ok = await confirmAction(
+          "确定重置 recovery 档案？这会删除备用 Chrome 档案里的登录态和缓存。",
+          { title: "重置 recovery 档案", confirmText: "确认重置", danger: true },
+        );
+        if (!ok) return;
         await postBrowserProfileAction(provider, "reset-recovery", {});
         notifyComplete("已重置 recovery 档案");
       } else if (action === "clean") {
@@ -40,7 +44,12 @@ function ensureBrowserProfilePanel() {
         const message = switchToRecovery
           ? `确定清理 ${targetText} 的携程站点数据，并切到 recovery 档案？`
           : `确定清理 ${targetText} 的携程站点数据、缓存和 Cookie？`;
-        if (!window.confirm(message)) return;
+        const ok = await confirmAction(message, {
+          title: "清理浏览器档案",
+          confirmText: "确认清理",
+          danger: true,
+        });
+        if (!ok) return;
         await postBrowserProfileAction(provider, "clean", {
           profile: button.dataset.profile || "selected",
           switch_to_recovery: switchToRecovery,

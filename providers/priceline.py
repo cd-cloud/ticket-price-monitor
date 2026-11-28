@@ -4,8 +4,9 @@ from urllib.parse import quote
 
 from playwright.async_api import Page
 
-from config_manager import ProviderConfig, RouteQuery
+from core.config_manager import ProviderConfig, RouteQuery
 from providers.base import ParsedProviderResult, ProviderQueryOutcome
+from tail.tail_quotes import quote_terms
 
 
 name = "priceline"
@@ -97,6 +98,7 @@ async def query(
         extra_payload={
             "detail_quality": "price_only",
             "detail_source": "visible_result",
+            "quote_terms": quote_terms("priceline", route.passengers, "USD"),
             "validation": {
                 "status": "needs_review",
                 "scope": "visible_route_date_cabin_context",

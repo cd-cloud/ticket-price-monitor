@@ -5,8 +5,8 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-from browser_automation import BrowserAutomation
-from browser_session_policy import (
+from browser.browser_automation import BrowserAutomation
+from browser.browser_session_policy import (
     BrowserSessionMetadata,
     build_session_metadata,
     credential_login_allowed_for_backend,
@@ -140,7 +140,7 @@ class BrowserSessionPolicyTests(unittest.TestCase):
             self.assertFalse(metadata.storage_state_loaded)
             self.assertIsNone(metadata.storage_state_path)
 
-    def test_provider_backend_order_prefers_app_default_and_deduplicates(self) -> None:
+    def test_provider_backend_order_prefers_provider_override_and_deduplicates(self) -> None:
         provider = SimpleNamespace(
             name="ctrip",
             browser_backend="rebrowser",
@@ -158,7 +158,7 @@ class BrowserSessionPolicyTests(unittest.TestCase):
         )
 
         self.assertEqual(
-            ["playwright", "rebrowser", "patchright"],
+            ["rebrowser", "patchright", "playwright"],
             automation._backend_names_for_provider(provider),
         )
         self.assertEqual(
@@ -166,11 +166,11 @@ class BrowserSessionPolicyTests(unittest.TestCase):
             automation._configured_backend_names(),
         )
 
-    def test_provider_backend_order_prefers_chrome_default(self) -> None:
+    def test_provider_backend_order_falls_back_to_chrome_default(self) -> None:
         provider = SimpleNamespace(
             name="ctrip",
-            browser_backend="rebrowser",
-            browser_backend_fallbacks=["patchright", "playwright"],
+            browser_backend=None,
+            browser_backend_fallbacks=[],
         )
         automation = BrowserAutomation(
             SimpleNamespace(
@@ -184,7 +184,7 @@ class BrowserSessionPolicyTests(unittest.TestCase):
         )
 
         self.assertEqual(
-            ["chrome", "playwright", "rebrowser", "patchright"],
+            ["chrome", "playwright"],
             automation._backend_names_for_provider(provider),
         )
 

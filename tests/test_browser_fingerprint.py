@@ -8,14 +8,14 @@ from unittest.mock import AsyncMock
 import pytest
 
 from backends.chrome import SystemChromeBackend
-from browser_environment import (
+from browser.browser_environment import (
     BrowserEnvironmentError, environment_summary, launch_options, parse_browser_environment,
 )
-from browser_fingerprint import (
+from browser.browser_fingerprint import (
     SCRIPT, SCRIPT_DIGEST, fingerprint_script, validate_fingerprint, default_fingerprint,
 )
-from browser_environment_audit import build_report, render_report
-from config_manager import ConfigManager
+from browser.browser_environment_audit import build_report, render_report
+from core.config_manager import ConfigManager
 
 
 FIXED = {"mode": "fixed-v1", "hardware_concurrency": 8, "device_memory": 8,
@@ -95,7 +95,7 @@ def test_fixed_identity_stable_and_script_version_is_namespaced(monkeypatch):
     assert a == parse_browser_environment({"fingerprint": deepcopy(FIXED)})
     assert a.key != parse_browser_environment({}).key
     assert a.key != parse_browser_environment({"fingerprint": {**FIXED, "device_memory": 4}}).key
-    monkeypatch.setattr("browser_environment.SCRIPT_DIGEST", "next-version")
+    monkeypatch.setattr("browser.browser_environment.SCRIPT_DIGEST", "next-version")
     assert a.key != parse_browser_environment({"fingerprint": FIXED}).key
     summary = environment_summary(SimpleNamespace(browser_environment=a))
     assert summary["fingerprint"]["enabled"]

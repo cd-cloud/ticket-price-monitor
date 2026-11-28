@@ -5,8 +5,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-from browser_automation import BrowserAutomation
-from config_manager import RouteQuery, RouteSegment
+from browser.browser_automation import BrowserAutomation
+from core.config_manager import RouteQuery, RouteSegment
 from providers import ctrip
 from providers import ctrip_itinerary
 from providers import ctrip_network_parser

@@ -8,9 +8,9 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from config_manager import RouteQuery
+from core.config_manager import RouteQuery
 from providers.airchina_parser import parse_reference_fares, collect_reference_fares, DOM_SCRIPT
-from airchina_probe import inspect_airchina_page
+from experiments.airchina_probe import inspect_airchina_page
 from test_airchina_probe import fake_automation
 
 

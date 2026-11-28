@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-from browser_automation import BrowserAutomation
+from browser.browser_automation import BrowserAutomation
 
 
 class BackendTimeoutLikeError(Exception):

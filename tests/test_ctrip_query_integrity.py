@@ -9,16 +9,16 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from browser_automation import BrowserAutomation
-from browser_query_result import OfferDetails, build_query_result
-from browser_session_policy import BrowserSessionMetadata
-from config_manager import RouteQuery, RouteSegment
+from browser.browser_automation import BrowserAutomation
+from browser.browser_query_result import OfferDetails, build_query_result
+from browser.browser_session_policy import BrowserSessionMetadata
+from core.config_manager import RouteQuery, RouteSegment
 from providers import ctrip, ctrip_itinerary, ctrip_network_parser as parser, ctrip_result
 from providers.base import ProviderQueryOutcome
 from providers.ctrip_tail_operations import CtripTailOperations
 from providers.response_capture import ResponseStore, attach_response_listeners, begin_response_batch
-from data_storage import PriceRepository
-from tail_discovery_service import TailDiscoveryService
+from core.data_storage import PriceRepository
+from tail.tail_discovery_service import TailDiscoveryService
 
 
 DAY = "2027-01-15"

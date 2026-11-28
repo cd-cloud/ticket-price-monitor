@@ -4,8 +4,8 @@ import math
 
 from providers.ctrip_itinerary import endpoint_matches
 from providers.response_capture import sanitize_url
-from tail_quotes import stable_key
-from tail_validation import chronology_checks
+from tail.tail_quotes import stable_key
+from tail.tail_validation import chronology_checks
 
 
 def network_candidate_confirms_date(match, route, transfer):

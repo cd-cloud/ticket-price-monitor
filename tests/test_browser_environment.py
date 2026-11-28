@@ -6,15 +6,15 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from airchina_query_gate import AirChinaQueryGate
+from experiments.airchina_query_gate import AirChinaQueryGate
 from backends.chrome import SystemChromeBackend
-from browser_environment import (
+from browser.browser_environment import (
     BrowserEnvironmentError, environment_key, environment_summary, parse_browser_environment,
 )
-from browser_session_manager import AirChinaSessionUnavailable, BrowserSessionManager
-from config_manager import ConfigManager, RouteQuery
-from experimental_browser_session import ExperimentalBrowserSession
-from local_session_state_store import LocalSessionStateStore, SessionStateError
+from browser.browser_session_manager import AirChinaSessionUnavailable, BrowserSessionManager
+from core.config_manager import ConfigManager, RouteQuery
+from experiments.experimental_browser_session import ExperimentalBrowserSession
+from core.local_session_state_store import LocalSessionStateStore, SessionStateError
 
 
 def config(tmp_path, environment=None):
@@ -155,7 +155,7 @@ def test_unsupported_backend_rejected_without_silent_direct_fallback(tmp_path):
 
 
 def test_preparation_cannot_restore_backup_from_old_environment(tmp_path):
-    from experimental_session_service import ExperimentalSessionService
+    from experiments.experimental_session_service import ExperimentalSessionService
     c = config(tmp_path, {"locale": "zh-CN"}).load()
     service = ExperimentalSessionService.__new__(ExperimentalSessionService)
     service.query_service = SimpleNamespace(get_config=lambda: c)

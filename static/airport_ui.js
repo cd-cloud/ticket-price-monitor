@@ -61,6 +61,24 @@ function resolveAirportCode(value) {
   return /^[A-Za-z]{3}$/.test(normalized) ? normalized.toUpperCase() : normalized.toUpperCase();
 }
 
+const activeAirportFields = new Set();
+let airportGlobalPointerBound = false;
+
+function bindGlobalAirportOutsideClick() {
+  if (airportGlobalPointerBound || typeof document === "undefined") return;
+  airportGlobalPointerBound = true;
+  document.addEventListener("pointerdown", (event) => {
+    for (const entry of Array.from(activeAirportFields)) {
+      if (!entry.shell.isConnected) {
+        activeAirportFields.delete(entry);
+        continue;
+      }
+      if (entry.shell.contains(event.target)) continue;
+      entry.dismiss();
+    }
+  });
+}
+
 function ensureAirportField(input) {
   if (!input || input.dataset.airportEnhanced === "true") return;
   input.dataset.airportEnhanced = "true";
@@ -174,11 +192,14 @@ function ensureAirportField(input) {
     }, 120);
   });
 
-  document.addEventListener("pointerdown", (event) => {
-    if (shell.contains(event.target)) return;
-    input.dataset.suggestionSuppressed = "true";
-    shell.classList.add("suggestions-locked");
-    hideSuggestions();
+  bindGlobalAirportOutsideClick();
+  activeAirportFields.add({
+    shell,
+    dismiss: () => {
+      input.dataset.suggestionSuppressed = "true";
+      shell.classList.add("suggestions-locked");
+      hideSuggestions();
+    },
   });
 
   renderMeta();

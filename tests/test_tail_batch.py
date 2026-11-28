@@ -9,10 +9,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from data_storage import PriceRepository
-from tail_batch import ACTIVE, batch_children
-from tail_discovery_manager import TailDiscoveryManager
-from tail_discovery_service import TailDiscoveryService
+from core.data_storage import PriceRepository
+from tail.tail_batch import ACTIVE, batch_children
+from tail.tail_discovery_manager import TailDiscoveryManager
+from tail.tail_discovery_service import TailDiscoveryService
 from test_tail_improvements import quote, DATE
 from test_web_ui_validation import write_config
 
@@ -226,7 +226,7 @@ def test_reported_provider_errors_are_visible_and_retryable_not_successful_empty
     assert control.calls == [("feizhu", ["__OPEN__"])]
 
 def test_latest_prefers_new_parent_even_when_created_in_same_second(env, monkeypatch):
-    import tail_jobs
+    from tail import tail_jobs
     manager, repo, control = env
     monkeypatch.setattr(tail_jobs, "now_iso", lambda: "2026-10-30T00:00:00Z")
     first = wait_for(manager, manager.submit_tail_discovery(request())["job_id"])
@@ -366,8 +366,8 @@ def test_unadmitted_batch_run_rejected_without_leaking_global_lock(env):
 
 def test_http_api_submits_one_parent_and_paginates_both_providers(env, tmp_path, monkeypatch):
     from fastapi.testclient import TestClient
-    import app_service
-    from web_ui import create_app
+    from services import app_service
+    from web.web_ui import create_app
     # Use the same fake transport but the real application/API wiring.
     path = tmp_path / "api-config.json"
     write_config(path)

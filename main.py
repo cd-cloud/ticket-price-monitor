@@ -6,13 +6,13 @@ from pathlib import Path
 
 import uvicorn
 
-from app_service import FlightPriceApplication
+from services.app_service import FlightPriceApplication
 from backends import selectable_backend_names
-from config_manager import ConfigManager
-from internal_smoke_test import run_internal_smoke_test
-from local_smoke_test import run_local_smoke_test
+from core.config_manager import ConfigManager
+from tools.internal_smoke_test import run_internal_smoke_test
+from tools.local_smoke_test import run_local_smoke_test
 from providers.registry import CLI_PROVIDER_CHOICES
-from web_ui import create_app
+from web.web_ui import create_app
 
 
 LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1"}
@@ -154,12 +154,12 @@ def main() -> int:
         return 0
 
     if args.command == "airchina-probe":
-        from airchina_probe import run_airchina_probe
+        from experiments.airchina_probe import run_airchina_probe
         return asyncio.run(run_airchina_probe(config_manager, args))
 
     if args.command == "airchina-environment-check":
         import json
-        from browser_environment import BrowserEnvironmentError, environment_summary
+        from browser.browser_environment import BrowserEnvironmentError, environment_summary
         try:
             config = config_manager.load()
         except BrowserEnvironmentError as exc:
@@ -170,8 +170,8 @@ def main() -> int:
         return 0
 
     if args.command == "airchina-environment-audit":
-        from browser_environment import BrowserEnvironmentError
-        from browser_environment_audit import run_audit
+        from browser.browser_environment import BrowserEnvironmentError
+        from browser.browser_environment_audit import run_audit
         try:
             config = config_manager.load()
         except BrowserEnvironmentError as exc:

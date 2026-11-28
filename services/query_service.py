@@ -1,0 +1,872 @@
+from __future__ import annotations
+
+import asyncio
+import importlib
+import logging
+import random
+import threading
+from datetime import date, datetime, timezone
+from typing import Any, Callable
+from zoneinfo import ZoneInfo
+
+from core.config_manager import AppConfig, ConfigManager, RouteQuery
+from core.data_storage import PriceRepository, PriceSnapshot
+from providers.registry import provider_definition
+from providers.response_capture import sanitize_payload_urls, sanitize_sensitive_text
+from services.run_summary import RunSummaryStore
+
+
+AutomationFactory = Callable[[AppConfig, dict[str, dict[str, str]]], Any]
+SummaryCallback = Callable[[dict[str, Any]], None]
+
+
+class CliProviderRuntime:
+    async def throttle(self, provider_cfg: Any) -> None:
+        delay = random.uniform(
+            float(getattr(provider_cfg, "min_delay_seconds", 0) or 0),
+            float(getattr(provider_cfg, "max_delay_seconds", 0) or 0),
+        )
+        if delay > 0:
+            await asyncio.sleep(delay)
+
+
+class ProviderSnapshotResult:
+    def __init__(
+        self,
+        *,
+        provider: str,
+        price: float,
+        currency: str,
+        observed_at: str,
+        notes: list[str],
+        raw_payload: dict[str, Any],
+    ) -> None:
+        self.provider = provider
+        self.price = price
+        self.currency = currency
+        self.observed_at = observed_at
+        self.notes = notes
+        self.raw_payload = raw_payload
+
+
+class QueryService:
+    """Runs configured price queries and persists successful snapshots."""
+
+    DEFAULT_PROVIDER_QUERY_TIMEOUT_SECONDS = 150.0
+
+    def __init__(
+        self,
+        *,
+        config_manager: ConfigManager,
+        repository: PriceRepository,
+        run_lock: threading.Lock,
+        get_config: Callable[[], AppConfig],
+        refresh_config: Callable[[], None],
+        summary_store: RunSummaryStore | None = None,
+        update_summary: SummaryCallback | None = None,
+        automation_factory: AutomationFactory | None = None,
+        provider_query_timeout_seconds: float | None = None,
+    ) -> None:
+        self.config_manager = config_manager
+        self.repository = repository
+        self.run_lock = run_lock
+        self.get_config = get_config
+        self.refresh_config = refresh_config
+        self.summary_store = summary_store or RunSummaryStore()
+        self.update_summary = update_summary
+        self.automation_factory = automation_factory or self._default_automation_factory
+        self.provider_query_timeout_seconds = provider_query_timeout_seconds
+        self.last_run_summary: dict[str, Any] = self.summary_store.get()
+
+    async def run_once(
+        self,
+        provider_filter: str | None = None,
+        backend_override: str | None = None,
+    ) -> dict[str, Any]:
+        if not self.run_lock.acquire(blocking=False):
+            return {"running": True, "saved": 0, "errors": ["A query run is already in progress."]}
+
+        try:
+            self.refresh_config()
+            config = self.get_config()
+            if provider_filter and not self._provider_has_handler(provider_filter):
+                return {"running": False, "saved": 0, "errors": [f"Unknown provider: {provider_filter}"]}
+            self._set_summary({"running": True, "saved": 0, "errors": []})
+            return await self._query_routes(
+                config.routes,
+                provider_filter=provider_filter,
+                backend_override=backend_override,
+            )
+        except Exception as exc:
+            self._finish_with_setup_error(exc)
+            raise
+        finally:
+            self.run_lock.release()
+
+    async def inspect_airchina_experiment(
+        self, route, *, flight_no, progress, manual_handler, cancel_event,
+        timeout_seconds=240, auto_confirm_notices=False, notice_callback=None, diagnostic_callback=None,
+        entry_mode="direct", entry_callback=None,
+        session_mode="fresh", session_pool=None, session_callback=None,
+        network_callback=None,
+        reference_cache=None,
+    ):
+        """Experimental task manager owns the shared run_lock.
+
+        Reuse browser/session infrastructure, but not production snapshot writes,
+        credential loading, backend query retries or generic price extraction.
+        One deadline includes startup, manual pauses and collection.
+        """
+        from dataclasses import replace
+        from browser.provider_runtime import ProviderRuntime
+        from providers import airchina
+
+        airchina.validate_inspection(route, flight_no=flight_no)
+        airchina.validate_entry(route, entry_mode)
+        if session_mode not in ("fresh", "reuse", "persistent") or (
+            session_mode in {"reuse", "persistent"} and session_pool is None
+        ):
+            raise ValueError("会话复用需要国航实验的专用浏览器服务。")
+        if entry_mode == "results" and (session_mode != "reuse" or manual_handler is not None):
+            raise ValueError("结果页续查仅支持短时复用、遇阻即停。")
+        self.refresh_config()
+        config = replace(
+            self.get_config(),
+            headless=False,
+            browser_backend="chrome",
+            browser_backend_fallbacks=[],
+        )
+        provider = config.providers.get("airchina")
+        if provider is None:
+            raise ValueError("配置中缺少 airchina；请参考示例配置。")
+        gate = self.airchina_query_gate()
+        from browser.browser_environment import environment_key
+        key = gate.key(route, flight_no=flight_no, entry_mode=entry_mode,
+                       session_mode=session_mode, manual=manual_handler is not None,
+                       notices=auto_confirm_notices, environment=environment_key(provider))
+        rate_limited = asyncio.Event()
+
+        def on_rate_limit(seconds):
+            gate.pause("rate_limited", retry_after=seconds)
+            rate_limited.set()
+
+        async def execute():
+            from providers.airchina_network_diagnostics import NetworkDiagnostics
+            audit = NetworkDiagnostics(
+                network_callback, rate_limit_callback=on_rate_limit,
+            )
+            outcome = "error"
+
+            def tracked_progress(stage):
+                audit.mark(stage)
+                progress(stage)
+
+            def tracked_entry(evidence):
+                audit.mark(evidence.get("stage"))
+                if entry_callback:
+                    entry_callback(evidence)
+
+            async def tracked_manual(state):
+                if state in {"needs_verification", "blocked"}:
+                    gate.pause(state)
+                audit.mark("waiting_user")
+                await manual_handler(state)
+                audit.mark("result_page")
+
+            async def inspect(automation, page, context):
+                nonlocal outcome
+                audit.set_environment(automation, context)
+                audit.attach(page)
+                try:
+                    report = await airchina.inspect(
+                        ProviderRuntime(automation), provider, route, page,
+                        flight_no=flight_no, progress=tracked_progress,
+                        manual_handler=tracked_manual if manual_handler else None,
+                        auto_confirm_notices=auto_confirm_notices, notice_callback=notice_callback,
+                        diagnostic_callback=diagnostic_callback,
+                        entry_mode=entry_mode, entry_callback=tracked_entry,
+                        access_callback=gate.pause,
+                    )
+                    outcome = report["state"]
+                    return report
+                finally:
+                    # Browser shutdown aborts outstanding resources. Do not
+                    # misreport these cleanup effects as query network failures.
+                    audit.detach()
+                    await audit.finish_rate_limits()
+
+            try:
+                tracked_progress("starting_browser")
+                if session_pool is not None:
+                    async with session_pool.lease(
+                        config, provider, self.automation_factory, mode=session_mode, callback=session_callback,
+                        **({"require_existing": True} if entry_mode == "results" else {}),
+                    ) as lease:
+                        report = await inspect(lease.automation, lease.page, lease.context)
+                        reference_observed = report["state"] in {
+                            "reference_fares_observed", "fare_products_observed",
+                        }
+                        verification_cleared = bool(
+                            report.get("verification_cleared")
+                            or (report.get("entry_evidence") or {}).get("verification_cleared")
+                        )
+                        safe_inconclusive = report["state"] == "query_page_unverified"
+                        lease.keep = not cancel_event.is_set() and (
+                            reference_observed
+                            or verification_cleared and safe_inconclusive
+                            or session_mode == "persistent" and safe_inconclusive
+                        )
+                        if reference_observed:
+                            lease.retention_reason = "reference_validated"
+                        elif verification_cleared and safe_inconclusive:
+                            lease.retention_reason = "manual_verification_cleared"
+                        elif lease.keep:
+                            lease.retention_reason = "access_validated"
+                        return report
+                async with self.automation_factory(config, {}) as automation:
+                    page, context = await automation._new_page(provider)
+                    try:
+                        return await inspect(automation, page, context)
+                    finally:
+                        await automation._close_context_quietly(context)
+            except asyncio.CancelledError:
+                outcome = "cancelled"
+                raise
+            except Exception:
+                outcome = "error"
+                raise
+            finally:
+                audit.close(outcome)
+
+        async def watch_cancel(task):
+            while not cancel_event.is_set() and not rate_limited.is_set():
+                await asyncio.sleep(.1)
+            task.cancel()
+
+        async with asyncio.timeout(timeout_seconds):
+            task = asyncio.create_task(gate.run(
+                key, execute, cancel_event=cancel_event, progress=progress,
+                # Explicit experiment controls must actually exercise a browser:
+                # never turn "fresh" or same-document requery into a cache read.
+                cache_allowed=entry_mode != "results" and (
+                    session_mode != "fresh" if reference_cache is None else reference_cache is True),
+            ))
+            watcher = asyncio.create_task(watch_cancel(task))
+            try:
+                if cancel_event.is_set():
+                    task.cancel()
+                try:
+                    return await task
+                except asyncio.CancelledError:
+                    if rate_limited.is_set() and not cancel_event.is_set():
+                        return gate.paused_report(gate.status())
+                    raise
+            finally:
+                watcher.cancel()
+                await asyncio.gather(watcher, return_exceptions=True)
+
+    def airchina_query_gate(self):
+        from experiments.airchina_query_gate import AirChinaQueryGate
+        # Shared by independent CLI/UI processes using the same runtime folder.
+        return AirChinaQueryGate(self.get_config().runtime_dir)
+
+    async def run_route_once(
+        self,
+        route_key: str,
+        provider_filter: str | None = None,
+        backend_override: str | None = None,
+    ) -> dict[str, Any]:
+        if not self.run_lock.acquire(blocking=False):
+            return {"running": True, "saved": 0, "errors": ["A query run is already in progress."]}
+
+        try:
+            self.refresh_config()
+            config = self.get_config()
+            if provider_filter and not self._provider_has_handler(provider_filter):
+                return {"running": False, "saved": 0, "errors": [f"Unknown provider: {provider_filter}"]}
+            route = next((item for item in config.routes if item.route_key == route_key), None)
+            if route is None:
+                return {"running": False, "saved": 0, "errors": [f"Route not found: {route_key}"]}
+            self._set_summary({"running": True, "saved": 0, "errors": []})
+            return await self._query_routes(
+                [route],
+                provider_filter=provider_filter,
+                backend_override=backend_override,
+            )
+        except Exception as exc:
+            self._finish_with_setup_error(exc)
+            raise
+        finally:
+            self.run_lock.release()
+
+    async def run_route_group_once(
+        self,
+        group_id: str,
+        provider_filter: str | None = None,
+        backend_override: str | None = None,
+    ) -> dict[str, Any]:
+        if not self.run_lock.acquire(blocking=False):
+            return {"running": True, "saved": 0, "errors": ["A query run is already in progress."]}
+
+        try:
+            self.refresh_config()
+            config = self.get_config()
+            if provider_filter and not self._provider_has_handler(provider_filter):
+                return {"running": False, "saved": 0, "errors": [f"Unknown provider: {provider_filter}"]}
+            routes = [route for route in config.routes if route.group_id == group_id]
+            if not routes:
+                return {"running": False, "saved": 0, "errors": [f"Route group not found: {group_id}"]}
+            self._set_summary({"running": True, "saved": 0, "errors": []})
+            return await self._query_routes(
+                routes,
+                provider_filter=provider_filter,
+                backend_override=backend_override,
+            )
+        except Exception as exc:
+            self._finish_with_setup_error(exc)
+            raise
+        finally:
+            self.run_lock.release()
+
+    def run_once_blocking(
+        self,
+        provider_filter: str | None = None,
+        backend_override: str | None = None,
+    ) -> dict[str, Any]:
+        return asyncio.run(self.run_once(provider_filter=provider_filter, backend_override=backend_override))
+
+    def run_route_once_blocking(
+        self,
+        route_key: str,
+        provider_filter: str | None = None,
+        backend_override: str | None = None,
+    ) -> dict[str, Any]:
+        return asyncio.run(
+            self.run_route_once(
+                route_key=route_key,
+                provider_filter=provider_filter,
+                backend_override=backend_override,
+            )
+        )
+
+    def run_route_group_once_blocking(
+        self,
+        group_id: str,
+        provider_filter: str | None = None,
+        backend_override: str | None = None,
+    ) -> dict[str, Any]:
+        return asyncio.run(
+            self.run_route_group_once(
+                group_id=group_id,
+                provider_filter=provider_filter,
+                backend_override=backend_override,
+            )
+        )
+
+    async def _query_routes(
+        self,
+        routes: list[RouteQuery],
+        provider_filter: str | None = None,
+        backend_override: str | None = None,
+    ) -> dict[str, Any]:
+        config = self.get_config()
+        saved = 0
+        errors: list[str] = []
+        targets = list(self._iter_query_targets(config, routes, provider_filter=provider_filter))
+        total_targets = len(targets)
+        completed_targets = 0
+        saved_pairs: list[dict[str, Any]] = []
+        recent_successes: list[dict[str, Any]] = []
+        recent_failures: list[dict[str, Any]] = []
+        started_at = self._now_iso()
+        self._set_summary(
+            {
+                "running": True,
+                "saved": 0,
+                "errors": [],
+                "completed_targets": 0,
+                "total_targets": total_targets,
+                "current_target": None,
+                "started_at": started_at,
+                "finished_at": None,
+                "saved_pairs": [],
+                "recent_successes": [],
+                "recent_failures": [],
+            }
+        )
+        CLI_PROVIDERS = {"feizhu"}
+        cli_targets = [target for target in targets if target[1] in CLI_PROVIDERS]
+        browser_targets = [target for target in targets if target[1] not in CLI_PROVIDERS]
+
+        if cli_targets:
+            (
+                cli_saved,
+                cli_completed,
+                cli_pairs,
+                cli_successes,
+                cli_failures,
+            ) = await self._query_cli_provider_routes(
+                config,
+                cli_targets,
+                errors,
+                total_targets=total_targets,
+                completed_offset=completed_targets,
+                saved_offset=saved,
+                saved_pairs_seed=saved_pairs,
+                recent_successes_seed=recent_successes,
+                recent_failures_seed=recent_failures,
+            )
+            saved += cli_saved
+            completed_targets += cli_completed
+            saved_pairs.extend(cli_pairs)
+            recent_successes = (recent_successes + cli_successes)[-8:]
+            recent_failures = (recent_failures + cli_failures)[-8:]
+
+        if browser_targets:
+            try:
+                credentials = self._credentials_for_targets(browser_targets)
+                automation_context = self.automation_factory(config, credentials)
+                if backend_override and hasattr(automation_context, "backend_override"):
+                    automation_context.backend_override = backend_override
+                async with automation_context as automation:
+                    for route, provider_name, provider_cfg in browser_targets:
+                        self._set_summary(
+                            {
+                                **self.last_run_summary,
+                                "running": True,
+                                "current_target": self._target_payload(route, provider_name),
+                                "completed_targets": completed_targets,
+                                "total_targets": total_targets,
+                                "saved": saved,
+                                "errors": list(errors),
+                                "saved_pairs": list(saved_pairs),
+                                "recent_successes": list(recent_successes),
+                                "recent_failures": list(recent_failures),
+                            }
+                        )
+                        try:
+                            timeout_seconds = self._provider_query_timeout_seconds(
+                                config,
+                                provider_cfg,
+                                backend_override=backend_override,
+                            )
+                            result = await asyncio.wait_for(
+                                automation.query_provider(provider_name, route),
+                                timeout=timeout_seconds,
+                            )
+                            self._insert_snapshot(route, result)
+                            saved += 1
+                            saved_pair = {
+                                "provider": provider_name,
+                                "route_key": route.route_key,
+                                "price": result.price,
+                                "observed_at": result.observed_at,
+                            }
+                            saved_pairs.append(saved_pair)
+                            recent_successes.append(
+                                {
+                                    "provider": provider_name,
+                                    "route_key": route.route_key,
+                                    "route_display": getattr(route, "display_label", route.route_key),
+                                    "price": result.price,
+                                    "observed_at": result.observed_at,
+                                }
+                            )
+                            recent_successes[:] = recent_successes[-8:]
+                            logging.info(
+                                "saved snapshot provider=%s route=%s price=%s",
+                                provider_name,
+                                route.route_key,
+                                result.price,
+                            )
+                        except asyncio.TimeoutError:
+                            message = (
+                                f"provider={provider_name} route={route.route_key} failed: "
+                                f"query timed out after {timeout_seconds:.1f}s"
+                            )
+                            errors.append(message)
+                            recent_failures.append(
+                                {
+                                    "provider": provider_name,
+                                    "route_key": route.route_key,
+                                    "route_display": getattr(route, "display_label", route.route_key),
+                                    "error": "query timed out",
+                                }
+                            )
+                            recent_failures[:] = recent_failures[-8:]
+                            logging.error(message)
+                        except Exception as exc:
+                            safe_error = sanitize_sensitive_text(exc)
+                            message = f"provider={provider_name} route={route.route_key} failed: {safe_error}"
+                            errors.append(message)
+                            recent_failures.append(
+                                {
+                                    "provider": provider_name,
+                                    "route_key": route.route_key,
+                                    "route_display": getattr(route, "display_label", route.route_key),
+                                    "error": safe_error,
+                                }
+                            )
+                            recent_failures[:] = recent_failures[-8:]
+                            logging.error(message)
+                        completed_targets += 1
+                        self._set_summary(
+                            {
+                                **self.last_run_summary,
+                                "running": True,
+                                "current_target": self._target_payload(route, provider_name),
+                                "completed_targets": completed_targets,
+                                "total_targets": total_targets,
+                                "saved": saved,
+                                "errors": list(errors),
+                                "saved_pairs": list(saved_pairs),
+                                "recent_successes": list(recent_successes),
+                                "recent_failures": list(recent_failures),
+                            }
+                        )
+            except Exception as exc:
+                target = provider_filter or "browser providers"
+                safe_error = sanitize_sensitive_text(exc)
+                message = f"provider={target} failed before querying routes: {safe_error}"
+                errors.append(message)
+                recent_failures.append(
+                    {"provider": target, "route_key": "", "route_display": target, "error": safe_error}
+                )
+                logging.error(message)
+
+        summary = {
+            "running": False,
+            "saved": saved,
+            "errors": errors,
+            "completed_targets": completed_targets,
+            "total_targets": total_targets,
+            "current_target": None,
+            "started_at": started_at,
+            "finished_at": self._now_iso(),
+            "saved_pairs": saved_pairs,
+            "recent_successes": recent_successes,
+            "recent_failures": recent_failures,
+        }
+        self._set_summary(summary)
+        return summary
+
+    async def _query_cli_provider_routes(
+        self,
+        config: AppConfig,
+        targets: list[tuple[RouteQuery, str, Any]],
+        errors: list[str],
+        *,
+        total_targets: int,
+        completed_offset: int = 0,
+        saved_offset: int = 0,
+        saved_pairs_seed: list[dict[str, Any]] | None = None,
+        recent_successes_seed: list[dict[str, Any]] | None = None,
+        recent_failures_seed: list[dict[str, Any]] | None = None,
+    ) -> tuple[int, int, list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+        saved = 0
+        completed_targets = 0
+        saved_pairs: list[dict[str, Any]] = []
+        recent_successes: list[dict[str, Any]] = []
+        recent_failures: list[dict[str, Any]] = []
+        runtime = CliProviderRuntime()
+        modules: dict[str, Any] = {}
+        for route, provider_name, provider_cfg in targets:
+            provider_module = modules.get(provider_name)
+            if provider_module is None:
+                provider_module = importlib.import_module(f"providers.{provider_name}")
+                modules[provider_name] = provider_module
+            self._set_summary(
+                {
+                    **self.last_run_summary,
+                    "running": True,
+                    "current_target": self._target_payload(route, provider_name),
+                    "completed_targets": completed_offset + completed_targets,
+                    "total_targets": total_targets,
+                    "saved": saved_offset + saved,
+                    "errors": list(errors),
+                    "saved_pairs": [*(saved_pairs_seed or []), *saved_pairs],
+                    "recent_successes": ([*(recent_successes_seed or []), *recent_successes])[-8:],
+                    "recent_failures": ([*(recent_failures_seed or []), *recent_failures])[-8:],
+                }
+            )
+            try:
+                timeout_seconds = self._provider_query_timeout_seconds(config, provider_cfg)
+                result = await asyncio.wait_for(
+                    provider_module.query(runtime, provider_cfg, route, None, []),
+                    timeout=timeout_seconds,
+                )
+                raw_payload = dict(result.extra_payload)
+                raw_payload.setdefault("final_url", result.final_url)
+                raw_payload.setdefault("title", result.title)
+                raw_payload.setdefault("departure_time", result.departure_time)
+                raw_payload.setdefault("row_text", result.row_text)
+                raw_payload.setdefault("flight_details", result.flight_details)
+                snapshot_result = ProviderSnapshotResult(
+                    provider=provider_name,
+                    price=result.price,
+                    currency=config.default_currency,
+                    observed_at=self.repository.now_iso(),
+                    notes=[result.title] if result.title else [],
+                    raw_payload=raw_payload,
+                )
+                self._insert_snapshot(route, snapshot_result)
+                saved += 1
+                saved_pair = {
+                    "provider": provider_name,
+                    "route_key": route.route_key,
+                    "price": result.price,
+                    "observed_at": snapshot_result.observed_at,
+                }
+                saved_pairs.append(saved_pair)
+                recent_successes.append(
+                    {
+                        "provider": provider_name,
+                        "route_key": route.route_key,
+                        "route_display": getattr(route, "display_label", route.route_key),
+                        "price": result.price,
+                        "observed_at": snapshot_result.observed_at,
+                    }
+                )
+                recent_successes[:] = recent_successes[-8:]
+                logging.info(
+                    "saved CLI snapshot provider=%s route=%s price=%s",
+                    provider_name,
+                    route.route_key,
+                    result.price,
+                )
+            except asyncio.TimeoutError:
+                message = (
+                    f"provider={provider_name} route={route.route_key} failed: "
+                    f"query timed out after {timeout_seconds:.1f}s"
+                )
+                errors.append(message)
+                recent_failures.append(
+                    {
+                        "provider": provider_name,
+                        "route_key": route.route_key,
+                        "route_display": getattr(route, "display_label", route.route_key),
+                        "error": "query timed out",
+                    }
+                )
+                recent_failures[:] = recent_failures[-8:]
+                logging.error(message)
+            except Exception as exc:
+                safe_error = sanitize_sensitive_text(exc)
+                message = f"provider={provider_name} route={route.route_key} failed: {safe_error}"
+                errors.append(message)
+                recent_failures.append(
+                    {
+                        "provider": provider_name,
+                        "route_key": route.route_key,
+                        "route_display": getattr(route, "display_label", route.route_key),
+                        "error": safe_error,
+                    }
+                )
+                recent_failures[:] = recent_failures[-8:]
+                logging.error(message)
+            completed_targets += 1
+            self._set_summary(
+                {
+                    **self.last_run_summary,
+                    "running": True,
+                    "current_target": self._target_payload(route, provider_name),
+                    "completed_targets": completed_offset + completed_targets,
+                    "total_targets": total_targets,
+                    "saved": saved_offset + saved,
+                    "errors": list(errors),
+                    "saved_pairs": [*(saved_pairs_seed or []), *saved_pairs],
+                    "recent_successes": ([*(recent_successes_seed or []), *recent_successes])[-8:],
+                    "recent_failures": ([*(recent_failures_seed or []), *recent_failures])[-8:],
+                }
+            )
+        return saved, completed_targets, saved_pairs, recent_successes, recent_failures
+
+    def _iter_query_targets(
+        self,
+        config: AppConfig,
+        routes: list[RouteQuery],
+        *,
+        provider_filter: str | None = None,
+    ):
+        current_day = self._today_for_config(config)
+        for route in routes:
+            if self._route_is_expired(route, today=current_day):
+                logging.info("skipping expired route=%s", route.route_key)
+                continue
+            providers = route.providers or list(config.providers.keys())
+            for provider_name in providers:
+                provider_cfg = config.providers.get(provider_name)
+                if not provider_cfg or not provider_cfg.enabled:
+                    continue
+                if not self._provider_has_handler(provider_name):
+                    logging.info("skipping provider without handler: %s", provider_name)
+                    continue
+                if provider_filter and provider_name != provider_filter:
+                    continue
+                yield route, provider_name, provider_cfg
+
+    def _insert_snapshot(self, route: RouteQuery, result: Any) -> None:
+        raw_payload = sanitize_payload_urls(dict(result.raw_payload or {}))
+        snapshot = PriceSnapshot(
+            provider=result.provider,
+            route_key=route.route_key,
+            origin=route.origin,
+            destination=route.destination,
+            departure_date=route.departure_date,
+            return_date=route.return_date,
+            cabin=route.cabin,
+            passengers=route.passengers,
+            currency=result.currency,
+            price=result.price,
+            observed_at=result.observed_at,
+            scraped_at=self.repository.now_iso(),
+            notes=list(result.notes or []),
+            raw_payload=raw_payload,
+            parser=raw_payload.get("parser"),
+            parser_confidence=raw_payload.get("parser_confidence"),
+            detail_quality=raw_payload.get("detail_quality"),
+            detail_source=raw_payload.get("detail_source"),
+            browser_backend=raw_payload.get("browser_backend"),
+        )
+        self.repository.insert_snapshot(snapshot)
+
+    def _credentials_for_targets(self, targets: list[tuple[RouteQuery, str, Any]]) -> dict[str, dict[str, str]]:
+        if any(
+            (definition := provider_definition(provider_name)) is not None
+            and definition.requires_credentials
+            for _route, provider_name, _provider_cfg in targets
+        ):
+            return self.config_manager.load_credentials(allow_missing=True)
+        loader = getattr(self.config_manager, "load_environment_credentials", None)
+        return loader() if callable(loader) else {}
+
+    def _finish_with_setup_error(self, exc: Exception) -> dict[str, Any]:
+        if isinstance(exc, (FileNotFoundError, RuntimeError, ValueError)):
+            detail = str(exc)
+        else:
+            detail = type(exc).__name__
+        detail = sanitize_sensitive_text(detail).strip()[:1000]
+        message = f"Query setup failed: {detail or type(exc).__name__}"
+        previous = self.summary_store.get()
+        summary = {
+            "running": False,
+            "saved": int(previous.get("saved", 0) or 0),
+            "errors": [message],
+            "completed_targets": int(previous.get("completed_targets", 0) or 0),
+            "total_targets": int(previous.get("total_targets", 0) or 0),
+            "current_target": None,
+            "started_at": previous.get("started_at") or self._now_iso(),
+            "finished_at": self._now_iso(),
+            "saved_pairs": list(previous.get("saved_pairs") or []),
+            "recent_successes": list(previous.get("recent_successes") or []),
+            "recent_failures": [
+                *(list(previous.get("recent_failures") or [])),
+                {"provider": "setup", "route_key": "", "route_display": "setup", "error": detail},
+            ][-8:],
+        }
+        logging.error("query setup failed: %s", detail or type(exc).__name__)
+        self._set_summary(summary)
+        return summary
+
+    def _set_summary(self, summary: dict[str, Any]) -> None:
+        self.last_run_summary = self.summary_store.set(summary)
+        if self.update_summary:
+            self.update_summary(self.last_run_summary)
+
+    @staticmethod
+    def _target_payload(route: RouteQuery, provider_name: str) -> dict[str, Any]:
+        return {
+            "provider": provider_name,
+            "route_key": route.route_key,
+            "route_display": getattr(route, "display_label", route.route_key),
+            "route_type": getattr(route, "route_type", "one_way"),
+        }
+
+    def _provider_query_timeout_seconds(
+        self,
+        config: AppConfig,
+        provider_cfg: Any,
+        *,
+        backend_override: str | None = None,
+    ) -> float:
+        if self.provider_query_timeout_seconds is not None:
+            return self.provider_query_timeout_seconds
+        timeout_ms = float(getattr(provider_cfg, "timeout_ms", 0) or 0)
+        if timeout_ms <= 0:
+            return self.DEFAULT_PROVIDER_QUERY_TIMEOUT_SECONDS
+        backend_count = self._provider_backend_count(config, provider_cfg, backend_override=backend_override)
+        per_backend_seconds = (timeout_ms / 1000.0) * 3
+        cooldown_budget_seconds = 60 * max(0, backend_count - 1)
+        return max(
+            self.DEFAULT_PROVIDER_QUERY_TIMEOUT_SECONDS,
+            per_backend_seconds * backend_count + cooldown_budget_seconds,
+        )
+
+    @staticmethod
+    def _provider_backend_count(
+        config: AppConfig,
+        provider_cfg: Any,
+        *,
+        backend_override: str | None = None,
+    ) -> int:
+        if backend_override:
+            return 1
+        names = []
+        provider_backend = getattr(provider_cfg, "browser_backend", None)
+        if provider_backend:
+            names.append(provider_backend)
+        names.extend(getattr(provider_cfg, "browser_backend_fallbacks", None) or [])
+        names.extend([
+            getattr(config, "browser_backend", ""),
+            *list(getattr(config, "browser_backend_fallbacks", []) or []),
+        ])
+        normalized = []
+        for name in names:
+            text = str(name or "").strip().lower()
+            if text and text not in normalized:
+                normalized.append(text)
+        return max(1, len(normalized))
+
+    @staticmethod
+    def _default_automation_factory(config: AppConfig, credentials: dict[str, dict[str, str]]) -> Any:
+        from browser.browser_automation import BrowserAutomation
+
+        return BrowserAutomation(config, credentials)
+
+    @staticmethod
+    def _provider_has_handler(provider_name: str) -> bool:
+        definition = provider_definition(provider_name)
+        return bool(definition and definition.has_handler)
+
+    @staticmethod
+    def _now_iso() -> str:
+        return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+    @staticmethod
+    def _today_for_config(config: AppConfig | None) -> date:
+        tz_name = str(getattr(config, "timezone", "") or "Asia/Shanghai")
+        try:
+            return datetime.now(ZoneInfo(tz_name)).date()
+        except Exception:
+            return date.today()
+
+    @staticmethod
+    def _route_is_expired(route: RouteQuery, *, today: date | None = None) -> bool:
+        completion = QueryService._route_completion_date(route)
+        return bool(completion and completion < (today or date.today()))
+
+    @staticmethod
+    def _route_completion_date(route: RouteQuery) -> date | None:
+        candidates: list[str] = []
+        if route.return_date:
+            candidates.append(route.return_date)
+        if route.segments:
+            candidates.extend(segment.departure_date for segment in route.segments)
+        candidates.append(route.departure_date)
+        parsed: list[date] = []
+        for value in candidates:
+            try:
+                parsed.append(datetime.strptime(value, "%Y-%m-%d").date())
+            except ValueError:
+                continue
+        return max(parsed) if parsed else None

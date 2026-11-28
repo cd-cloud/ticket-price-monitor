@@ -1,7 +1,7 @@
 from playwright.async_api import Page
 
-from browser_query_result import OfferDetails
-from config_manager import ProviderConfig, RouteQuery, RouteSegment
+from browser.browser_query_result import OfferDetails
+from core.config_manager import ProviderConfig, RouteQuery, RouteSegment
 from providers import ctrip
 from providers import ctrip_itinerary
 from providers import ctrip_network_parser

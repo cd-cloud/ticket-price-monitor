@@ -1,7 +1,7 @@
 import unittest
 
-from config_manager import RouteQuery
-from dashboard_builder import extract_flight_details, extract_flight_number
+from core.config_manager import RouteQuery
+from web.dashboard_builder import extract_flight_details, extract_flight_number
 from providers import ctrip_parser
 
 

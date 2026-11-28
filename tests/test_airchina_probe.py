@@ -11,9 +11,9 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
-from airchina_probe import inspect_airchina_page
-from browser_automation import BrowserAutomation
-from config_manager import ConfigManager, RouteQuery
+from experiments.airchina_probe import inspect_airchina_page
+from browser.browser_automation import BrowserAutomation
+from core.config_manager import ConfigManager, RouteQuery
 from main import build_parser
 from providers.airchina_page import build_search_url, classify_page
 from providers.registry import PROVIDERS
@@ -195,8 +195,8 @@ def test_cli_explicit_and_never_reads_credentials_or_initializes_app(tmp_path):
     context = AsyncMock()
     with patch("sys.argv", argv), patch("main.ConfigManager", return_value=manager), \
          patch.object(manager, "load_credentials", side_effect=AssertionError("do not read keys")), \
-         patch("browser_automation.BrowserAutomation", return_value=context) as factory, \
-         patch("airchina_probe.inspect_airchina_page", new=AsyncMock(return_value=report)), \
+         patch("browser.browser_automation.BrowserAutomation", return_value=context) as factory, \
+         patch("experiments.airchina_probe.inspect_airchina_page", new=AsyncMock(return_value=report)), \
          patch("main.FlightPriceApplication", side_effect=AssertionError("no application DB")):
         assert main.main() == 2
         factory.assert_called_once()

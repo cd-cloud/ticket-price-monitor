@@ -7,16 +7,28 @@ query results, reports, and schedule state on the user's machine.
 
 - `main.py`: command-line entry point for credentials, session bootstrap, manual query runs,
   reports, recurring scheduler, and the local Web UI.
-- `web_ui.py`: FastAPI routing layer for the local dashboard and JSON APIs.
-- `app_service.py`: application orchestration. It coordinates config, storage, browser
-  automation, reporting, route CRUD, and high-level worker entry points.
-- `dashboard_builder.py`: dashboard payload construction and display-oriented parsing helpers.
-- `scheduling/auto_worker.py`: per-route auto-query worker, including 12-hour recurrence and
-  at-least-10-minute route spacing.
-- `browser_automation.py`: browser automation coordinator. It owns backend selection,
-  provider dispatch, session reuse, response capture, and final raw payload assembly.
-- `browser_page_operations.py`: shared selector, DOM, throttling, and page-action helpers.
-- `provider_runtime.py`: provider-neutral runtime contract for shared browser operations.
+- `core/`: foundational persistence, configuration, and utilities (`config_manager.py`,
+  `data_storage.py`, `private_files.py`, `airport_aliases.py`, `html_text_cleaner.py`,
+  `local_session_state_store.py`, `analyzer.py`).
+- `services/`: application orchestration and domain services (`app_service.py`,
+  `query_service.py`, `route_service.py`, `route_expander.py`, `report_service.py`,
+  `run_summary.py`, `browser_profile_service.py`).
+- `web/`: FastAPI routing layer (`web_ui.py`) and dashboard payload builder (`dashboard_builder.py`).
+- `scheduling/`: recurring execution (`auto_worker.py` for 12-hour per-route auto-query with
+  at-least-10-minute spacing, and `scheduler.py` for CLI scheduled runs).
+- `browser/`: browser automation coordinator and runtime helpers (`browser_automation.py`,
+  `browser_page_operations.py`, `browser_session_manager.py`, `browser_session_policy.py`,
+  `browser_environment.py`, `browser_environment_audit.py`, `browser_fingerprint.py/.js`,
+  `browser_query_result.py`, `browser_retry_policy.py`, `browser_use_adapter.py`,
+  `adaptive_selectors.py`, `provider_runtime.py`).
+- `tail/`: tail-discovery domain models, batch/job management, history, validation, quoting,
+  and scheduling (`tail_discovery_service.py`, `tail_discovery_manager.py`, `tail_jobs.py`,
+  `tail_quotes.py`, `tail_schedule_service.py`, `tail_service.py`, `tail_models.py`, etc.).
+- `experiments/`: isolated Air China experimental workflow (`experimental_query_service.py`,
+  `experimental_session_service.py`, `experimental_browser_session.py`, `airchina_probe.py`,
+  `airchina_query_gate.py`).
+- `tools/`: local/internal smoke runners and utility scripts (`local_smoke_test.py`,
+  `internal_smoke_test.py`, `replay_tail_history.py`).
 - `providers/ctrip_runtime.py`: Ctrip-specific runtime extensions used only by Ctrip handlers.
 - `providers/ctrip_browser_operations.py`: Ctrip ordinary-query forms, dates, and itinerary helpers.
 - `providers/ctrip_tail_operations.py`: Ctrip tail browser, verification, trace, and diagnostic helpers.
@@ -32,8 +44,6 @@ query results, reports, and schedule state on the user's machine.
   `FLIGHT_TRACKER_ENABLE_ANTI_DETECT_BACKENDS=1`; disabled backends cannot be selected or instantiated.
 - `backends/fallback.py`: `BackendFallbackManager` manages backend startup fallback and
   provider-level backend switching.
-- `browser_session_manager.py`: provider profile health checks, lock enforcement, session metadata and recovery-profile selection.
-- `browser_use_adapter.py`: optional browser-use diagnostic handoff. Full page-state artifacts require explicit opt-in and do not replace the deterministic Playwright flow.
 - `providers/base.py`: provider contracts and normalized result assembly types.
 - `providers/ctrip.py`: Ctrip query orchestration, including direct result-page flow,
   one-way/round-trip form fallback, and direct-first multi-city flow.
@@ -49,15 +59,11 @@ query results, reports, and schedule state on the user's machine.
 - `providers/ctrip_support.py`: Ctrip city-code, route, and cabin helper data.
 - `providers/feizhu.py` and `providers/priceline.py`: additional provider query handlers.
 - `providers/registry.py`: provider capability metadata used to reject unsupported route/filter combinations before provider I/O.
-- `config_manager.py`: locked configuration loading, encrypted credentials, route models, and defaults.
-- `private_files.py`: private runtime directories, atomic writes, and POSIX file permission hardening.
-- `data_storage.py`: SQLite schema and repository operations.
-- `analyzer.py`: CSV export and markdown reports.
 - `static/app/api.js`: shared fetch wrapper, request timeouts, and response error parsing.
 - `static/app/store.js`: explicit dashboard, workspace, and browser-profile state, plus
   `tailState.form`, `job`, `results`, and `connection` groups. `window.tailCandidateNames`
   remains a compatibility mirror for `airport_ui.js`, owned by `tailState.form`.
-- `static/app/common.js`: formatting, escaping, toast, and shared text helpers.
+- `static/app/common.js`: formatting, escaping, toast, in-app confirmation modal, and shared text helpers.
 - `static/app/route_form.js` and `static/app/dashboard.js`: route editing and ordinary-query dashboard.
 - `static/app/browser_profiles.js`: browser-profile controls and rendering.
 - `static/app/tail_form.js`, `tail_jobs.js`, and `tail_results.js`: tail form, job lifecycle, and quote views.

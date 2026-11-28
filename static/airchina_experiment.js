@@ -646,7 +646,12 @@
   });
   document.getElementById("airchinaExperimentRefresh").addEventListener("click", refresh);
   document.getElementById("airchinaQueryResume")?.addEventListener("click", async () => {
-    if (busy || !window.confirm("确认已人工检查国航访问状态？解除本地暂停不保证验证码已消失，也不会自动提交查询。")) return;
+    if (busy) return;
+    const message = "确认已人工检查国航访问状态？解除本地暂停不保证验证码已消失，也不会自动提交查询。";
+    const confirmed = typeof confirmAction === "function"
+      ? await confirmAction(message, { title: "解除国航查询暂停", confirmText: "确认解除" })
+      : window.confirm(message);
+    if (!confirmed) return;
     busy = true;
     try {
       await request(`${base}/policy/resume`, {method:"POST", headers:{"Content-Type":"application/json"},
@@ -663,8 +668,12 @@
     method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({backup:backupInput.checked}),
   }));
   cancelPrepare.addEventListener("click", () => sessionAction("/session/cancel-prepare", {method:"POST"}));
-  deleteBackup.addEventListener("click", () => {
-    if (window.confirm("只删除本机加密登录态备份，不关闭浏览器、不清除 Chrome 持久档案。确定删除？")) {
+  deleteBackup.addEventListener("click", async () => {
+    const message = "只删除本机加密登录态备份，不关闭浏览器、不清除 Chrome 持久档案。确定删除？";
+    const confirmed = typeof confirmAction === "function"
+      ? await confirmAction(message, { title: "删除登录态备份", confirmText: "确认删除", danger: true })
+      : window.confirm(message);
+    if (confirmed) {
       sessionAction("/session/backup", {method:"DELETE"});
     }
   });

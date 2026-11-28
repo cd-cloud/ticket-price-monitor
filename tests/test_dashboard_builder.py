@@ -4,8 +4,8 @@ from datetime import date, timedelta
 from types import SimpleNamespace
 from pathlib import Path
 
-from config_manager import ProviderConfig, RouteQuery
-from dashboard_builder import build_dashboard_payload, build_task_groups
+from core.config_manager import ProviderConfig, RouteQuery
+from web.dashboard_builder import build_dashboard_payload, build_task_groups
 
 
 class DashboardBuilderTests(unittest.TestCase):

@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from airchina_probe import inspect_airchina_page
+from experiments.airchina_probe import inspect_airchina_page
 from providers import airchina
 from providers.airchina_result_wait import LIVE_GUARDS, wait_for_results
 from test_airchina_probe import fake_automation, ROUTE, TARGET

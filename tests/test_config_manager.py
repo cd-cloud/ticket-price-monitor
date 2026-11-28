@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from config_manager import ConfigConflictError, ConfigManager, RouteQuery, normalize_airport_code
+from core.config_manager import ConfigConflictError, ConfigManager, RouteQuery, normalize_airport_code
 
 
 class ConfigManagerTests(unittest.TestCase):

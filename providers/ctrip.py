@@ -5,7 +5,7 @@ from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
 
 from playwright.async_api import Page
 
-from config_manager import ProviderConfig, RouteQuery
+from core.config_manager import ProviderConfig, RouteQuery
 from providers import ctrip_page
 from providers import ctrip_result
 from providers.response_capture import begin_response_batch, sanitize_url
@@ -17,8 +17,8 @@ from providers.ctrip_support import (
     route_prefers_international_entry,
 )
 from providers.human_actions import hover_then_click, random_scroll_and_pause
-from browser_retry_policy import looks_like_rate_limit
-from private_files import atomic_write_text, debug_capture_directory, make_file_private
+from browser.browser_retry_policy import looks_like_rate_limit
+from core.private_files import atomic_write_text, debug_capture_directory, make_file_private
 
 
 name = "ctrip"

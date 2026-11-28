@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from query_service import QueryService
+from services.query_service import QueryService
 from scheduling.auto_worker import AutoQueryWorker, format_iso_datetime
 
 

@@ -5,8 +5,8 @@ import sys
 from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from browser_environment import parse_browser_environment
-from browser_environment_audit import audit_provider
+from browser.browser_environment import parse_browser_environment
+from browser.browser_environment_audit import audit_provider
 
 
 async def run():

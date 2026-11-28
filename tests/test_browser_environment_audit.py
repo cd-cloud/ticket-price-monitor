@@ -6,12 +6,12 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from browser_environment import PRESETS, parse_browser_environment, BrowserEnvironmentError
-from browser_environment_audit import (
+from browser.browser_environment import PRESETS, parse_browser_environment, BrowserEnvironmentError
+from browser.browser_environment_audit import (
     build_report, render_report, write_report, audit_provider, AUDIT_URL, HEADERS, run_audit,
 )
-from config_manager import ConfigManager
-from browser_fingerprint import default_fingerprint
+from core.config_manager import ConfigManager
+from browser.browser_fingerprint import default_fingerprint
 
 
 def provider():
@@ -144,7 +144,7 @@ def test_audit_uses_temp_profile_strips_proxy_and_sensitive_headers(monkeypatch)
         await context.route.await_args.args[1](unwanted)
         unwanted.abort.assert_awaited_once()
     page.goto = AsyncMock(side_effect=goto)
-    monkeypatch.setattr("browser_environment_audit.SystemChromeBackend", lambda: backend)
+    monkeypatch.setattr("browser.browser_environment_audit.SystemChromeBackend", lambda: backend)
     r = asyncio.run(audit_provider(p, headless=True))
     assert r["environment"]["network"] == "proxy" and not r["proxy_applied"]
     opts = backend.new_context.await_args.kwargs
@@ -161,7 +161,7 @@ def test_audit_uses_temp_profile_strips_proxy_and_sensitive_headers(monkeypatch)
 
 def test_failure_cleanup_and_sanitized_output(monkeypatch, tmp_path, capsys):
     backend = SimpleNamespace(start=AsyncMock(side_effect=RuntimeError("SECRET")), stop=AsyncMock())
-    monkeypatch.setattr("browser_environment_audit.SystemChromeBackend", lambda: backend)
+    monkeypatch.setattr("browser.browser_environment_audit.SystemChromeBackend", lambda: backend)
     cfg = SimpleNamespace(providers={"airchina": provider()}, runtime_dir=tmp_path, headless=False)
     assert asyncio.run(run_audit(cfg)) == 2
     assert "SECRET" not in capsys.readouterr().out
@@ -175,7 +175,7 @@ def test_cli_does_not_start_application(monkeypatch, tmp_path):
     path.write_text(json.dumps({"providers": {"airchina": {}}}))
     monkeypatch.setattr("sys.argv", ["main.py", "--config", str(path), "airchina-environment-audit", "--headless"])
     runner = AsyncMock(return_value=0)
-    monkeypatch.setattr("browser_environment_audit.run_audit", runner)
+    monkeypatch.setattr("browser.browser_environment_audit.run_audit", runner)
     monkeypatch.setattr(main, "FlightPriceApplication", Mock(side_effect=AssertionError("no live service")))
     assert main.main() == 0
     assert runner.await_args.kwargs["headless"] is True

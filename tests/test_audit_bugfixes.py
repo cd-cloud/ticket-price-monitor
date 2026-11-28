@@ -14,19 +14,19 @@ from unittest.mock import AsyncMock, patch
 
 from fastapi.testclient import TestClient
 
-from app_service import configure_logging
-from config_manager import ConfigManager, RouteQuery
-from dashboard_builder import build_dashboard_payload
-from data_storage import PriceRepository, PriceSnapshot
+from services.app_service import configure_logging
+from core.config_manager import ConfigManager, RouteQuery
+from web.dashboard_builder import build_dashboard_payload
+from core.data_storage import PriceRepository, PriceSnapshot
 from providers import feizhu, priceline
 from providers.airchina_direct import flyclaw_records_from_report
 from providers.airchina_parser import parse_reference_fares
 from providers.base import ProviderQueryOutcome
 from providers.response_capture import sanitize_payload_urls, sanitize_sensitive_text, sanitize_url
-from query_service import QueryService
+from services.query_service import QueryService
 from main import _validate_ui_bind
-from route_service import RouteService
-from web_ui import create_app
+from services.route_service import RouteService
+from web.web_ui import create_app
 
 
 def _write_test_config(path: Path) -> None:
@@ -541,8 +541,8 @@ class AuditBugfixRegressionTests(unittest.TestCase):
                 return {"running": False, "saved": 2, "errors": []}
 
             with TestClient(create_app(str(config_path))) as client, \
-                 patch("app_service.FlightPriceApplication.run_route_group_once_blocking", side_effect=fake_group_run), \
-                 patch("app_service.FlightPriceApplication.report", return_value={}):
+                 patch("services.app_service.FlightPriceApplication.run_route_group_once_blocking", side_effect=fake_group_run), \
+                 patch("services.app_service.FlightPriceApplication.report", return_value={}):
                 resp = client.post("/api/route-groups/rg_combo/run-once")
                 self.assertEqual(200, resp.status_code)
 

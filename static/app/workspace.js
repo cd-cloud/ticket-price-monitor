@@ -27,12 +27,14 @@ function ensureWorkspaceTabs() {
   tabs.className = "workspace-tabs";
   tabs.setAttribute("aria-label", "主功能标签");
   tabs.innerHTML = `
-    <button type="button" data-workspace-tab="routes">航线配置 <span data-workspace-count="routes"></span></button>
-    <button type="button" data-workspace-tab="tasks">查询任务 <span data-workspace-count="tasks"></span></button>
-    <button type="button" data-workspace-tab="tail">甩尾发现 <span data-workspace-count="tail"></span></button>
-    <button type="button" data-workspace-tab="profiles">浏览器档案 <span data-workspace-count="profiles"></span></button>
-    <button type="button" data-workspace-tab="insights">日志</button>
-    <button type="button" data-workspace-tab="experiments">国航实验</button>
+    <div class="workspace-tablist" role="tablist" aria-label="主功能切换">
+      <button type="button" role="tab" id="workspaceTab-routes" data-workspace-tab="routes">航线配置 <span data-workspace-count="routes"></span></button>
+      <button type="button" role="tab" id="workspaceTab-tasks" data-workspace-tab="tasks">查询任务 <span data-workspace-count="tasks"></span></button>
+      <button type="button" role="tab" id="workspaceTab-tail" data-workspace-tab="tail">甩尾发现 <span data-workspace-count="tail"></span></button>
+      <button type="button" role="tab" id="workspaceTab-profiles" data-workspace-tab="profiles">浏览器档案 <span data-workspace-count="profiles"></span></button>
+      <button type="button" role="tab" id="workspaceTab-insights" data-workspace-tab="insights">日志</button>
+      <button type="button" role="tab" id="workspaceTab-experiments" data-workspace-tab="experiments">国航实验</button>
+    </div>
     <label class="workspace-tab-select"><span>当前功能</span><select id="workspaceTabSelect" aria-label="当前功能">
       <option value="routes" data-workspace-option="routes">航线配置</option>
       <option value="tasks" data-workspace-option="tasks">查询任务</option>
@@ -48,10 +50,33 @@ function ensureWorkspaceTabs() {
     if (!button) return;
     setWorkspaceTab(button.dataset.workspaceTab);
   });
+  tabs.addEventListener("keydown", (event) => {
+    const current = event.target.closest("button[data-workspace-tab]");
+    if (!current) return;
+    const buttons = Array.from(tabs.querySelectorAll("button[data-workspace-tab]"));
+    const index = buttons.indexOf(current);
+    if (index < 0) return;
+    let nextIndex = -1;
+    if (event.key === "ArrowRight") nextIndex = (index + 1) % buttons.length;
+    else if (event.key === "ArrowLeft") nextIndex = (index - 1 + buttons.length) % buttons.length;
+    else if (event.key === "Home") nextIndex = 0;
+    else if (event.key === "End") nextIndex = buttons.length - 1;
+    if (nextIndex >= 0) {
+      event.preventDefault();
+      const target = buttons[nextIndex];
+      setWorkspaceTab(target.dataset.workspaceTab);
+      target.focus();
+    }
+  });
   tabs.addEventListener("change", (event) => {
     if (event.target.matches("#workspaceTabSelect")) setWorkspaceTab(event.target.value);
   });
-  Object.values(workspacePanelMap()).forEach((panel) => panel?.classList.add("workspace-panel"));
+  Object.entries(workspacePanelMap()).forEach(([key, panel]) => {
+    if (!panel) return;
+    panel.classList.add("workspace-panel");
+    panel.setAttribute("role", "tabpanel");
+    panel.setAttribute("aria-labelledby", `workspaceTab-${key}`);
+  });
   updateWorkspaceTabs();
 }
 
@@ -61,7 +86,9 @@ function setWorkspaceTab(tab, options = {}) {
   workspaceState.activeTab = nextTab;
   document.body.dataset.workspace = nextTab;
   if (options.persist !== false) {
-    localStorage.setItem("workspaceState.activeTab", nextTab);
+    try {
+      localStorage.setItem("activeWorkspaceTab", nextTab);
+    } catch { /* Storage is optional. */ }
   }
   Object.entries(panels).forEach(([key, panel]) => {
     if (!panel) return;
@@ -72,10 +99,14 @@ function setWorkspaceTab(tab, options = {}) {
     const active = button.dataset.workspaceTab === nextTab;
     button.classList.toggle("active", active);
     button.setAttribute("aria-selected", active ? "true" : "false");
+    button.setAttribute("tabindex", active ? "0" : "-1");
   });
   const select = document.getElementById("workspaceTabSelect");
   if (select) select.value = nextTab;
   if (nextTab === "insights" && typeof fetchLog === "function") fetchLog().catch(() => {});
+  if ((nextTab === "routes" || nextTab === "tasks") && typeof scheduleDashboardPolling === "function") {
+    scheduleDashboardPolling(400);
+  }
 }
 
 function updateWorkspaceTabs() {

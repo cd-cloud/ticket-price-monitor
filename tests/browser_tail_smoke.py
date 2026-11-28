@@ -13,10 +13,10 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from fastapi.testclient import TestClient
 from playwright.async_api import async_playwright
-from web_ui import create_app
-from data_storage import PriceRepository
-from tail_quotes import annotate_quote, apply_baselines
-from tail_discovery_service import validate_tail_results_for_run
+from web.web_ui import create_app
+from core.data_storage import PriceRepository
+from tail.tail_quotes import annotate_quote, apply_baselines
+from tail.tail_discovery_service import validate_tail_results_for_run
 from test_tail_improvements import quote, known_terms
 from test_web_ui_validation import write_config
 

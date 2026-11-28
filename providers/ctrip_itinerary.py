@@ -6,7 +6,7 @@ import json
 import re
 from typing import Any, Iterator
 
-from config_manager import RouteQuery
+from core.config_manager import RouteQuery
 from providers.ctrip_support import ctrip_city_code, CTRIP_CITY_CODE_MAP
 
 
@@ -20,6 +20,24 @@ def total_price(price: dict[str, Any]) -> float | None:
     if 200 <= total <= 100000:
         return total
     return None
+
+
+def price_breakdown(price: dict[str, Any]) -> dict[str, Any]:
+    raw_adult = price.get("adultPrice")
+    raw_tax = price.get("adultTax")
+    try:
+        adult_price = float(raw_adult) if raw_adult not in (None, "") else None
+    except (TypeError, ValueError):
+        adult_price = None
+    try:
+        adult_tax = float(raw_tax) if raw_tax not in (None, "") else None
+    except (TypeError, ValueError):
+        adult_tax = None
+    return {
+        "adult_price": adult_price,
+        "adult_tax": adult_tax,
+        "has_explicit_tax": raw_tax not in (None, "") and adult_tax is not None,
+    }
 
 
 def endpoint_matches(detail: dict, target: str, *, arrival: bool = False) -> bool:

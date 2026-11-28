@@ -209,7 +209,7 @@ class NetworkDiagnostics:
                 self.audit_incomplete = True
 
     async def _retry_after(self, response):
-        from airchina_query_gate import retry_after_seconds
+        from experiments.airchina_query_gate import retry_after_seconds
         try:
             async with asyncio.timeout(1):
                 value = await response.header_value("retry-after")

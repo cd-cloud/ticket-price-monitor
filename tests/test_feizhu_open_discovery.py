@@ -9,12 +9,12 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import AsyncMock, Mock, patch
 
-from data_storage import PriceRepository
+from core.data_storage import PriceRepository
 from providers import feizhu_flyai_adapter as adapter
 from providers.feizhu_tail_runner import FeizhuTailDiscoveryRunner
-from tail_discovery_manager import TailDiscoveryManager
-from tail_discovery_service import TailDiscoveryService
-from tail_service import OPEN_DESTINATION, normalize_tail_discovery_request
+from tail.tail_discovery_manager import TailDiscoveryManager
+from tail.tail_discovery_service import TailDiscoveryService
+from tail.tail_service import OPEN_DESTINATION, normalize_tail_discovery_request
 
 
 def payload(**kw):

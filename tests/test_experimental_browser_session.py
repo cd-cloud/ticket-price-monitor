@@ -6,8 +6,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from experimental_browser_session import ExperimentalBrowserSession, ExperimentalSessionRunner
-from experimental_browser_session import RetainedSessionUnavailable
+from experiments.experimental_browser_session import ExperimentalBrowserSession, ExperimentalSessionRunner
+from experiments.experimental_browser_session import RetainedSessionUnavailable
 
 
 @pytest.fixture

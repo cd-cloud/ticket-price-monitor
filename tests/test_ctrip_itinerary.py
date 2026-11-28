@@ -1,6 +1,6 @@
 import unittest
 
-from config_manager import RouteQuery, RouteSegment
+from core.config_manager import RouteQuery, RouteSegment
 from providers import ctrip_itinerary
 
 

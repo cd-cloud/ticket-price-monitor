@@ -2,9 +2,10 @@
 from copy import deepcopy
 from typing import Any
 
-from config_manager import RouteQuery
+from core.config_manager import RouteQuery
 from providers import ctrip_network_parser, ctrip_itinerary
 from providers.base import ParsedProviderResult, ProviderQueryOutcome
+from tail.tail_quotes import quote_terms
 
 
 def selected_quote(route, offer):
@@ -24,6 +25,23 @@ def selected_quote(route, offer):
     return match
 
 
+def _ctrip_quote_terms(route: RouteQuery, match: dict[str, Any]) -> dict[str, Any]:
+    breakdown = match.get("price_breakdown") or {}
+    has_explicit_tax = bool(breakdown.get("has_explicit_tax"))
+    # Ctrip priceList stores adultPrice (+ adultTax when present) per adult.
+    # For single-passenger queries we have an explicit per-person fare basis;
+    # tax_included is True when adultTax was explicitly present and summed.
+    return quote_terms(
+        "ctrip",
+        route.passengers,
+        "CNY",
+        price_basis="per_person",
+        tax_included=True if has_explicit_tax else None,
+        priced_passengers=1 if route.passengers == 1 else None,
+        source_price_field="adultPrice+adultTax" if has_explicit_tax else "adultPrice",
+    )
+
+
 def _outcome(route, offer, final_url, title, *, extra=None):
     match = selected_quote(route, offer)
     details = match["details"]
@@ -37,6 +55,7 @@ def _outcome(route, offer, final_url, title, *, extra=None):
             **(extra or {}), "detail_quality": "complete", "detail_source": "network_exact",
             "network_match_source": match["source"],
             "selected_quote": match,
+            "quote_terms": _ctrip_quote_terms(route, match),
             "loading_evidence": match.get("loading_evidence"),
             "date_evidence": match.get("date_evidence"),
             "validation": {"status": "valid", "scope": "route_date_cabin_airline",

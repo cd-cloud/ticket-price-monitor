@@ -17,7 +17,7 @@ sys.path.insert(0, str(ROOT / "tests"))
 
 from fastapi.testclient import TestClient
 from playwright.async_api import async_playwright
-from web_ui import create_app
+from web.web_ui import create_app
 from test_tail_improvements import known_terms, quote
 from test_web_ui_validation import write_config
 

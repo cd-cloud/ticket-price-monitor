@@ -1,7 +1,7 @@
 import unittest
 from types import SimpleNamespace
 
-from config_manager import RouteQuery
+from core.config_manager import RouteQuery
 from providers import ctrip_result
 
 

@@ -6,8 +6,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from config_manager import ConfigManager
-from local_session_state_store import (
+from core.config_manager import ConfigManager
+from core.local_session_state_store import (
     LocalSessionStateStore,
     SessionStateError,
     restore_session_state,

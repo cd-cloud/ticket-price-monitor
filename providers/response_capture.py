@@ -204,7 +204,6 @@ async def attach_response_listeners(page: Page, response_store: list[dict]) -> N
             payload = await response.json()
         except Exception:
             try:
-                from providers import feizhu_parser
                 text = await response.text()
                 if (
                     "flightItineraryList" not in text
@@ -212,7 +211,9 @@ async def attach_response_listeners(page: Page, response_store: list[dict]) -> N
                     and not feizhu_response_text_looks_useful(text)
                 ):
                     return
-                payload = feizhu_parser.parse_json_or_jsonp(text) or json.loads(text)
+                payload = parse_json_or_jsonp(text)
+                if payload is None:
+                    return
             except Exception:
                 return
         if scoped and generation != response_store.generation:
@@ -239,6 +240,26 @@ async def attach_response_listeners(page: Page, response_store: list[dict]) -> N
     page.on("request", on_request)
     page.on("requestfailed", lambda request: response_store.requests.pop(request, None) if scoped else None)
     page.on("response", on_response)
+
+
+_JSONP_PATTERN = re.compile(r"^\s*[A-Za-z0-9_.$]+\s*\((.*)\)\s*;?\s*$", re.DOTALL)
+
+
+def parse_json_or_jsonp(text: str):
+    stripped = str(text or "").strip()
+    if not stripped:
+        return None
+    try:
+        return json.loads(stripped)
+    except Exception:
+        pass
+    match = _JSONP_PATTERN.match(stripped)
+    if not match:
+        return None
+    try:
+        return json.loads(match.group(1))
+    except Exception:
+        return None
 
 
 def feizhu_response_text_looks_useful(text: str) -> bool:

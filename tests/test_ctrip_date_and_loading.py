@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from config_manager import RouteQuery
+from core.config_manager import RouteQuery
 from providers.ctrip_date_evidence import collect_date_evidence, date_value_matches
 from providers.ctrip import dump_submit_debug
 from providers.ctrip_browser_operations import CtripBrowserOperations

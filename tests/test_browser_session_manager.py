@@ -5,8 +5,8 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-from browser_session_manager import BrowserSessionManager
-from browser_session_policy import BrowserSessionMetadata
+from browser.browser_session_manager import BrowserSessionManager
+from browser.browser_session_policy import BrowserSessionMetadata
 
 
 class FakeContext:
@@ -19,7 +19,7 @@ class FakeContext:
 
 
 class BrowserSessionManagerTests(unittest.TestCase):
-    def test_backend_order_prefers_app_default_and_deduplicates(self) -> None:
+    def test_backend_order_prefers_provider_override_and_deduplicates(self) -> None:
         provider = SimpleNamespace(
             name="ctrip",
             browser_backend="rebrowser",
@@ -36,7 +36,7 @@ class BrowserSessionManagerTests(unittest.TestCase):
         )
 
         self.assertEqual(
-            ["playwright", "rebrowser", "patchright"],
+            ["rebrowser", "patchright", "playwright"],
             manager.backend_names_for_provider(provider),
         )
         self.assertEqual(
@@ -44,11 +44,11 @@ class BrowserSessionManagerTests(unittest.TestCase):
             manager.configured_backend_names(),
         )
 
-    def test_backend_order_prefers_chrome_when_configured_as_default(self) -> None:
+    def test_backend_order_uses_app_default_when_provider_has_no_override(self) -> None:
         provider = SimpleNamespace(
             name="ctrip",
-            browser_backend="rebrowser",
-            browser_backend_fallbacks=["patchright", "playwright"],
+            browser_backend=None,
+            browser_backend_fallbacks=[],
         )
         manager = BrowserSessionManager(
             SimpleNamespace(
@@ -61,7 +61,7 @@ class BrowserSessionManagerTests(unittest.TestCase):
         )
 
         self.assertEqual(
-            ["chrome", "playwright", "rebrowser", "patchright"],
+            ["chrome", "playwright"],
             manager.backend_names_for_provider(provider),
         )
 

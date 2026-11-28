@@ -1,6 +1,6 @@
 import unittest
 
-from adaptive_selectors import SelectorCandidate, observe_selector_candidates, score_selector_observation
+from browser.adaptive_selectors import SelectorCandidate, observe_selector_candidates, score_selector_observation
 
 
 class FakeLocator:

@@ -3,7 +3,7 @@ from typing import Any
 
 from playwright.async_api import Page
 
-from config_manager import RouteQuery
+from core.config_manager import RouteQuery
 from providers.ctrip_support import offer_matches_cabin
 
 

@@ -15,7 +15,7 @@ VENDOR = ROOT / "vendor" / "flyclaw"
 if str(VENDOR) not in sys.path:
     sys.path.insert(0, str(VENDOR))
 
-from config_manager import RouteQuery
+from core.config_manager import RouteQuery
 from providers.airchina_direct import flyclaw_records_from_report
 from sources.airchina import AirChinaSource
 from sources.fliggy_mcp import FliggyMCPSource

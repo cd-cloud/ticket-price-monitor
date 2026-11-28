@@ -78,16 +78,70 @@ function renderSessionHints(hints = []) {
   notifyComplete(loginHints[0].message, { kind: "warning", durationMs: 5200 });
 }
 
-function cleanVisibleText(root = document.body) {
-  if (!root) return;
-  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
-  while (walker.nextNode()) {
-    const node = walker.currentNode;
-    const cleaned = cleanDisplayText(node.nodeValue);
-    if (cleaned !== node.nodeValue) {
-      node.nodeValue = cleaned;
-    }
+function confirmAction(message, options = {}) {
+  if (typeof document === "undefined" || !document.body) {
+    return Promise.resolve(typeof window !== "undefined" && typeof window.confirm === "function"
+      ? window.confirm(message)
+      : true);
   }
+  return new Promise((resolve) => {
+    let dialog = document.getElementById("appConfirmDialog");
+    if (!dialog) {
+      dialog = document.createElement("div");
+      dialog.id = "appConfirmDialog";
+      dialog.className = "app-confirm-overlay";
+      dialog.hidden = true;
+      dialog.innerHTML = `
+        <div class="app-confirm-backdrop" data-confirm-cancel></div>
+        <section class="app-confirm-panel" role="alertdialog" aria-modal="true" aria-labelledby="appConfirmTitle" aria-describedby="appConfirmMessage">
+          <h3 id="appConfirmTitle">请确认操作</h3>
+          <p id="appConfirmMessage"></p>
+          <div class="app-confirm-actions">
+            <button type="button" class="ghost" data-confirm-cancel>取消</button>
+            <button type="button" class="primary" data-confirm-ok>确认</button>
+          </div>
+        </section>
+      `;
+      document.body.appendChild(dialog);
+    }
+    const previousFocus = document.activeElement;
+    const titleEl = dialog.querySelector("#appConfirmTitle");
+    const msgEl = dialog.querySelector("#appConfirmMessage");
+    const okBtn = dialog.querySelector("[data-confirm-ok]");
+    const cancelBtn = dialog.querySelector("button[data-confirm-cancel]");
+    titleEl.textContent = options.title || "请确认操作";
+    msgEl.textContent = message;
+    okBtn.textContent = options.confirmText || "确认";
+    okBtn.className = options.danger ? "primary danger-fill" : "primary";
+    dialog.hidden = false;
+
+    const finish = (accepted) => {
+      dialog.hidden = true;
+      dialog.removeEventListener("click", onClick);
+      document.removeEventListener("keydown", onKeydown);
+      if (previousFocus && previousFocus.isConnected && typeof previousFocus.focus === "function") {
+        previousFocus.focus({ preventScroll: true });
+      }
+      resolve(accepted);
+    };
+    const onClick = (event) => {
+      if (event.target.closest("[data-confirm-ok]")) finish(true);
+      else if (event.target.closest("[data-confirm-cancel]")) finish(false);
+    };
+    const onKeydown = (event) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        finish(false);
+      }
+    };
+    dialog.addEventListener("click", onClick);
+    document.addEventListener("keydown", onKeydown);
+    (options.danger ? cancelBtn : okBtn).focus({ preventScroll: true });
+  });
+}
+
+function cleanVisibleText(_root = document.body) {
+  // Retained as a no-op compatibility helper; display text is normalized at render time.
 }
 
 function normalizeAirlines(text) {

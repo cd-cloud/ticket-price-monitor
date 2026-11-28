@@ -7,6 +7,7 @@ const dashboardState = {
     last_run: { running: false, saved: 0, errors: [] },
   },
   activeTaskView: "all",
+  expandedTaskGroups: new Set(),
   pollTimer: null,
   pollInFlight: false,
   taskRenderSignature: "",

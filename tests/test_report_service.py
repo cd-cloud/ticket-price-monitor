@@ -4,9 +4,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from config_manager import ConfigManager
-from data_storage import PriceRepository, PriceSnapshot
-from report_service import ReportService
+from core.config_manager import ConfigManager
+from core.data_storage import PriceRepository, PriceSnapshot
+from services.report_service import ReportService
 
 
 def write_config(path: Path) -> None:

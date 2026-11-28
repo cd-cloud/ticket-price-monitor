@@ -9,9 +9,9 @@ from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from backends.chrome import SystemChromeBackend
-from browser_environment import parse_browser_environment
-from browser_environment_audit import audit_provider, write_report
-from browser_fingerprint import fingerprint_script
+from browser.browser_environment import parse_browser_environment
+from browser.browser_environment_audit import audit_provider, write_report
+from browser.browser_fingerprint import fingerprint_script
 
 
 ORIGIN = "http://127.0.0.1:8769"

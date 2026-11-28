@@ -4,8 +4,8 @@ from copy import deepcopy
 import pytest
 from fastapi.testclient import TestClient
 
-from data_storage import PriceRepository
-from web_ui import create_app
+from core.data_storage import PriceRepository
+from web.web_ui import create_app
 from test_tail_improvements import quote, DATE
 from test_web_ui_validation import write_config
 

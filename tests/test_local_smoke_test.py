@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from local_smoke_test import run_local_smoke_test
+from tools.local_smoke_test import run_local_smoke_test
 
 
 class LocalSmokeTestTests(unittest.TestCase):

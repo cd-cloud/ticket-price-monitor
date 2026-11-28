@@ -8,13 +8,13 @@ from urllib.parse import parse_qs, urlparse
 
 from playwright.async_api import Page
 
-from config_manager import RouteQuery, RouteSegment
+from core.config_manager import RouteQuery, RouteSegment
 from providers.ctrip_date_evidence import collect_date_evidence, date_value_matches
 from providers.ctrip_support import ctrip_city_code, is_ctrip_international_or_special_region
 from providers.human_actions import human_like_type, hover_then_click, random_scroll_and_pause
-from tail_discovery import TAIL_CODE_TEXT
+from tail.tail_discovery import TAIL_CODE_TEXT
 from providers.response_capture import sanitize_url
-from private_files import atomic_write_text, debug_capture_directory, make_file_private
+from core.private_files import atomic_write_text, debug_capture_directory, make_file_private
 
 
 LOGGER = logging.getLogger(__name__)

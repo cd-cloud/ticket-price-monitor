@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
-from config_manager import RouteQuery, RouteSegment
+from core.config_manager import RouteQuery, RouteSegment
 from providers import ctrip
 from providers.ctrip_tail_candidates import (
     merge_tail_candidates, network_candidate_confirms_date, prepare_network_candidates,
@@ -14,8 +14,8 @@ from providers.ctrip_tail_candidates import (
 from providers.ctrip_tail_discovery import extract_tail_matches_from_network
 from providers.ctrip_tail_runner import CtripTailDiscoveryRunner
 from providers.response_capture import ResponseStore
-from tail_discovery_service import validate_tail_results_for_run
-from tail_quotes import select_tail_alternatives
+from tail.tail_discovery_service import validate_tail_results_for_run
+from tail.tail_quotes import select_tail_alternatives
 from test_tail_improvements import quote, DATE
 
 
@@ -261,7 +261,7 @@ def test_ordinary_multi_city_navigation_failure_still_allows_form_fallback():
 
 
 def test_unclassified_432_uses_stop_policy_without_asserting_flight_absence():
-    from browser_retry_policy import looks_like_no_fare, looks_like_rate_limit
+    from browser.browser_retry_policy import looks_like_no_fare, looks_like_rate_limit
     with pytest.raises(RuntimeError) as caught:
         ctrip.raise_if_navigation_limited(SimpleNamespace(status=432))
     assert looks_like_rate_limit(caught.value)

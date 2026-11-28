@@ -6,11 +6,11 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from browser_automation import BrowserAutomation
-from browser_profile_service import BrowserProfileService
-from browser_session_manager import BrowserSessionManager, AirChinaSessionUnavailable
-from browser_session_policy import BrowserSessionMetadata
-from config_manager import ConfigManager
+from browser.browser_automation import BrowserAutomation
+from services.browser_profile_service import BrowserProfileService
+from browser.browser_session_manager import BrowserSessionManager, AirChinaSessionUnavailable
+from browser.browser_session_policy import BrowserSessionMetadata
+from core.config_manager import ConfigManager
 from test_experimental_queries import config_file
 
 
@@ -30,7 +30,7 @@ def test_manual_open_and_next_query_select_same_airchina_profile(tmp_path, monke
         fetch_tail_discovery_attempts=Mock(return_value=[]), fetch_snapshots=Mock(return_value=[])))
     popen = Mock()
     monkeypatch.setattr("backends.chrome._find_system_chrome", lambda: "/mock/chrome")
-    monkeypatch.setattr("browser_profile_service.subprocess.Popen", popen)
+    monkeypatch.setattr("services.browser_profile_service.subprocess.Popen", popen)
     rows = service.browser_profiles()["providers"]
     assert any(row["provider"] == "airchina" for row in rows)
     opened = service.open_browser_profile("airchina")

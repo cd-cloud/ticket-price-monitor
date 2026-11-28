@@ -5,8 +5,8 @@ import time
 import unittest
 from pathlib import Path
 
-from data_storage import PriceRepository
-from tail_jobs import TailDiscoveryJobManager
+from core.data_storage import PriceRepository
+from tail.tail_jobs import TailDiscoveryJobManager
 
 
 class TailJobManagerTests(unittest.TestCase):

@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from experimental_query_service import validate_payload
+from experiments.experimental_query_service import validate_payload
 from providers.airchina_form import validate_entry
 from providers.airchina_requery import ResultsRequery
 from providers.airchina_result_wait import LIVE_GUARDS

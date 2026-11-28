@@ -4,7 +4,7 @@ from typing import Callable
 
 from playwright.async_api import BrowserContext, Page
 
-from config_manager import ProviderConfig, RouteQuery
+from core.config_manager import ProviderConfig, RouteQuery
 from providers import ctrip_itinerary
 from providers import ctrip_network_parser
 from providers import ctrip_page

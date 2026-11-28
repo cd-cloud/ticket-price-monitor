@@ -9,13 +9,13 @@ from datetime import datetime, timezone
 from time import monotonic
 from typing import Any, Callable
 
-from browser_retry_policy import looks_like_rate_limit
+from browser.browser_retry_policy import looks_like_rate_limit
 from providers import feizhu_flyai_adapter
 from providers.ctrip_tail_discovery import details_match_tail_route, code_matches_target
 from providers.ctrip_tail_parser import details_match_airlines
 from providers.response_capture import sanitize_url
-from tail_quotes import build_baseline_catalog, quote_terms, first_leg_key
-from tail_call_budget import TailCallBudget, ProviderCallBudgetExceeded
+from tail.tail_quotes import build_baseline_catalog, quote_terms, first_leg_key
+from tail.tail_call_budget import TailCallBudget, ProviderCallBudgetExceeded
 
 LOGGER = logging.getLogger(__name__)
 _MIN_CANDIDATE_DELAY_SECONDS = 3.0
@@ -49,7 +49,7 @@ class FeizhuTailDiscoveryRunner:
         transport_no: str | None = None,
     ) -> dict[str, object]:
         origin, transfer = origin.upper(), transfer.upper()
-        from tail_service import OPEN_DESTINATION
+        from tail.tail_service import OPEN_DESTINATION
         if search_scope == "open":
             candidates = [OPEN_DESTINATION]
         candidates = list(dict.fromkeys(code.upper() for code in candidates

@@ -6,7 +6,7 @@ import re
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 
-from config_manager import RouteQuery
+from core.config_manager import RouteQuery
 from providers import ctrip_itinerary
 from providers.ctrip_support import is_ctrip_https_url
 from providers.response_capture import sanitize_url
@@ -75,6 +75,7 @@ def extract_single_route_match_from_network(response_store: list[dict], route: R
                             and ctrip_itinerary.details_match_preferences(details, route)):
                         itinerary_matches.append({
                             "total_price": total, "details": details, "source": "flight_itinerary_list",
+                            "price_breakdown": ctrip_itinerary.price_breakdown(price),
                             "response_url": sanitize_url(item.get("url")), "query_generation": item.get("query_generation"),
                             "loading_evidence": getattr(response_store, "loading_evidence", None),
                         })
@@ -150,6 +151,7 @@ def extract_multi_city_match_from_network(
         "total_price": _total_from_price_fields(price),
         "details": ctrip_itinerary.build_itinerary_details(itinerary, price),
         "source": "flight_itinerary_list",
+        "price_breakdown": ctrip_itinerary.price_breakdown(price),
         "response_url": sanitize_url(source_item.get("url")),
         "query_generation": source_item.get("query_generation"),
         "loading_evidence": getattr(response_store, "loading_evidence", None),

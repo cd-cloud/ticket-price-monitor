@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, patch
 
 from providers import feizhu_flyai_adapter as adapter
 from providers.feizhu_tail_runner import FeizhuTailDiscoveryRunner
-from tail_quotes import apply_baselines, first_leg_key
+from tail.tail_quotes import apply_baselines, first_leg_key
 
 
 def item():

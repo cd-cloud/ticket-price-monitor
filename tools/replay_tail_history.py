@@ -14,8 +14,8 @@ from pathlib import Path
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from tail_history import history_context, rank_candidates
-from tail_service import normalize_tail_discovery_request
+from tail.tail_history import history_context, rank_candidates
+from tail.tail_service import normalize_tail_discovery_request
 
 
 def replay(cases, budget=3):

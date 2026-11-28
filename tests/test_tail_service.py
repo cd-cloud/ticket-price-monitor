@@ -1,15 +1,15 @@
 import unittest
 
 from providers.ctrip_tail_parser import tail_text_tokens
-from tail_discovery import (
+from tail.tail_discovery import (
     AIRLINE_TAIL_DEFAULTS,
     ALL_DOMESTIC_TAIL_CODES,
     DEFAULT_TAIL_TEST_CODES,
     TAIL_DESTINATIONS,
     default_tail_codes_for_airlines,
 )
-from tail_models import TailQueueItem
-from tail_service import build_tail_request_queue, normalize_tail_discovery_request, tail_queue_report, validate_tail_result
+from tail.tail_models import TailQueueItem
+from tail.tail_service import build_tail_request_queue, normalize_tail_discovery_request, tail_queue_report, validate_tail_result
 
 
 class TailServiceTests(unittest.TestCase):

@@ -9,8 +9,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from airchina_query_gate import AirChinaQueryGate, retry_after_seconds
-from config_manager import RouteQuery
+from experiments.airchina_query_gate import AirChinaQueryGate, retry_after_seconds
+from core.config_manager import RouteQuery
 
 
 def success():
@@ -210,7 +210,7 @@ def test_os_lock_shared_with_another_process(tmp_path):
     handle = gate._try_lock()
     try:
         code = """import sys
-from airchina_query_gate import AirChinaQueryGate
+from experiments.airchina_query_gate import AirChinaQueryGate
 g=AirChinaQueryGate(sys.argv[1])
 h=g._try_lock()
 print('locked' if h is None else 'acquired')

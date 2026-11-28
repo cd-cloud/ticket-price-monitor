@@ -18,7 +18,7 @@ from playwright.async_api import Browser, BrowserContext, Page, async_playwright
 
 from .base import BrowserBackend
 from .chrome import _find_system_chrome
-from private_files import ensure_private_directory
+from core.private_files import ensure_private_directory
 
 LOGGER = logging.getLogger(__name__)
 

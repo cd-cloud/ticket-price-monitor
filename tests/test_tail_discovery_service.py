@@ -8,9 +8,9 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from data_storage import PriceRepository
-from tail_discovery_service import TailDiscoveryService, apply_tail_baseline, negative_cache_signature
-from tail_service import tail_queue_key
+from core.data_storage import PriceRepository
+from tail.tail_discovery_service import TailDiscoveryService, apply_tail_baseline, negative_cache_signature
+from tail.tail_service import tail_queue_key
 
 
 class TailDiscoveryServiceTests(unittest.TestCase):
@@ -114,7 +114,7 @@ class TailDiscoveryServiceTests(unittest.TestCase):
                 safe_batch_size=3,
             )
 
-            with patch("browser_automation.BrowserAutomation", Automation):
+            with patch("browser.browser_automation.BrowserAutomation", Automation):
                 result = asyncio.run(
                     service.run(
                         {
@@ -178,7 +178,7 @@ class TailDiscoveryServiceTests(unittest.TestCase):
 
             with (
                 patch("providers.feizhu_flyai_adapter.search_flights", fake_search),
-                patch("browser_automation.BrowserAutomation", side_effect=AssertionError("browser should not start")),
+                patch("browser.browser_automation.BrowserAutomation", side_effect=AssertionError("browser should not start")),
             ):
                 result = asyncio.run(
                     service.run(

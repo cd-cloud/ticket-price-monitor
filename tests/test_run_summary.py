@@ -1,6 +1,6 @@
 import unittest
 
-from run_summary import RunSummaryStore
+from services.run_summary import RunSummaryStore
 
 
 class RunSummaryStoreTests(unittest.TestCase):

@@ -1,8 +1,8 @@
 import unittest
 
-from browser_use_adapter import classify_page_state
-from html_text_cleaner import clean_html_text
-from tail_structured_extractor import model_to_dict, tail_itinerary_from_result
+from browser.browser_use_adapter import classify_page_state
+from core.html_text_cleaner import clean_html_text
+from tail.tail_structured_extractor import model_to_dict, tail_itinerary_from_result
 
 
 class OptionalFallbackTests(unittest.TestCase):

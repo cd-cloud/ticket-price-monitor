@@ -11,11 +11,11 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import AsyncMock, patch
 
-from data_storage import PriceRepository
+from core.data_storage import PriceRepository
 from providers import feizhu_flyai_adapter as adapter
 from providers.feizhu_tail_runner import FeizhuTailDiscoveryRunner
-from tail_discovery_service import TailDiscoveryService
-from tail_quotes import public_quote_metadata
+from tail.tail_discovery_service import TailDiscoveryService
+from tail.tail_quotes import public_quote_metadata
 
 FIXTURE = Path(__file__).parent / "fixtures" / "flyai_transit_trial.json"
 

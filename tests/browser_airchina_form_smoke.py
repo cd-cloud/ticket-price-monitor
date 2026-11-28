@@ -7,7 +7,7 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from config_manager import RouteQuery
+from core.config_manager import RouteQuery
 from playwright.async_api import async_playwright
 from providers.airchina_form import FormEntry
 

@@ -7,10 +7,10 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from config_manager import ConfigManager
-from data_storage import PriceRepository
+from core.config_manager import ConfigManager
+from core.data_storage import PriceRepository
 from providers.base import ProviderQueryOutcome
-from query_service import QueryService
+from services.query_service import QueryService
 
 
 def write_config(path: Path, *, include_group_routes: bool = False) -> None:

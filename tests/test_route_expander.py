@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import patch
 
-from route_expander import expand_route_payload, parse_city_list
+from services.route_expander import expand_route_payload, parse_city_list
 
 
 class RouteExpanderTests(unittest.TestCase):
@@ -184,7 +184,7 @@ class RouteExpanderTests(unittest.TestCase):
             expand_route_payload(payload, auto_query_interval_hours=12)
 
     def test_rejects_oversized_label_before_default_group_id_hash(self) -> None:
-        with patch("route_expander._default_group_id") as group_id:
+        with patch("services.route_expander._default_group_id") as group_id:
             with self.assertRaisesRegex(ValueError, "group_label"):
                 expand_route_payload({
                     "origin": "AAA", "destination": "BBB", "departure_date": "2099-01-01",

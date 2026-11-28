@@ -1,7 +1,7 @@
 from playwright.async_api import Page
 
-from config_manager import ProviderConfig, RouteQuery, RouteSegment
-from provider_runtime import ProviderRuntime
+from core.config_manager import ProviderConfig, RouteQuery, RouteSegment
+from browser.provider_runtime import ProviderRuntime
 
 
 class CtripRuntime(ProviderRuntime):

@@ -9,7 +9,7 @@ import threading
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from backends.chrome import SystemChromeBackend
-from browser_environment import parse_browser_environment
+from browser.browser_environment import parse_browser_environment
 
 
 def proxy(label):
